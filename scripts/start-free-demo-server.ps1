@@ -22,6 +22,21 @@ function Test-GhostChatHealth {
     }
 }
 
+function Test-GhostChatVoiceSupport {
+    try {
+        Invoke-WebRequest -Uri "$apiUrl/v1/voice/ice" -TimeoutSec 3 -ErrorAction Stop | Out-Null
+        return $true
+    }
+    catch {
+        $response = $_.Exception.Response
+        if (-not $response) { throw "Could not verify voice support on the running GhostChat server." }
+        $status = [int]$response.StatusCode
+        if ($status -eq 401 -or $status -eq 403) { return $true }
+        if ($status -eq 404) { return $false }
+        throw "Could not verify voice support on the running GhostChat server (HTTP $status)."
+    }
+}
+
 function Install-LatestGhostChatServer {
     $assetName = "ghostchat-server-windows-x64.exe"
     $checksumName = "$assetName.sha256"
@@ -123,7 +138,12 @@ try {
         throw "A cloudflared config.yml/config.yaml already exists. Quick Tunnels do not support that config; it was left untouched."
     }
 
-    if (-not (Test-GhostChatHealth)) {
+    $serverHealthy = Test-GhostChatHealth
+    if ($serverHealthy -and -not (Test-GhostChatVoiceSupport)) {
+        throw "An older GhostChat server is still running on port $port. Stop the PowerShell window that started it with Ctrl+C, then run this script again. The script will download the latest server and reuse its existing database at $dataDirectory."
+    }
+
+    if (-not $serverHealthy) {
         Install-LatestGhostChatServer
         if (-not (Test-Path -LiteralPath $serverPath)) {
             throw "The server binary was not created at $serverPath."

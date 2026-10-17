@@ -8,7 +8,7 @@ For a no-cost test with friends, run `scripts/start-free-demo-server.ps1` from P
 
 This is a temporary test setup, not a permanent or unlimited host. Quick Tunnel URLs change when the tunnel restarts, stop working when its process exits, have no uptime guarantee, and currently allow at most 200 in-flight requests. Anyone who gets the URL can attempt to create an account. Traffic passes through Cloudflare, and GhostChat messages are not end-to-end encrypted; do not use this path for sensitive conversations. For a stable address or sustained public use, deploy to a managed host and reverse proxy with HTTPS. Cloudflare's [Quick Tunnel documentation](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/) describes its limits.
 
-The free PC-hosted setup cannot run while the host is asleep or offline. To load a newer server build, stop the current demo script with Ctrl+C and run it again; the public URL will change. There is no genuinely unlimited free cloud server; free hosting tiers impose resource and availability limits.
+The free PC-hosted setup cannot run while the host is asleep or offline. The launcher checks both server health and the voice API, so it reports when a healthy server is too old for voice or screen sharing. Stop the current demo script with Ctrl+C and run it again to load the latest server; the SQLite database stays under `%LOCALAPPDATA%\GhostChat\shared-server`, and the public URL will change. There is no genuinely unlimited free cloud server; free hosting tiers impose resource and availability limits.
 
 ## Build the Windows installer
 

@@ -60,9 +60,11 @@
       status.textContent = enabled
         ? "TURN relay is configured. Relay-only keeps your address from the other caller; the relay still handles encrypted media traffic."
         : "TURN relay is not configured. Direct calls can reveal your network address to the other caller and may fail on restrictive networks.";
-    } catch {
+    } catch (error) {
       relay.disabled = true;
-      status.textContent = "Voice relay settings are unavailable. The selected server may need the latest GhostChat server build.";
+      status.textContent = error.status === 404
+        ? "This server is outdated for voice and screen sharing. Restart it with the latest GhostChat server build."
+        : "Voice relay settings are unavailable. The selected server may need the latest GhostChat server build.";
     }
   }
 
@@ -172,7 +174,11 @@
     catch { throw new Error("Could not reach the selected server. Check its address and connection."); }
     if (response.status === 204) return null;
     const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.error || `Request failed (${response.status}).`);
+    if (!response.ok) {
+      const error = new Error(body.error || `Request failed (${response.status}).`);
+      error.status = response.status;
+      throw error;
+    }
     return body;
   }
   async function storeToken(token) {
@@ -454,7 +460,15 @@
     voiceClient = window.GhostChatVoice.create({
       getSettings: voiceSettings,
       getUserId: () => state.user?.id || "",
-      getIceConfiguration: () => request("/v1/voice/ice"),
+      getIceConfiguration: async () => {
+        try { return await request("/v1/voice/ice"); }
+        catch (error) {
+          if (error.status === 404) {
+            throw new Error("This server is outdated for voice and screen sharing. Restart it with the latest GhostChat server build.");
+          }
+          throw error;
+        }
+      },
       sendSignal: ({ conversationId, peerId, kind, payload }) => {
         if (!state.socket || state.socket.readyState !== WebSocket.OPEN) throw new Error("The chat server is reconnecting. Wait until it is connected and try again.");
         state.socket.send(JSON.stringify({ type: "voice_signal", conversation_id: conversationId, to_user_id: peerId, kind, payload }));
