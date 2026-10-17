@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use serde::Serialize;
 use std::{fs, path::PathBuf};
 use tauri::{Emitter, Manager, State};
@@ -135,6 +137,9 @@ fn app_database_path(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn std::err
 }
 
 fn main() {
+    #[cfg(all(windows, not(debug_assertions)))]
+    install_panic_dialog();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
@@ -173,6 +178,30 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("GhostChat failed to start");
+}
+
+#[cfg(all(windows, not(debug_assertions)))]
+fn install_panic_dialog() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+
+    std::panic::set_hook(Box::new(|panic| {
+        let title: Vec<u16> = "GhostChat"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let message: Vec<u16> = format!("GhostChat could not start.\n\n{panic}")
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                message.as_ptr(),
+                title.as_ptr(),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+    }));
 }
 
 #[cfg(windows)]
