@@ -22,6 +22,44 @@ function Test-GhostChatHealth {
     }
 }
 
+function Install-LatestGhostChatServer {
+    $assetName = "ghostchat-server-windows-x64.exe"
+    $checksumName = "$assetName.sha256"
+    $checksumPath = "$serverPath.sha256"
+    $temporaryBinary = "$serverPath.download"
+    $temporaryChecksum = "$checksumPath.download"
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $serverPath) | Out-Null
+    try {
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/crsh6663r4234/getchat/releases/latest" -Headers @{
+            Accept = "application/vnd.github+json"
+            "User-Agent" = "GhostChat-demo-server"
+        } -TimeoutSec 20
+        $binaryAsset = $release.assets | Where-Object { $_.name -eq $assetName } | Select-Object -First 1
+        $hashAsset = $release.assets | Where-Object { $_.name -eq $checksumName } | Select-Object -First 1
+        if (-not $binaryAsset -or -not $hashAsset) { throw "The latest GhostChat release does not contain the standalone server files." }
+        foreach ($asset in @($binaryAsset, $hashAsset)) {
+            if ($asset.browser_download_url -notmatch '^https://github\.com/crsh6663r4234/getchat/releases/download/') {
+                throw "GitHub returned an unexpected release download address."
+            }
+        }
+        Invoke-WebRequest -Uri $binaryAsset.browser_download_url -OutFile $temporaryBinary -TimeoutSec 120
+        Invoke-WebRequest -Uri $hashAsset.browser_download_url -OutFile $temporaryChecksum -TimeoutSec 20
+        $checksumText = Get-Content -LiteralPath $temporaryChecksum -Raw
+        $match = [regex]::Match($checksumText, '(?im)^\s*([a-f0-9]{64})\s+\*?ghostchat-server-windows-x64\.exe\s*$')
+        if (-not $match.Success) { throw "The standalone server checksum file is invalid." }
+        $expectedHash = $match.Groups[1].Value.ToLowerInvariant()
+        $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $temporaryBinary).Hash.ToLowerInvariant()
+        if ($actualHash -ne $expectedHash) { throw "The standalone server download did not match its published SHA-256 checksum." }
+        Move-Item -LiteralPath $temporaryBinary -Destination $serverPath -Force
+        Move-Item -LiteralPath $temporaryChecksum -Destination $checksumPath -Force
+    }
+    finally {
+        foreach ($temporaryPath in @($temporaryBinary, $temporaryChecksum)) {
+            if (Test-Path -LiteralPath $temporaryPath) { Remove-Item -LiteralPath $temporaryPath -Force }
+        }
+    }
+}
+
 function Get-Cloudflared {
     $installed = Get-Command cloudflared.exe -ErrorAction SilentlyContinue
     if (-not $installed) {
@@ -86,17 +124,7 @@ try {
     }
 
     if (-not (Test-GhostChatHealth)) {
-        if (-not (Test-Path -LiteralPath $serverPath)) {
-            Push-Location $repoRoot
-            try {
-                & cargo build --release --locked --package ghostchat-server
-                if ($LASTEXITCODE -ne 0) { throw "The GhostChat server build failed." }
-            }
-            finally {
-                Pop-Location
-            }
-        }
-
+        Install-LatestGhostChatServer
         if (-not (Test-Path -LiteralPath $serverPath)) {
             throw "The server binary was not created at $serverPath."
         }

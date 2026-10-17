@@ -19,6 +19,8 @@ Date: 2026-10-16
 
 The smoke test exercised health, anonymous account creation, recovery-key issuance, unique IDs, friend request/accept and persisted relationships, rate limiting, authenticated WebSocket connections, message delivery, duplicate-message idempotency, server ordering, cursor pagination, input limits, private-conversation authorization, invalid sessions, reconnect/history, editing/deleting messages, recovery and session rotation, live WebSocket revocation, account export/deletion, and logout revocation. Expected authorization and validation failures returned their corresponding errors.
 
+WebRTC media negotiation, microphone permissions, device routing, cross-network TURN relay, and screen capture are not covered by this server smoke test. They need interactive Windows devices and network-path checks.
+
 ## Manual launch
 
 The release desktop app was launched and verified to expose a native `GhostChat` window. Its bundled local server uses loopback. The MSI was generated but not installed on this machine as part of this report.

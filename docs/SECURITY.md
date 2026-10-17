@@ -17,7 +17,7 @@ The default server binds to loopback. Remote deployments should terminate TLS at
 
 ## Abuse controls and limitations
 
-Account creation, recovery, friend requests, and message sends have process-local rate limits. These counters reset when the server restarts and do not coordinate across multiple server replicas. The app server does not implement a proxy-aware IP limiter, TURN service, abuse-report workflow, moderator roles, or account blocking.
+Account creation, recovery, friend requests, message sends, and voice signaling have process-local rate limits. These counters reset when the server restarts and do not coordinate across multiple server replicas. The app server does not implement a proxy-aware IP limiter, bundle or operate a TURN service, abuse-report workflow, moderator roles, or account blocking. Voice signaling is transient but includes ICE candidates and call metadata. Voice calls use direct WebRTC paths when possible; callers and the default public STUN provider can learn network addresses. Configure TURN and enable **Relay-only** in Voice settings to hide peer addresses from each other. The relay still observes client network addresses and traffic volume; WebRTC encrypts media in transit between endpoints.
 
 The WebSocket accepts an initial token frame rather than putting credentials in the URL. CORS permits the Tauri desktop origin and the local development origin. Every protected HTTP action checks the session and relevant conversation/friend authorization. The app has no telemetry or paid API dependency.
 

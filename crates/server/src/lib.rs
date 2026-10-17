@@ -1,8 +1,9 @@
 use std::{
     collections::{HashMap, VecDeque},
+    env,
     net::SocketAddr,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use argon2::{
@@ -19,9 +20,14 @@ use axum::{
     routing::{delete, get, patch, post},
     Json, Router,
 };
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine,
+};
+use hmac::{Hmac, Mac};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
+use sha1::Sha1;
 use sha2::{Digest, Sha256};
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
@@ -33,12 +39,21 @@ use uuid::Uuid;
 
 const MESSAGE_LIMIT: usize = 4_000;
 const PAGE_SIZE: i64 = 50;
+const TURN_CREDENTIAL_TTL_SECONDS: u64 = 12 * 60 * 60;
 
 #[derive(Clone)]
 pub struct AppState {
     db: SqlitePool,
     events: broadcast::Sender<ServerEvent>,
     limiter: Arc<Mutex<HashMap<String, VecDeque<Instant>>>>,
+    voice: VoiceServerConfig,
+}
+
+#[derive(Clone)]
+struct VoiceServerConfig {
+    stun_urls: Vec<String>,
+    turn_urls: Vec<String>,
+    turn_shared_secret: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -113,11 +128,37 @@ pub async fn open_database(path: &str) -> Result<SqlitePool, sqlx::Error> {
 
 pub async fn build_state(db: SqlitePool) -> AppState {
     let (events, _) = broadcast::channel(256);
+    let stun_urls = env::var("GHOSTCHAT_STUN_URLS")
+        .ok()
+        .map(|value| parse_server_urls(&value, &["stun:", "stuns:"]))
+        .filter(|urls| !urls.is_empty())
+        .unwrap_or_else(|| vec!["stun:stun.l.google.com:19302".into()]);
+    let turn_urls = env::var("GHOSTCHAT_TURN_URLS")
+        .ok()
+        .map(|value| parse_server_urls(&value, &["turn:", "turns:"]))
+        .unwrap_or_default();
+    let turn_shared_secret = env::var("GHOSTCHAT_TURN_SHARED_SECRET")
+        .ok()
+        .filter(|secret| !secret.trim().is_empty());
     AppState {
         db,
         events,
         limiter: Arc::new(Mutex::new(HashMap::new())),
+        voice: VoiceServerConfig {
+            stun_urls,
+            turn_urls,
+            turn_shared_secret,
+        },
     }
+}
+
+fn parse_server_urls(value: &str, allowed_schemes: &[&str]) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|url| allowed_schemes.iter().any(|scheme| url.starts_with(scheme)))
+        .map(str::to_owned)
+        .collect()
 }
 
 pub fn router(state: AppState) -> Router {
@@ -171,6 +212,7 @@ pub fn router(state: AppState) -> Router {
             patch(edit_message).delete(delete_message),
         )
         .route("/v1/messages/search", get(search_messages))
+        .route("/v1/voice/ice", get(voice_ice_servers))
         .route("/v1/ws", get(websocket))
         .fallback(|| async { ApiError::not_found() })
         .layer(RequestBodyLimitLayer::new(64 * 1024))
@@ -368,6 +410,52 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<PublicUse
     }
     sqlx::query_as::<_, PublicUser>("SELECT u.id,u.username,u.display_name FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND datetime(s.expires_at)>datetime('now')")
         .bind(session_hash(token)).fetch_optional(&state.db).await.map_err(|_| ApiError::internal())?.ok_or_else(ApiError::unauthorized)
+}
+
+#[derive(Serialize)]
+struct IceServer {
+    urls: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credential: Option<String>,
+}
+
+async fn voice_ice_servers(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let user = authenticate(&headers, &state).await?;
+    let mut ice_servers = vec![IceServer {
+        urls: state.voice.stun_urls.clone(),
+        username: None,
+        credential: None,
+    }];
+
+    let turn_available =
+        !state.voice.turn_urls.is_empty() && state.voice.turn_shared_secret.is_some();
+    if !state.voice.turn_urls.is_empty() {
+        if let Some(secret) = state.voice.turn_shared_secret.as_deref() {
+            let expires_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+                .saturating_add(TURN_CREDENTIAL_TTL_SECONDS);
+            let username = format!("{expires_at}:{}", user.id);
+            let mut mac = Hmac::<Sha1>::new_from_slice(secret.as_bytes())
+                .map_err(|_| ApiError::internal())?;
+            mac.update(username.as_bytes());
+            ice_servers.push(IceServer {
+                urls: state.voice.turn_urls.clone(),
+                username: Some(username),
+                credential: Some(STANDARD.encode(mac.finalize().into_bytes())),
+            });
+        }
+    }
+
+    Ok(Json(
+        serde_json::json!({"ice_servers": ice_servers, "turn_available": turn_available}),
+    ))
 }
 
 fn allow_rate(state: &AppState, key: &str, count: usize, period: Duration) -> bool {
@@ -993,8 +1081,77 @@ struct WsAuth {
 }
 
 async fn websocket(State(state): State<AppState>, ws: WebSocketUpgrade) -> Response {
-    ws.max_message_size(4 * 1024)
+    ws.max_message_size(32 * 1024)
+        .max_frame_size(32 * 1024)
         .on_upgrade(move |socket| websocket_session(socket, state))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsVoiceSignal {
+    #[serde(rename = "type")]
+    message_type: String,
+    conversation_id: String,
+    to_user_id: String,
+    kind: String,
+    payload: serde_json::Value,
+}
+
+async fn relay_voice_signal(state: &AppState, sender: &PublicUser, text: &str) {
+    let Ok(signal) = serde_json::from_str::<WsVoiceSignal>(text) else {
+        return;
+    };
+    if signal.message_type != "voice_signal"
+        || signal.conversation_id.len() > 64
+        || signal.to_user_id.len() > 64
+    {
+        return;
+    }
+
+    let valid_payload = match signal.kind.as_str() {
+        "offer" | "answer" => {
+            signal.payload["type"].as_str() == Some(signal.kind.as_str())
+                && signal.payload["sdp"]
+                    .as_str()
+                    .is_some_and(|sdp| !sdp.is_empty() && sdp.len() <= 16 * 1024)
+        }
+        "ice" => signal.payload["candidate"]
+            .as_str()
+            .is_some_and(|candidate| !candidate.is_empty() && candidate.len() <= 4 * 1024),
+        "hangup" => signal.payload.is_null(),
+        _ => false,
+    };
+    if !valid_payload {
+        return;
+    }
+
+    let peer_id = match sqlx::query_scalar::<_, String>(
+        "SELECT user_id FROM conversation_members WHERE conversation_id=? AND user_id<>? LIMIT 1",
+    )
+    .bind(&signal.conversation_id)
+    .bind(&sender.id)
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(peer_id)) if peer_id == signal.to_user_id => peer_id,
+        _ => return,
+    };
+
+    let rate_key = format!("voice:{}:{peer_id}", sender.id);
+    if !allow_rate(state, &rate_key, 100, Duration::from_secs(10)) {
+        return;
+    }
+
+    let _ = state.events.send(ServerEvent {
+        recipients: vec![peer_id],
+        event: serde_json::json!({
+            "type": "voice_signal",
+            "conversation_id": signal.conversation_id,
+            "from_user_id": sender.id,
+            "kind": signal.kind,
+            "payload": signal.payload,
+        }),
+    });
 }
 
 async fn websocket_session(mut socket: WebSocket, state: AppState) {
@@ -1027,6 +1184,7 @@ async fn websocket_session(mut socket: WebSocket, state: AppState) {
                 Some(Ok(WsMessage::Close(_))) => break,
                 None | Some(Err(_)) => break,
                 Some(Ok(WsMessage::Ping(bytes))) => if socket.send(WsMessage::Pong(bytes)).await.is_err() { break; },
+                Some(Ok(WsMessage::Text(text))) => relay_voice_signal(&state, &user, &text).await,
                 _ => {}
             },
             event = events.recv() => match event {

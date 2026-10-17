@@ -2,7 +2,10 @@
 
 use serde::Serialize;
 use std::{fs, path::PathBuf};
-use tauri::{Emitter, Manager, State};
+use tauri::{
+    webview::{PermissionKind, PermissionResponse},
+    Emitter, Manager, State,
+};
 use tauri_plugin_updater::UpdaterExt;
 
 #[derive(Serialize)]
@@ -142,6 +145,12 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .on_permission_request(|_, permission| match permission {
+            PermissionKind::Microphone | PermissionKind::DisplayCapture => {
+                PermissionResponse::Allow
+            }
+            _ => PermissionResponse::Default,
+        })
         .setup(|app| {
             let path = app_database_path(app.handle())?;
             let path = path.to_string_lossy().to_string();

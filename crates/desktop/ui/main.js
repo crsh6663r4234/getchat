@@ -3,6 +3,103 @@
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
   const invoke = window.__TAURI__?.core?.invoke;
   const state = { localBase: "", base: "", token: "", user: null, pendingRecovery: "", page: "messages", conversations: [], friends: [], active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null };
+  let voiceClient = null;
+  let voiceUiState = { status: "idle" };
+
+  function voiceSettings() {
+    return {
+      microphoneId: localStorage.getItem("ghostchat.voice.microphone") || "",
+      speakerId: localStorage.getItem("ghostchat.voice.speaker") || "",
+      echoCancellation: localStorage.getItem("ghostchat.voice.echo") !== "false",
+      noiseSuppression: localStorage.getItem("ghostchat.voice.noise") !== "false",
+      autoGainControl: localStorage.getItem("ghostchat.voice.gain") !== "false",
+      pushToTalk: localStorage.getItem("ghostchat.voice.ptt") === "true",
+      shareSystemAudio: localStorage.getItem("ghostchat.voice.systemAudio") === "true",
+      relayOnly: localStorage.getItem("ghostchat.voice.relayOnly") === "true",
+      volume: Number(localStorage.getItem("ghostchat.voice.volume") || "100"),
+    };
+  }
+
+  function persistVoiceSettings() {
+    localStorage.setItem("ghostchat.voice.microphone", $("#voiceMicSelect").value);
+    localStorage.setItem("ghostchat.voice.speaker", $("#voiceSpeakerSelect").value);
+    localStorage.setItem("ghostchat.voice.echo", String($("#voiceEchoCancellation").checked));
+    localStorage.setItem("ghostchat.voice.noise", String($("#voiceNoiseSuppression").checked));
+    localStorage.setItem("ghostchat.voice.gain", String($("#voiceAutoGain").checked));
+    localStorage.setItem("ghostchat.voice.ptt", String($("#voicePushToTalk").checked));
+    localStorage.setItem("ghostchat.voice.systemAudio", String($("#voiceShareAudio").checked));
+    localStorage.setItem("ghostchat.voice.relayOnly", String($("#voiceRelayOnly").checked));
+    localStorage.setItem("ghostchat.voice.volume", $("#voiceVolume").value);
+  }
+
+  function populateVoiceSettings() {
+    const settings = voiceSettings();
+    $("#voiceEchoCancellation").checked = settings.echoCancellation;
+    $("#voiceNoiseSuppression").checked = settings.noiseSuppression;
+    $("#voiceAutoGain").checked = settings.autoGainControl;
+    $("#voicePushToTalk").checked = settings.pushToTalk;
+    $("#voiceShareAudio").checked = settings.shareSystemAudio;
+    $("#voiceRelayOnly").checked = settings.relayOnly;
+    $("#voiceVolume").value = String(Math.max(0, Math.min(100, settings.volume)));
+    const mic = $("#voiceMicSelect"); const speaker = $("#voiceSpeakerSelect");
+    if (settings.microphoneId && ![...mic.options].some(option => option.value === settings.microphoneId)) mic.add(new Option("Previously selected microphone", settings.microphoneId));
+    if (settings.speakerId && ![...speaker.options].some(option => option.value === settings.speakerId)) speaker.add(new Option("Previously selected speaker", settings.speakerId));
+    mic.value = settings.microphoneId;
+    speaker.value = settings.speakerId;
+    void checkVoiceRelaySupport();
+  }
+
+  async function checkVoiceRelaySupport() {
+    const status = $("#voiceNetworkStatus");
+    const relay = $("#voiceRelayOnly");
+    status.textContent = "Checking voice relay support…";
+    try {
+      const config = await request("/v1/voice/ice");
+      const enabled = !!config.turn_available;
+      relay.disabled = !enabled;
+      status.textContent = enabled
+        ? "TURN relay is configured. Relay-only keeps your address from the other caller; the relay still handles encrypted media traffic."
+        : "TURN relay is not configured. Direct calls can reveal your network address to the other caller and may fail on restrictive networks.";
+    } catch {
+      relay.disabled = true;
+      status.textContent = "Voice relay settings are unavailable. The selected server may need the latest GhostChat server build.";
+    }
+  }
+
+  async function refreshAudioDevices() {
+    const button = $("#refreshAudioDevices");
+    button.disabled = true;
+    try {
+      if (!navigator.mediaDevices?.getUserMedia || !navigator.mediaDevices?.enumerateDevices) throw new Error("Audio devices are not available in this app context.");
+      const temporaryStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      temporaryStream.getTracks().forEach(track => track.stop());
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const mic = $("#voiceMicSelect"); const speaker = $("#voiceSpeakerSelect");
+      const selectedMic = voiceSettings().microphoneId; const selectedSpeaker = voiceSettings().speakerId;
+      function fill(select, kind, selected, fallback) {
+        const options = devices.filter(device => device.kind === kind);
+        select.replaceChildren(new Option("System default", ""));
+        options.forEach((device, index) => select.add(new Option(device.label || `${fallback} ${index + 1}`, device.deviceId)));
+        select.value = options.some(device => device.deviceId === selected) ? selected : "";
+      }
+      fill(mic, "audioinput", selectedMic, "Microphone");
+      fill(speaker, "audiooutput", selectedSpeaker, "Speaker");
+      toast("Audio devices refreshed.");
+    } catch (error) {
+      toast(error.message || "Could not read audio devices.", true);
+    } finally { button.disabled = false; }
+  }
+
+  async function applyPlaybackSettings() {
+    const audio = $("#remoteAudio");
+    if (!audio) return;
+    const settings = voiceSettings();
+    audio.volume = Math.max(0, Math.min(100, settings.volume)) / 100;
+    if (typeof audio.setSinkId === "function") {
+      try { await audio.setSinkId(settings.speakerId); }
+      catch { toast("That speaker could not be selected. The system default will be used.", true); }
+    }
+  }
 
   function toast(message, error = false) {
     const node = $("#toast"); node.textContent = message; node.classList.toggle("error", error); node.classList.add("show");
@@ -139,7 +236,7 @@
     const actions = create("div", "welcome-actions");
     const find = create("button", "button primary", "Find people"); find.onclick = () => setPage("search");
     const friends = create("button", "button secondary", "View friends"); friends.onclick = () => setPage("friends");
-    actions.append(find, friends); card.append(actions); $("#pageContent").append(card);
+    actions.append(find, friends); card.append(actions); $("#pageContent").append(card); renderVoiceControls();
   }
   function setPage(page) {
     state.page = page; state.active = page === "messages" ? state.active : null;
@@ -149,7 +246,7 @@
     if (page !== "messages") { $("#messagePanel").classList.add("hidden"); $("#pageContent").classList.remove("hidden"); renderPage(); }
     else if (state.active) openConversation(state.active.id, false);
     else showWelcome();
-    renderSidebar();
+    renderSidebar(); renderVoiceControls();
   }
   function renderSidebar() {
     const root = $("#sidebarContent"); root.replaceChildren();
@@ -228,6 +325,7 @@
     if (!convo) { await refreshConversations(); }
     state.active = state.conversations.find(item => item.id === id) || { id, display_name: "Conversation", username: "" };
     $("#chatTitle").textContent = state.active.display_name; $("#chatSubtitle").textContent = `@${state.active.username}`; $("#chatAvatar").textContent = avatarText(state.active.display_name);
+    renderVoiceControls();
     await loadMessages(false);
   }
   function timeLabel(value) {
@@ -286,8 +384,9 @@
       if (socket !== state.socket) return;
       let data; try { data = JSON.parse(event.data); } catch { return; }
       if (data.type === "ready") { state.reconnect = 1200; setConnection(true); refreshConversations(); if (state.active) loadMessages(false); }
-      else if (data.type === "session_revoked") { state.token = ""; state.user = null; state.active = null; if (state.socket) state.socket.close(); void (async () => { try { await invoke("credential_delete", { serverKey: await serverKey(activeBase()) }); } catch {} })(); show("authView"); toast("This session was revoked. Recover your account to sign in again.", true); }
+      else if (data.type === "session_revoked") { voiceClient?.hangup(); state.token = ""; state.user = null; state.active = null; if (state.socket) state.socket.close(); void (async () => { try { await invoke("credential_delete", { serverKey: await serverKey(activeBase()) }); } catch {} })(); show("authView"); toast("This session was revoked. Recover your account to sign in again.", true); }
       else if (data.type === "message" && data.message) { if (state.active?.id === data.message.conversation_id) { appendMessage(data.message); $("#messages").scrollTop = $("#messages").scrollHeight; } refreshConversations(); }
+      else if (data.type === "voice_signal") { void voiceClient?.handleSignal(data); }
       else if (data.type === "deleted" || data.type === "refresh") { if (state.active) loadMessages(false); }
     });
     socket.addEventListener("close", () => { if (socket === state.socket) { setConnection(false); scheduleReconnect(); } });
@@ -297,6 +396,86 @@
     clearTimeout(connectSocket.timer); connectSocket.timer = setTimeout(() => { if (state.token) connectSocket(); }, state.reconnect);
     state.reconnect = Math.min(30000, state.reconnect * 1.7);
   }
+  function renderVoiceControls() {
+    if (!voiceClient) return;
+    const voice = voiceClient.getState();
+    voiceUiState = voice;
+    const activeCall = !["idle", "incoming"].includes(voice.status);
+    const visible = !!state.active || voice.status !== "idle";
+    $("#voiceTools").classList.toggle("hidden", !visible);
+    $("#voiceCallButton").classList.toggle("hidden", voice.status === "incoming");
+    $("#voiceCallButton").textContent = activeCall ? "×" : "☎";
+    $("#voiceCallButton").title = activeCall ? "End call" : "Start voice call";
+    $("#voiceCallButton").setAttribute("aria-label", activeCall ? "End call" : "Start voice call");
+    $("#voiceCallButton").disabled = !activeCall && !state.active;
+    $("#voiceMicButton").classList.toggle("hidden", !activeCall);
+    $("#voiceMicButton").textContent = voice.micMuted ? "🔇" : "🎙";
+    $("#voiceMicButton").title = voice.pushToTalk ? (voice.micMuted ? "Hold Space to talk" : "Microphone is live") : (voice.micMuted ? "Unmute microphone" : "Mute microphone");
+    $("#voiceMicButton").setAttribute("aria-label", $("#voiceMicButton").title);
+    $("#voiceMicButton").setAttribute("aria-pressed", String(voice.micMuted));
+    $("#voiceShareButton").classList.toggle("hidden", !activeCall || !["connected", "reconnecting"].includes(voice.status));
+    $("#voiceShareButton").textContent = voice.screenSharing ? "■" : "▣";
+    $("#voiceShareButton").title = voice.screenSharing ? "Stop sharing screen" : "Share screen";
+    $("#voiceShareButton").disabled = !!voice.screenStarting;
+    $("#voiceAcceptButton").classList.toggle("hidden", voice.status !== "incoming");
+    $("#voiceDeclineButton").classList.toggle("hidden", voice.status !== "incoming");
+    const labels = { idle: "Voice ready", incoming: "Incoming call", calling: "Calling…", connecting: "Connecting…", connected: "In voice", reconnecting: "Reconnecting…" };
+    $("#voiceStatus").textContent = labels[voice.status] || "Voice";
+    const conversation = state.conversations.find(item => item.id === voice.conversationId);
+    const peer = conversation?.display_name || "Your friend";
+    $("#voiceStageStatus").textContent = voice.status === "incoming" ? `${peer} is calling. Accept to connect your microphone.` : `${peer} · ${labels[voice.status] || "Voice"}${voice.pushToTalk ? " · Hold Space to talk" : ""}`;
+    const hasRemoteVideo = !!voice.remoteVideoStream?.getVideoTracks().some(track => track.readyState === "live");
+    $("#remoteScreen").classList.toggle("hidden", !hasRemoteVideo);
+    $("#voiceStage").classList.toggle("hidden", voice.status === "idle");
+    if (voice.status === "idle") {
+      $("#remoteAudio").srcObject = null;
+      $("#remoteScreen").srcObject = null;
+      $("#enableCallAudio").classList.add("hidden");
+    }
+  }
+
+  function onVoiceChange(voice) {
+    voiceUiState = voice;
+    renderVoiceControls();
+    const audio = $("#remoteAudio");
+    const video = $("#remoteScreen");
+    if (audio.srcObject !== voice.remoteAudioStream) {
+      audio.srcObject = voice.remoteAudioStream;
+      if (voice.remoteAudioStream) void audio.play().then(() => $("#enableCallAudio").classList.add("hidden")).catch(() => $("#enableCallAudio").classList.remove("hidden"));
+    }
+    if (video.srcObject !== voice.remoteVideoStream) {
+      video.srcObject = voice.remoteVideoStream;
+      if (voice.remoteVideoStream) void video.play().catch(() => {});
+    }
+    void applyPlaybackSettings();
+  }
+
+  function setupVoiceClient() {
+    voiceClient = window.GhostChatVoice.create({
+      getSettings: voiceSettings,
+      getUserId: () => state.user?.id || "",
+      getIceConfiguration: () => request("/v1/voice/ice"),
+      sendSignal: ({ conversationId, peerId, kind, payload }) => {
+        if (!state.socket || state.socket.readyState !== WebSocket.OPEN) throw new Error("The chat server is reconnecting. Wait until it is connected and try again.");
+        state.socket.send(JSON.stringify({ type: "voice_signal", conversation_id: conversationId, to_user_id: peerId, kind, payload }));
+      },
+      onChange: onVoiceChange,
+      onIncoming: ({ conversationId }) => {
+        const convo = state.conversations.find(item => item.id === conversationId);
+        if (convo) {
+          void openConversation(conversationId);
+          $("#sidebarTitle").textContent = "Messages";
+          $("#sidebarAction").title = "Start a conversation";
+          $("#pageContent").classList.add("hidden");
+          renderSidebar();
+        }
+        toast(`${convo?.display_name || "Your friend"} is calling.`);
+      },
+      onError: message => toast(message, true),
+    });
+    renderVoiceControls();
+  }
+
   async function authenticateReply(reply) {
     await storeToken(reply.session_token); state.user = reply.user;
     if (reply.recovery_token) { await savePendingRecovery(reply.recovery_token); $("#recoveryValue").textContent = reply.recovery_token; $("#recoveryConfirm").checked = false; $("#continueAfterRecovery").disabled = true; show("recoveryView"); }
@@ -329,36 +508,65 @@
   $("#messageInput").addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("#composer").requestSubmit(); } });
   $("#messageInput").addEventListener("input", event => { event.target.style.height = "auto"; event.target.style.height = `${Math.min(event.target.scrollHeight, 180)}px`; });
   $("#loadOlder").onclick = () => loadMessages(true);
-  $("#settingsButton").onclick = () => { $("#serverAddressInput").value = state.base; $("#settingsDialog").showModal(); };
-  $("#serverSettings").onclick = () => { $("#serverAddressInput").value = state.base; $("#settingsDialog").showModal(); };
+  function openSettings() { $("#serverAddressInput").value = state.base; populateVoiceSettings(); $("#settingsDialog").showModal(); }
+  $("#settingsButton").onclick = openSettings;
+  $("#serverSettings").onclick = openSettings;
+  $("#profileButton").onclick = openSettings;
+  $("#refreshAudioDevices").onclick = refreshAudioDevices;
+  $("#voiceCallButton").onclick = () => {
+    if (["calling", "connecting", "connected", "reconnecting"].includes(voiceClient.getState().status)) voiceClient.hangup();
+    else if (state.active) {
+      $("#voiceCallButton").disabled = true;
+      void voiceClient.start(state.active).catch(error => toast(error.message, true)).finally(renderVoiceControls);
+    }
+  };
+  $("#voiceAcceptButton").onclick = () => {
+    $("#voiceAcceptButton").disabled = true;
+    void voiceClient.accept().catch(error => toast(error.message, true)).finally(() => { $("#voiceAcceptButton").disabled = false; renderVoiceControls(); });
+  };
+  $("#voiceDeclineButton").onclick = () => voiceClient.decline();
+  $("#voiceMicButton").onclick = () => voiceClient.toggleMicrophone();
+  $("#voiceShareButton").onclick = () => void voiceClient.toggleScreenSharing().catch(error => toast(error.message, true));
+  $("#enableCallAudio").onclick = () => void $("#remoteAudio").play().then(() => $("#enableCallAudio").classList.add("hidden")).catch(() => toast("Call audio is still blocked by Windows or the audio device.", true));
+  $("#voiceVolume").addEventListener("input", () => { $("#remoteAudio").volume = Number($("#voiceVolume").value) / 100; });
   $("#saveSettings").onclick = async () => {
     const input = $("#serverAddressInput").value.trim();
+    let changedServer = false;
     if (input) {
       let url; try { url = new URL(input); } catch { toast("Enter a valid server URL.", true); return; }
       if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) { toast("Remote servers must use HTTPS.", true); return; }
       const target = normalizedBase(url.toString());
       try { const response = await fetch(`${target}/health`); if (!response.ok) throw new Error(); }
       catch { toast("The server health check failed. Verify the address and try again.", true); return; }
+      changedServer = target !== state.base;
       state.base = target; localStorage.setItem("ghostchat.server", target);
-    } else { state.base = ""; localStorage.removeItem("ghostchat.server"); }
+    } else { changedServer = !!state.base; state.base = ""; localStorage.removeItem("ghostchat.server"); }
     const theme = $("#themeSelect").value; localStorage.setItem("ghostchat.theme", theme); document.body.classList.toggle("light", theme === "light");
     localStorage.setItem("ghostchat.textSize", $("#textSize").value); document.documentElement.style.fontSize = `${$("#textSize").value}px`;
-    await restoreToken(); updateServerLabels(); $("#settingsDialog").close();
-    if (state.token) await enterApp(); else show("authView");
+    if (changedServer) { voiceClient?.hangup(); state.active = null; state.friends = []; state.conversations = []; }
+    persistVoiceSettings(); await applyPlaybackSettings();
+    updateServerLabels(); $("#settingsDialog").close();
+    if (changedServer) { await restoreToken(); if (state.token) await enterApp(); else show("authView"); }
     toast("Settings saved.");
   };
   $("#exportSettings").onclick = () => { const data = { server: state.base || "local", theme: localStorage.getItem("ghostchat.theme") || "dark", textSize: localStorage.getItem("ghostchat.textSize") || "15" }; const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })); const link = create("a"); link.href = url; link.download = "ghostchat-preferences.json"; link.click(); URL.revokeObjectURL(url); };
   $("#exportAccount").onclick = async () => { try { const data = await request("/v1/data/export"); const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })); const link = create("a"); link.href = url; link.download = "ghostchat-account-export.json"; link.click(); URL.revokeObjectURL(url); toast("Account data exported."); } catch (error) { toast(error.message, true); } };
-  $("#deleteAccount").onclick = async () => { if (!confirm("This permanently deletes your account, sessions, friend links, conversations, and stored messages. This cannot be undone.")) return; if (prompt('Type DELETE to permanently erase this account:') !== "DELETE") return; try { await request("/v1/me/account", { method: "DELETE" }); if (state.socket) state.socket.close(); await clearToken(); await clearPendingRecovery(); state.user = null; state.active = null; state.friends = []; state.conversations = []; $("#settingsDialog").close(); show("authView"); toast("Account and data deleted."); } catch (error) { toast(error.message, true); } };
-  $("#logoutButton").onclick = async () => { try { await request("/v1/sessions", { method: "DELETE" }); } catch {} if (state.socket) state.socket.close(); await clearToken(); state.user = null; state.active = null; state.conversations = []; show("authView"); toast("You are logged out."); };
-  $("#profileButton").onclick = () => { $("#settingsDialog").showModal(); };
+  $("#deleteAccount").onclick = async () => { if (!confirm("This permanently deletes your account, sessions, friend links, conversations, and stored messages. This cannot be undone.")) return; if (prompt('Type DELETE to permanently erase this account:') !== "DELETE") return; try { await request("/v1/me/account", { method: "DELETE" }); voiceClient?.hangup(); if (state.socket) state.socket.close(); await clearToken(); await clearPendingRecovery(); state.user = null; state.active = null; state.friends = []; state.conversations = []; $("#settingsDialog").close(); show("authView"); toast("Account and data deleted."); } catch (error) { toast(error.message, true); } };
+  $("#logoutButton").onclick = async () => { try { await request("/v1/sessions", { method: "DELETE" }); } catch {} voiceClient?.hangup(); if (state.socket) state.socket.close(); await clearToken(); state.user = null; state.active = null; state.conversations = []; show("authView"); toast("You are logged out."); };
   $("#checkUpdates").onclick = () => checkForUpdates(false);
   $("#installUpdate").onclick = installUpdate;
   window.__TAURI__?.event?.listen?.("ghostchat:update-progress", event => {
     const percent = Number(event.payload);
     if (Number.isFinite(percent)) $("#updateStatus").textContent = `Downloading update… ${Math.min(100, Math.max(0, percent))}%.`;
   });
-  document.addEventListener("keydown", event => { if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setPage("search"); } if (event.key === "Escape" && !$("#settingsDialog").open) document.activeElement?.blur(); });
+  document.addEventListener("keydown", event => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setPage("search"); }
+    if (event.key === "Escape" && !$("#settingsDialog").open) document.activeElement?.blur();
+    if (event.code === "Space" && !event.repeat && voiceSettings().pushToTalk && !event.target.closest("input, textarea, select, [contenteditable=true], button")) { event.preventDefault(); voiceClient?.setPushToTalk(true); }
+  });
+  document.addEventListener("keyup", event => { if (event.code === "Space") voiceClient?.setPushToTalk(false); });
+  window.addEventListener("blur", () => voiceClient?.setPushToTalk(false));
+  setupVoiceClient();
 
   async function boot() {
     setTheme();

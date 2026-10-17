@@ -45,6 +45,10 @@ jobs:
           $config.plugins.updater.endpoints = @("https://github.com/$env:RELEASE_REPOSITORY/releases/latest/download/latest.json")
           $config | ConvertTo-Json -Depth 100 | Set-Content -Encoding utf8 $configPath
 
+      - name: Build standalone Windows server
+        shell: pwsh
+        run: cargo build --release --locked --package ghostchat-server
+
       - name: Build, sign, and publish
         uses: tauri-apps/tauri-action@action-v1.0.0
         env:
@@ -61,3 +65,18 @@ jobs:
           args: --bundles msi
           updaterJsonPreferNsis: false
           uploadUpdaterJson: true
+
+      - name: Attach standalone server and checksum
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $sourcePath = "target/release/ghostchat-server.exe"
+          $releasePath = "target/release/ghostchat-server-windows-x64.exe"
+          $checksumPath = "$releasePath.sha256"
+          if (-not (Test-Path -LiteralPath $sourcePath)) { throw "The standalone server binary was not built." }
+          Copy-Item -LiteralPath $sourcePath -Destination $releasePath -Force
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $releasePath).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath $checksumPath -Value "$hash  ghostchat-server-windows-x64.exe" -NoNewline
+          gh release upload "$env:GITHUB_REF_NAME" "$releasePath#ghostchat-server-windows-x64.exe" "$checksumPath#ghostchat-server-windows-x64.exe.sha256"
+          if ($LASTEXITCODE -ne 0) { throw "Could not attach the standalone server assets to the GitHub Release." }

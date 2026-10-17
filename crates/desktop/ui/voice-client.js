@@ -1,0 +1,402 @@
+(() => {
+  function createVoiceClient(api) {
+    let call = null;
+    let incoming = null;
+    let ringTimer = null;
+    let latestState = { status: "idle" };
+
+    function snapshot() {
+      latestState = {
+        status: call?.status || (incoming ? "incoming" : "idle"),
+        conversationId: call?.conversationId || incoming?.conversationId || "",
+        peerId: call?.peerId || incoming?.peerId || "",
+        micMuted: call ? !call.localAudioTrack?.enabled : false,
+        pushToTalk: !!api.getSettings().pushToTalk,
+        screenSharing: !!call?.screenStream,
+        screenStarting: !!call?.screenStarting,
+        remoteAudioStream: call?.remoteAudioStream || null,
+        remoteVideoStream: call?.remoteVideoStream || null,
+      };
+      return latestState;
+    }
+
+    function notify() {
+      api.onChange(snapshot());
+    }
+
+    function explainMediaError(error) {
+      if (error?.name === "NotAllowedError" || error?.name === "PermissionDeniedError") {
+        return "Microphone or screen permission was denied. Allow access in the Windows permission prompt and try again.";
+      }
+      if (error?.name === "NotFoundError" || error?.name === "OverconstrainedError") {
+        return "The selected microphone is unavailable. Choose another device in Settings → Voice & screen.";
+      }
+      if (error?.name === "NotReadableError") return "The microphone is busy in another app. Close that app and try again.";
+      if (error?.name === "SecurityError") return "This server context cannot access media. Use the GhostChat desktop app and an HTTPS server.";
+      return error?.message || "The voice connection could not be started.";
+    }
+
+    function send(conversationId, peerId, kind, payload = null) {
+      api.sendSignal({ conversationId, peerId, kind, payload });
+    }
+
+    function flushLocalIce(activeCall) {
+      activeCall.signalReady = true;
+      for (const candidate of activeCall.localIceQueue.splice(0)) {
+        send(activeCall.conversationId, activeCall.peerId, "ice", candidate);
+      }
+    }
+
+    async function captureMicrophone(settings) {
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error("Microphone capture is unavailable in this WebView. Update the Microsoft Edge WebView2 Runtime.");
+      const audio = {
+        echoCancellation: !!settings.echoCancellation,
+        noiseSuppression: !!settings.noiseSuppression,
+        autoGainControl: !!settings.autoGainControl,
+      };
+      if (settings.microphoneId) audio.deviceId = { exact: settings.microphoneId };
+      try {
+        return await navigator.mediaDevices.getUserMedia({ audio, video: false });
+      } catch (error) {
+        if (!settings.microphoneId || error?.name === "NotAllowedError" || error?.name === "PermissionDeniedError") throw error;
+        return navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: audio.echoCancellation,
+            noiseSuppression: audio.noiseSuppression,
+            autoGainControl: audio.autoGainControl,
+          },
+          video: false,
+        });
+      }
+    }
+
+    function closeCall({ notifyPeer = false, message = "" } = {}) {
+      clearTimeout(ringTimer);
+      ringTimer = null;
+      if (call && notifyPeer) {
+        try { send(call.conversationId, call.peerId, "hangup", null); } catch {}
+      }
+      if (call) {
+        for (const stream of [call.localStream, call.screenStream]) {
+          stream?.getTracks().forEach(track => { track.onended = null; track.stop(); });
+        }
+        call.pc?.close();
+      }
+      call = null;
+      incoming = null;
+      notify();
+      if (message) api.onError(message);
+    }
+
+    async function loadIceConfiguration(settings) {
+      const config = await api.getIceConfiguration();
+      const iceServers = Array.isArray(config?.ice_servers) ? config.ice_servers : [];
+      if (!iceServers.length) throw new Error("The server did not provide an ICE server. Update the GhostChat server and try again.");
+      if (settings.relayOnly && !config.turn_available) {
+        throw new Error("Relay-only privacy needs a TURN server. Ask the server owner to configure coturn first.");
+      }
+      return {
+        iceServers,
+        iceTransportPolicy: settings.relayOnly ? "relay" : "all",
+        bundlePolicy: "max-bundle",
+        rtcpMuxPolicy: "require",
+      };
+    }
+
+    function makePeer(activeCall, configuration) {
+      const pc = new RTCPeerConnection(configuration);
+      activeCall.pc = pc;
+      pc.onicecandidate = event => {
+        if (call !== activeCall || !event.candidate) return;
+        const candidate = event.candidate.toJSON();
+        try {
+          if (activeCall.signalReady) send(activeCall.conversationId, activeCall.peerId, "ice", candidate);
+          else activeCall.localIceQueue.push(candidate);
+        } catch (error) {
+          closeCall({ message: explainMediaError(error) });
+        }
+      };
+      pc.ontrack = event => {
+        const track = event.track;
+        if (track.kind === "audio") {
+          activeCall.remoteAudioStream ||= new MediaStream();
+          if (!activeCall.remoteAudioStream.getTracks().some(item => item.id === track.id)) activeCall.remoteAudioStream.addTrack(track);
+        } else if (track.kind === "video") {
+          activeCall.remoteVideoStream ||= new MediaStream();
+          if (!activeCall.remoteVideoStream.getTracks().some(item => item.id === track.id)) activeCall.remoteVideoStream.addTrack(track);
+          track.onended = notify;
+        }
+        track.onended ||= notify;
+        notify();
+      };
+      pc.onconnectionstatechange = () => {
+        if (!call || call !== activeCall) return;
+        if (pc.connectionState === "connected") { activeCall.status = "connected"; clearTimeout(ringTimer); ringTimer = null; }
+        else if (pc.connectionState === "disconnected") activeCall.status = "reconnecting";
+        else if (pc.connectionState === "failed") {
+          closeCall({ message: "The call could not cross this network. A TURN server may be needed." });
+          return;
+        }
+        notify();
+      };
+      pc.onnegotiationneeded = async () => {
+        if (call !== activeCall || activeCall.initialNegotiation || activeCall.negotiating || pc.signalingState !== "stable") return;
+        try {
+          activeCall.negotiating = true;
+          activeCall.signalReady = false;
+          await pc.setLocalDescription(await pc.createOffer());
+          send(activeCall.conversationId, activeCall.peerId, pc.localDescription.type, {
+            type: pc.localDescription.type,
+            sdp: pc.localDescription.sdp,
+          });
+          flushLocalIce(activeCall);
+        } catch (error) {
+          closeCall({ notifyPeer: true, message: explainMediaError(error) });
+        } finally {
+          activeCall.negotiating = false;
+        }
+      };
+      return pc;
+    }
+
+    async function start(conversation) {
+      if (call || incoming) throw new Error("Finish the current call before starting another one.");
+      if (!conversation?.id || !conversation?.peer_id) throw new Error("Open a private conversation before starting a call.");
+      const settings = api.getSettings();
+      const configuration = await loadIceConfiguration(settings);
+      const localStream = await captureMicrophone(settings);
+      const activeCall = {
+        conversationId: conversation.id,
+        peerId: conversation.peer_id,
+        status: "calling",
+        localStream,
+        localAudioTrack: localStream.getAudioTracks()[0],
+        remoteAudioStream: null,
+        remoteVideoStream: null,
+        screenStream: null,
+        localIceQueue: [],
+        pendingRemoteIce: [],
+        signalReady: false,
+        initialNegotiation: true,
+        negotiating: false,
+        polite: api.getUserId() > conversation.peer_id,
+      };
+      call = activeCall;
+      try {
+        const pc = makePeer(activeCall, configuration);
+        if (settings.pushToTalk) activeCall.localAudioTrack.enabled = false;
+        pc.addTrack(activeCall.localAudioTrack, localStream);
+        notify();
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        send(activeCall.conversationId, activeCall.peerId, "offer", {
+          type: pc.localDescription.type,
+          sdp: pc.localDescription.sdp,
+        });
+        flushLocalIce(activeCall);
+        ringTimer = setTimeout(() => {
+          if (call === activeCall && activeCall.status === "calling") closeCall({ notifyPeer: true, message: "No answer yet. Try calling again later." });
+        }, 45_000);
+      } catch (error) {
+        closeCall();
+        throw new Error(explainMediaError(error));
+      }
+    }
+
+    async function accept() {
+      if (!incoming || call) return;
+      const request = incoming;
+      const settings = api.getSettings();
+      const configuration = await loadIceConfiguration(settings);
+      const activeCall = {
+        conversationId: request.conversationId,
+        peerId: request.peerId,
+        status: "connecting",
+        localStream: null,
+        localAudioTrack: null,
+        remoteAudioStream: null,
+        remoteVideoStream: null,
+        screenStream: null,
+        localIceQueue: [],
+        pendingRemoteIce: request.candidates,
+        signalReady: false,
+        initialNegotiation: true,
+        negotiating: false,
+        polite: api.getUserId() > request.peerId,
+      };
+      call = activeCall;
+      incoming = null;
+      notify();
+      try {
+        const pc = makePeer(activeCall, configuration);
+        await pc.setRemoteDescription(request.offer);
+        for (const candidate of activeCall.pendingRemoteIce.splice(0)) await pc.addIceCandidate(candidate);
+        activeCall.localStream = await captureMicrophone(settings);
+        activeCall.localAudioTrack = activeCall.localStream.getAudioTracks()[0];
+        if (settings.pushToTalk) activeCall.localAudioTrack.enabled = false;
+        pc.addTrack(activeCall.localAudioTrack, activeCall.localStream);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        send(activeCall.conversationId, activeCall.peerId, "answer", {
+          type: pc.localDescription.type,
+          sdp: pc.localDescription.sdp,
+        });
+        activeCall.initialNegotiation = false;
+        flushLocalIce(activeCall);
+      } catch (error) {
+        closeCall({ notifyPeer: true });
+        throw new Error(explainMediaError(error));
+      }
+    }
+
+    async function applyDescription(activeCall, description) {
+      const pc = activeCall.pc;
+      const readyForOffer = !activeCall.negotiating && (pc.signalingState === "stable" || activeCall.settingRemoteAnswer);
+      const offerCollision = description.type === "offer" && !readyForOffer;
+      activeCall.ignoreOffer = !activeCall.polite && offerCollision;
+      if (activeCall.ignoreOffer) return;
+      if (offerCollision && activeCall.polite) await pc.setLocalDescription({ type: "rollback" });
+      activeCall.settingRemoteAnswer = description.type === "answer";
+      await pc.setRemoteDescription(description);
+      activeCall.settingRemoteAnswer = false;
+      for (const candidate of activeCall.pendingRemoteIce.splice(0)) await pc.addIceCandidate(candidate);
+      if (description.type === "answer") {
+        activeCall.initialNegotiation = false;
+        activeCall.status = "connecting";
+        clearTimeout(ringTimer);
+        ringTimer = null;
+        notify();
+      } else if (description.type === "offer") {
+        const answer = await pc.createAnswer();
+        activeCall.signalReady = false;
+        await pc.setLocalDescription(answer);
+        send(activeCall.conversationId, activeCall.peerId, "answer", {
+          type: pc.localDescription.type,
+          sdp: pc.localDescription.sdp,
+        });
+        activeCall.initialNegotiation = false;
+        flushLocalIce(activeCall);
+      }
+    }
+
+    async function handleSignal(event) {
+      if (!event?.conversation_id || !event?.from_user_id) return;
+      const conversationId = event.conversation_id;
+      const peerId = event.from_user_id;
+      if (event.kind === "hangup") {
+        if (call?.conversationId === conversationId && call.peerId === peerId) closeCall();
+        else if (incoming?.conversationId === conversationId && incoming.peerId === peerId) { incoming = null; notify(); }
+        return;
+      }
+      if (event.kind === "ice" && incoming?.conversationId === conversationId && incoming.peerId === peerId) {
+        if (event.payload?.candidate) incoming.candidates.push(event.payload);
+        return;
+      }
+      if (event.kind === "offer" && !call) {
+        if (incoming && (incoming.conversationId !== conversationId || incoming.peerId !== peerId)) {
+          try { send(conversationId, peerId, "hangup", null); } catch {}
+          return;
+        }
+        incoming = {
+          conversationId,
+          peerId,
+          offer: event.payload,
+          candidates: incoming?.candidates || [],
+        };
+        notify();
+        api.onIncoming({ conversationId, peerId });
+        return;
+      }
+      if (event.kind === "offer" && call && (call.conversationId !== conversationId || call.peerId !== peerId)) {
+        try { send(conversationId, peerId, "hangup", null); } catch {}
+        return;
+      }
+      if (!call || call.conversationId !== conversationId || call.peerId !== peerId) return;
+      try {
+        if (event.kind === "answer" && event.payload?.type === "answer") {
+          await applyDescription(call, event.payload);
+        } else if (event.kind === "offer" && event.payload?.type === "offer") {
+          await applyDescription(call, event.payload);
+        } else if (event.kind === "ice" && event.payload?.candidate) {
+          if (call.pc.remoteDescription) await call.pc.addIceCandidate(event.payload);
+          else call.pendingRemoteIce.push(event.payload);
+        }
+      } catch (error) {
+        if (!call.ignoreOffer) closeCall({ notifyPeer: true, message: explainMediaError(error) });
+      }
+    }
+
+    async function toggleScreenSharing() {
+      if (!call || call.status === "calling") throw new Error("Wait until the call is connected before sharing your screen.");
+      if (call.screenStarting) return;
+      if (call.screenStream) {
+        const stream = call.screenStream;
+        call.screenStream = null;
+        for (const track of stream.getTracks()) {
+          const sender = call.pc.getSenders().find(item => item.track === track);
+          if (sender) call.pc.removeTrack(sender);
+          track.onended = null;
+          track.stop();
+        }
+        notify();
+        return;
+      }
+      const settings = api.getSettings();
+      const activeCall = call;
+      if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("Screen capture is unavailable in this WebView. Update the Microsoft Edge WebView2 Runtime.");
+      call.screenStarting = true;
+      notify();
+      try {
+        const stream = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: { ideal: 30, max: 60 } },
+          audio: settings.shareSystemAudio,
+        });
+        if (!call || call !== activeCall) { stream.getTracks().forEach(track => track.stop()); return; }
+        call.screenStream = stream;
+        for (const track of stream.getTracks()) {
+          track.onended = () => { if (call?.screenStream === stream) void toggleScreenSharing(); };
+          call.pc.addTrack(track, stream);
+        }
+        notify();
+      } catch (error) {
+        if (error?.name === "NotAllowedError" || error?.name === "AbortError") return;
+        throw new Error(explainMediaError(error));
+      } finally {
+        if (call === activeCall) { call.screenStarting = false; notify(); }
+      }
+    }
+
+    function toggleMicrophone() {
+      if (!call?.localAudioTrack) return;
+      const settings = api.getSettings();
+      if (settings.pushToTalk) {
+        call.manualMute = !call.manualMute;
+        call.localAudioTrack.enabled = !call.manualMute && !!call.pushToTalkPressed;
+      } else {
+        call.localAudioTrack.enabled = !call.localAudioTrack.enabled;
+      }
+      notify();
+    }
+
+    function setPushToTalk(active) {
+      if (!call?.localAudioTrack || !api.getSettings().pushToTalk) return;
+      call.pushToTalkPressed = !!active;
+      call.localAudioTrack.enabled = !!active && !call.manualMute;
+      notify();
+    }
+
+    function hangup() { closeCall({ notifyPeer: true }); }
+    function decline() {
+      if (incoming) {
+        try { send(incoming.conversationId, incoming.peerId, "hangup", null); } catch {}
+      }
+      incoming = null;
+      notify();
+    }
+
+    function getState() { return snapshot(); }
+    return { start, accept, decline, hangup, toggleMicrophone, toggleScreenSharing, setPushToTalk, handleSignal, getState };
+  }
+
+  window.GhostChatVoice = { create: createVoiceClient };
+})();

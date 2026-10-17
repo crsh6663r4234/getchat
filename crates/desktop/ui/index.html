@@ -71,9 +71,10 @@
     </aside>
 
     <section class="chat-area">
-      <header id="chatHeader" class="chat-header"><div class="chat-heading"><div class="mini-avatar large-avatar" id="chatAvatar">G</div><div><h2 id="chatTitle">Your quiet corner</h2><p id="chatSubtitle" class="muted">Choose a friend or find someone new.</p></div></div><div class="chat-tools"><span id="connectionState" class="connection-state"><i class="status-dot"></i>Connecting</span><button id="searchInChat" class="icon-button" title="Search messages" aria-label="Search messages">⌕</button></div></header>
+      <header id="chatHeader" class="chat-header"><div class="chat-heading"><div class="mini-avatar large-avatar" id="chatAvatar">G</div><div><h2 id="chatTitle">Your quiet corner</h2><p id="chatSubtitle" class="muted">Choose a friend or find someone new.</p></div></div><div class="chat-tools"><div id="voiceTools" class="voice-tools hidden"><span id="voiceStatus" class="voice-status">Voice ready</span><button id="voiceCallButton" class="icon-button" title="Start voice call" aria-label="Start voice call">☎</button><button id="voiceMicButton" class="icon-button hidden" title="Mute microphone" aria-label="Mute microphone">🎙</button><button id="voiceShareButton" class="icon-button hidden" title="Share screen" aria-label="Share screen">▣</button><button id="voiceAcceptButton" class="button primary hidden" type="button">Join</button><button id="voiceDeclineButton" class="button secondary hidden" type="button">Decline</button></div><span id="connectionState" class="connection-state"><i class="status-dot"></i>Connecting</span><button id="searchInChat" class="icon-button" title="Search messages" aria-label="Search messages">⌕</button></div></header>
       <div id="pageContent" class="page-content"></div>
       <div id="messagePanel" class="message-panel hidden">
+        <section id="voiceStage" class="voice-stage hidden" aria-live="polite"><div id="voiceStageStatus" class="voice-stage-status">Voice call</div><video id="remoteScreen" class="remote-screen hidden" autoplay playsinline muted></video><audio id="remoteAudio" autoplay playsinline></audio><button id="enableCallAudio" class="button secondary hidden" type="button">Enable call audio</button></section>
         <div id="loadOlderRow" class="load-older-row"><button id="loadOlder" class="text-button">Load earlier messages</button></div>
         <div id="messages" class="messages" role="log" aria-live="polite"></div>
         <form id="composer" class="composer"><textarea id="messageInput" rows="1" maxlength="4000" placeholder="Write a message…" aria-label="Write a message"></textarea><button class="send-button" type="submit" aria-label="Send message">↑</button><div class="composer-hint">Enter to send <span>·</span> Shift + Enter for a new line</div></form>
@@ -88,6 +89,20 @@
       <p class="fine-print">Remote servers must use HTTPS and trust the GhostChat desktop origin. Session tokens are stored in Windows Credential Manager.</p>
       <label class="setting-row">Theme<select id="themeSelect"><option value="dark">Dark</option><option value="light">Light</option></select></label>
       <label class="setting-row">Text size<select id="textSize"><option value="14">Compact</option><option value="15">Default</option><option value="17">Large</option></select></label>
+      <div class="settings-divider"></div>
+      <h3>Voice and screen sharing</h3>
+      <p class="muted small-copy">WebRTC sends live media directly between callers when possible. The default public STUN service and the person you call may see your network address. Relay-only mode needs a TURN server configured by the server owner. Screen sharing always uses the system picker so you choose what to share.</p>
+      <label>Microphone<select id="voiceMicSelect"><option value="">System default</option></select></label>
+      <label>Speaker<select id="voiceSpeakerSelect"><option value="">System default</option></select></label>
+      <div class="dialog-actions"><button id="refreshAudioDevices" class="button secondary" type="button">Find audio devices</button></div>
+      <label class="setting-row"><span>Echo cancellation</span><input id="voiceEchoCancellation" type="checkbox" checked></label>
+      <label class="setting-row"><span>Noise suppression</span><input id="voiceNoiseSuppression" type="checkbox" checked></label>
+      <label class="setting-row"><span>Automatic microphone gain</span><input id="voiceAutoGain" type="checkbox" checked></label>
+      <label class="setting-row"><span>Push to talk (hold Space)</span><input id="voicePushToTalk" type="checkbox"></label>
+      <label class="setting-row"><span>Share system audio with screen</span><input id="voiceShareAudio" type="checkbox"></label>
+      <label class="setting-row"><span>Relay-only (hide IP from peer)</span><input id="voiceRelayOnly" type="checkbox" disabled></label>
+      <label>Remote call volume<input id="voiceVolume" type="range" min="0" max="100" value="100"></label>
+      <p id="voiceNetworkStatus" class="fine-print">Checking voice relay support…</p>
       <div class="dialog-actions"><button id="saveSettings" class="button primary" type="button">Save settings</button></div>
       <div class="settings-divider"></div>
       <h3>Updates</h3>
@@ -105,6 +120,7 @@
     </div>
   </dialog>
 
+  <script src="voice-client.js"></script>
   <script src="main.js"></script>
 </body>
 </html>
