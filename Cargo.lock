@@ -1312,7 +1312,7 @@ dependencies = [
 
 [[package]]
 name = "ghostchat-desktop"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "ghostchat-server",
  "serde",
@@ -1326,7 +1326,7 @@ dependencies = [
 
 [[package]]
 name = "ghostchat-server"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "argon2",
  "axum",
