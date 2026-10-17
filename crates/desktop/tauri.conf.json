@@ -36,11 +36,12 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "untrusted comment: minisign public key: F1267D94BD223E00\nRWQAPiK9lH0m8b9WuB8SSwRzsSnIOOEBUhS8mQWX/H+oFBKWBaTGNQA1",
-      "endpoints": ["https://github.com/OWNER/REPOSITORY/releases/latest/download/latest.json"],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYxMjY3RDk0QkQyMjNFMDAKUldRQVBpSzlsSDBtOGI5V3VCOFNTd1J6c1NuSU9PRUJVaFM4bVFXWC9IK29GQktXQmFUR05RQTEK",
+      "endpoints": ["https://github.com/crsh6663r4234/getchat/releases/latest/download/latest.json"],
       "windows": {
         "installMode": "passive"
       }
     }
   }
 }
+
