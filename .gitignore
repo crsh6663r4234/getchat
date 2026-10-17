@@ -1,0 +1,10 @@
+/target/
+/work/cargo-home/
+/work/update-target/
+/tools/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.log
+/.env
+/crates/desktop/secrets/

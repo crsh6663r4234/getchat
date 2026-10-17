@@ -1,0 +1,46 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "GhostChat",
+  "version": "0.2.0",
+  "identifier": "app.ghostchat.desktop",
+  "build": {
+    "frontendDist": "ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "GhostChat",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 860,
+        "minHeight": 560,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' asset: http://asset.localhost; connect-src ipc: http://ipc.localhost http://127.0.0.1:* https: ws: wss:; img-src 'self' asset: http://asset.localhost data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "createUpdaterArtifacts": true,
+    "icon": ["icons/ghostchat.ico"],
+    "targets": ["msi", "nsis"],
+    "category": "SocialNetworking",
+    "shortDescription": "Lightweight anonymous chat",
+    "longDescription": "A lightweight anonymous chat client with a self-hostable server.",
+    "windows": {
+      "webviewInstallMode": { "type": "embedBootstrapper" }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "untrusted comment: minisign public key: F1267D94BD223E00\nRWQAPiK9lH0m8b9WuB8SSwRzsSnIOOEBUhS8mQWX/H+oFBKWBaTGNQA1",
+      "endpoints": ["https://github.com/OWNER/REPOSITORY/releases/latest/download/latest.json"],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#111318">
+  <title>GhostChat</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <main id="authView" class="auth-view hidden">
+    <section class="auth-card">
+      <div class="brand-mark large">G</div>
+      <p class="eyebrow">PRIVATE BY DESIGN</p>
+      <h1>Talk freely.</h1>
+      <p class="muted intro">Make an account without an email or phone number. Keep your recovery key somewhere safe.</p>
+      <div class="auth-tabs" role="tablist" aria-label="Account options">
+        <button class="auth-tab active" data-auth-tab="create">Create account</button>
+        <button class="auth-tab" data-auth-tab="recover">Recover</button>
+      </div>
+      <form id="createForm" class="auth-form">
+        <label>Display name<input name="display_name" maxlength="32" required placeholder="What should people call you?"></label>
+        <label>Username <span class="optional">optional</span><input name="username" maxlength="24" placeholder="auto-generated if left blank"></label>
+        <button class="button primary wide" type="submit">Create anonymous account <span>→</span></button>
+        <p class="fine-print">No email, phone number, or password required.</p>
+      </form>
+      <form id="recoverForm" class="auth-form hidden">
+        <label>Recovery key<textarea name="recovery_token" rows="3" spellcheck="false" required placeholder="Paste your saved recovery key"></textarea></label>
+        <button class="button primary wide" type="submit">Recover account <span>→</span></button>
+        <p class="fine-print">Your recovery key is the only way to regain access if you lose this device.</p>
+      </form>
+      <div class="server-note"><span class="status-dot"></span> Local server <span id="serverLabel">starting…</span><button id="serverSettings" class="text-button">Change</button></div>
+    </section>
+    <p class="privacy-note">GhostChat servers can access message content. Messages are not end-to-end encrypted.</p>
+  </main>
+
+  <section id="recoveryView" class="recovery-view hidden">
+    <div class="recovery-card">
+      <div class="brand-mark">!</div>
+      <p class="eyebrow">SAVE THIS BEFORE CONTINUING</p>
+      <h1>Your recovery key</h1>
+      <p class="muted">GhostChat cannot reset this key. If you lose it and your session, you may permanently lose this account.</p>
+      <div class="key-box"><code id="recoveryValue"></code></div>
+      <div class="button-row">
+        <button id="copyRecovery" class="button secondary">Copy key</button>
+        <button id="downloadRecovery" class="button secondary">Save backup</button>
+      </div>
+      <label class="check-row"><input id="recoveryConfirm" type="checkbox"> <span>I saved this key somewhere I can find it.</span></label>
+      <button id="continueAfterRecovery" class="button primary wide" disabled>Continue to GhostChat <span>→</span></button>
+    </div>
+  </section>
+
+  <div id="appView" class="app-shell hidden">
+    <nav class="rail" aria-label="Main navigation">
+      <button class="brand-mark rail-brand" title="GhostChat" aria-label="GhostChat">G</button>
+      <div class="rail-divider"></div>
+      <button class="rail-button active" data-page="messages" title="Messages" aria-label="Messages"><span class="icon">◷</span></button>
+      <button class="rail-button" data-page="friends" title="Friends" aria-label="Friends"><span class="icon">♧</span></button>
+      <button class="rail-button" data-page="search" title="Find people" aria-label="Find people"><span class="icon">⌕</span></button>
+      <div class="rail-spacer"></div>
+      <button id="settingsButton" class="rail-button" title="Settings" aria-label="Settings"><span class="icon">⚙</span></button>
+      <button id="profileButton" class="profile-avatar" title="Your profile" aria-label="Your profile">?</button>
+    </nav>
+
+    <aside class="sidebar">
+      <header class="sidebar-head"><div><p class="eyebrow">GHOSTCHAT</p><h2 id="sidebarTitle">Messages</h2></div><button id="sidebarAction" class="icon-button" title="Start a conversation" aria-label="Start a conversation">＋</button></header>
+      <div id="sidebarContent" class="sidebar-content"></div>
+      <footer class="account-bar"><div class="mini-avatar" id="accountAvatar">?</div><div class="account-meta"><strong id="accountName">Account</strong><span id="accountTag">@username</span></div><button id="logoutButton" class="icon-button subtle" title="Log out" aria-label="Log out">⋯</button></footer>
+    </aside>
+
+    <section class="chat-area">
+      <header id="chatHeader" class="chat-header"><div class="chat-heading"><div class="mini-avatar large-avatar" id="chatAvatar">G</div><div><h2 id="chatTitle">Your quiet corner</h2><p id="chatSubtitle" class="muted">Choose a friend or find someone new.</p></div></div><div class="chat-tools"><span id="connectionState" class="connection-state"><i class="status-dot"></i>Connecting</span><button id="searchInChat" class="icon-button" title="Search messages" aria-label="Search messages">⌕</button></div></header>
+      <div id="pageContent" class="page-content"></div>
+      <div id="messagePanel" class="message-panel hidden">
+        <div id="loadOlderRow" class="load-older-row"><button id="loadOlder" class="text-button">Load earlier messages</button></div>
+        <div id="messages" class="messages" role="log" aria-live="polite"></div>
+        <form id="composer" class="composer"><textarea id="messageInput" rows="1" maxlength="4000" placeholder="Write a message…" aria-label="Write a message"></textarea><button class="send-button" type="submit" aria-label="Send message">↑</button><div class="composer-hint">Enter to send <span>·</span> Shift + Enter for a new line</div></form>
+      </div>
+    </section>
+  </div>
+
+  <dialog id="settingsDialog" class="dialog">
+    <form method="dialog" class="dialog-top"><div><p class="eyebrow">PREFERENCES</p><h2>Settings</h2></div><button class="icon-button" aria-label="Close">×</button></form>
+    <div class="dialog-body">
+      <label>Server address <span class="optional">Use the local server or a self-hosted HTTPS address</span><input id="serverAddressInput" type="url" placeholder="Local server"></label>
+      <p class="fine-print">Remote servers must use HTTPS and trust the GhostChat desktop origin. Session tokens are stored in Windows Credential Manager.</p>
+      <label class="setting-row">Theme<select id="themeSelect"><option value="dark">Dark</option><option value="light">Light</option></select></label>
+      <label class="setting-row">Text size<select id="textSize"><option value="14">Compact</option><option value="15">Default</option><option value="17">Large</option></select></label>
+      <div class="dialog-actions"><button id="saveSettings" class="button primary" type="button">Save settings</button></div>
+      <div class="settings-divider"></div>
+      <h3>Updates</h3>
+      <p id="updateStatus" class="muted small-copy">Updates are checked automatically.</p>
+      <p id="updateNotes" class="muted small-copy hidden"></p>
+      <div class="dialog-actions update-actions">
+        <button id="checkUpdates" class="button secondary" type="button">Check now</button>
+        <button id="installUpdate" class="button primary hidden" type="button">Install and restart</button>
+      </div>
+      <div class="settings-divider"></div>
+      <h3>Privacy</h3><p class="muted small-copy">Messages are stored on the selected server and are not end-to-end encrypted. The server operator can access message content. You can export your recovery key during account setup.</p>
+      <button id="exportSettings" class="button secondary" type="button">Export preferences</button>
+      <button id="exportAccount" class="button secondary" type="button">Download account data</button>
+      <button id="deleteAccount" class="button danger" type="button">Delete account and data</button>
+    </div>
+  </dialog>
+
+  <script src="main.js"></script>
+</body>
+</html>

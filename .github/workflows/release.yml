@@ -1,0 +1,63 @@
+name: Publish GhostChat release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build files
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      - name: Check release tag and app versions
+        shell: pwsh
+        run: |
+          $config = Get-Content -Raw "crates/desktop/tauri.conf.json" | ConvertFrom-Json
+          $cargoToml = Get-Content -Raw "Cargo.toml"
+          $match = [regex]::Match($cargoToml, '(?ms)^\[workspace\.package\]\s*version\s*=\s*"([^"]+)"')
+          if (-not $match.Success -or $config.version -ne $match.Groups[1].Value) {
+            throw "The workspace and Tauri app versions must match before publishing."
+          }
+          if ($env:GITHUB_REF_NAME -ne "v$($config.version)") {
+            throw "Push a v$($config.version) tag to publish this version."
+          }
+
+      - name: Set the GitHub Releases update feed
+        shell: pwsh
+        env:
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          $configPath = "crates/desktop/tauri.conf.json"
+          $config = Get-Content -Raw $configPath | ConvertFrom-Json
+          $config.plugins.updater.endpoints = @("https://github.com/$env:RELEASE_REPOSITORY/releases/latest/download/latest.json")
+          $config | ConvertTo-Json -Depth 100 | Set-Content -Encoding utf8 $configPath
+
+      - name: Build, sign, and publish
+        uses: tauri-apps/tauri-action@action-v1.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          GHOSTCHAT_UPDATE_ENDPOINT: https://github.com/${{ github.repository }}/releases/latest/download/latest.json
+        with:
+          projectPath: crates/desktop
+          tagName: v__VERSION__
+          releaseName: GhostChat v__VERSION__
+          releaseBody: "Download GhostChat below. The Windows installer supports in-app updates."
+          releaseDraft: false
+          prerelease: false
+          args: --bundles msi
+          updaterJsonPreferNsis: false
+          uploadUpdaterJson: true
