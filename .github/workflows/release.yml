@@ -65,7 +65,7 @@ jobs:
           projectPath: crates/desktop
           tagName: v__VERSION__
           releaseName: GhostChat v__VERSION__
-          releaseBody: "Defaults new installs and old localhost-based installs to the configured VDS, and labels local versus selected remote servers correctly. Remote server addresses are saved even while the server is offline. The selected server still needs a reachable HTTPS endpoint. The Windows installer supports in-app updates."
+          releaseBody: "Updates the standalone VDS server to listen on 0.0.0.0:38241 by default so remote reverse proxies or devices can reach it. Keep the raw API port blocked from public traffic and expose it through HTTPS. The Windows installer supports in-app updates."
           releaseDraft: false
           prerelease: false
           args: --bundles msi
