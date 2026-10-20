@@ -88,4 +88,3 @@ jobs:
           $releaseTag = "v$($config.version)"
           gh release upload "$releaseTag" "$releasePath#ghostchat-server-windows-x64.exe" "$checksumPath#ghostchat-server-windows-x64.exe.sha256"
           if ($LASTEXITCODE -ne 0) { throw "Could not attach the standalone server assets to the GitHub Release." }
-
