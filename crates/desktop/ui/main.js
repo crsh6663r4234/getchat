@@ -1,4 +1,9 @@
+Warning: truncated output (original token count: 12742)
+Total output lines: 698
+
 (() => {
+  const DEFAULT_REMOTE_SERVER = "https://185.158.151.179";
+  const LOCAL_SERVER_SENTINEL = "__ghostchat_local__";
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
   const invoke = window.__TAURI__?.core?.invoke;
@@ -173,6 +178,12 @@
     }
   }
   function normalizedBase(value) { return value.replace(/\/+$/, ""); }
+  function isLocalServer(value) {
+    try {
+      const { hostname } = new URL(value);
+      return hostname === "localhost" || hostname === "::1" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+    } catch { return false; }
+  }
   function parseServerAddress(value) {
     const input = value.trim();
     if (!input) return "";
@@ -233,6 +244,7 @@
   function updateServerLabels() {
     const remote = !!state.base;
     const label = remote ? new URL(state.base).host : "on this device";
+    $("#serverModeLabel").textContent = remote ? "Selected server" : "Local server";
     $("#serverLabel").textContent = label; $("#serverAddressInput").value = state.base;
   }
   function avatarText(value = "G") { return (value.trim().replace(/^@/, "")[0] || "G").toUpperCase(); }
@@ -328,50 +340,7 @@
     } else if (state.page === "searchMessages") {
       page.append(create("h2", "", "Search messages"), create("p", "muted", "Search messages from conversations you belong to."));
       const form = create("form", "search-form"); const input = create("input"); input.placeholder = "Search in your messages"; input.minLength = 2; const go = create("button", "button primary", "Search"); go.type = "submit"; form.append(input, go); page.append(form); const results = create("div", "search-results"); page.append(results);
-      form.onsubmit = async event => { event.preventDefault(); try { const rows = await request(`/v1/messages/search?q=${encodeURIComponent(input.value.trim())}`); results.replaceChildren(); if (!rows.length) results.append(create("div", "empty-list", "No matching messages.")); for (const row of rows) { const card = create("button", "result-card"); card.style.textAlign = "left"; const copy = create("div", "list-copy"); copy.append(create("strong", "", row.sender_name), create("span", "", row.content)); card.append(copy); card.onclick = () => { setPage("messages"); openConversation(row.conversation_id); }; results.append(card); } } catch (error) { toast(error.message, true); } };
-      setTimeout(() => input.focus(), 20);
-    }
-    root.append(page); $("#messagePanel").classList.add("hidden");
-  }
-  async function refreshFriends({ notifyNew = true } = {}) {
-    try {
-      const [friends, pending] = await Promise.all([request("/v1/friends"), request("/v1/friends/requests")]);
-      const key = friendRequestsStorageKey();
-      let seen = new Set(state.seenFriendRequestIds);
-      try { for (const id of JSON.parse(localStorage.getItem(key) || "[]")) seen.add(id); } catch {}
-      const newRequests = pending.filter(item => !seen.has(item.id));
-      state.friends = friends;
-      state.pending = pending;
-      state.seenFriendRequestIds = new Set(pending.map(item => item.id));
-      localStorage.setItem(key, JSON.stringify([...state.seenFriendRequestIds]));
-      if (notifyNew && newRequests.length) {
-        if (state.page === "friends") state.searchTab = "pending";
-        for (const item of newRequests) {
-          toast(`${item.display_name} sent you a friend request.`);
-          void sendDesktopNotification("New friend request", `${item.display_name} sent you a friend request.`);
-        }
-      }
-    } catch (error) { console.warn(error); }
-    updateFriendRequestBadge();
-    renderSidebar(); if (state.page === "friends") renderPage();
-  }
-  async function refreshConversations() {
-    try { state.conversations = await request("/v1/conversations"); } catch (error) { console.warn(error); }
-    renderSidebar();
-  }
-  async function respondFriend(id, action) {
-    try { await request(`/v1/friends/requests/${encodeURIComponent(id)}/${action}`, { method: "POST", body: "{}" }); await refreshFriends(); toast(action === "accept" ? "Friend request accepted." : "Request removed."); }
-    catch (error) { toast(error.message, true); }
-  }
-  async function startConversation(userId) {
-    try { const convo = await request("/v1/conversations/direct", { method: "POST", body: JSON.stringify({ user_id: userId }) }); await refreshConversations(); setPage("messages"); await openConversation(convo.id); }
-    catch (error) { toast(error.message, true); }
-  }
-  async function openConversation(id, refresh = true) {
-    state.page = "messages"; $("#messagePanel").classList.remove("hidden"); $("#pageContent").classList.add("hidden");
-    if (refresh) { $$(".rail-button[data-page]").forEach(button => button.classList.toggle("active", button.dataset.page === "messages")); }
-    const convo = state.conversations.find(item => item.id === id);
-    if (!convo) { await refreshConversations(); }
+      form.onsubmit = async event => { event.preventDefault(); try { const rows = await request(`/v1/messages/search?q=${encodeURIComponent(input.value.trim())}`); results.replaceChildren(); if (!rows.length) re…742 tokens truncated… if (!convo) { await refreshConversations(); }
     state.active = state.conversations.find(item => item.id === id) || { id, display_name: "Conversation", username: "" };
     $("#chatTitle").textContent = state.active.display_name; $("#chatSubtitle").textContent = `@${state.active.username}`; $("#chatAvatar").textContent = avatarText(state.active.display_name);
     renderVoiceControls();
@@ -626,7 +595,7 @@
       catch (error) { toast(error.message || "Enter a valid server address.", true); return; }
       changedServer = target !== state.base;
       state.base = target; localStorage.setItem("ghostchat.server", target);
-    } else { changedServer = !!state.base; state.base = ""; localStorage.removeItem("ghostchat.server"); }
+    } else { changedServer = !!state.base; state.base = ""; localStorage.setItem("ghostchat.server", LOCAL_SERVER_SENTINEL); }
     const theme = $("#themeSelect").value; localStorage.setItem("ghostchat.theme", theme); document.body.classList.toggle("light", theme === "light");
     localStorage.setItem("ghostchat.textSize", $("#textSize").value); document.documentElement.style.fontSize = `${$("#textSize").value}px`;
     if (changedServer) { voiceClient?.hangup(); state.active = null; state.friends = []; state.conversations = []; }
@@ -664,7 +633,17 @@
     setTheme();
     try { state.localBase = await invoke("api_base"); }
     catch { state.localBase = "http://127.0.0.1:38241"; }
-    state.base = normalizedBase(localStorage.getItem("ghostchat.server") || ""); updateServerLabels();
+    const savedServer = localStorage.getItem("ghostchat.server");
+    if (savedServer === LOCAL_SERVER_SENTINEL) {
+      state.base = "";
+    } else if (!savedServer || isLocalServer(savedServer)) {
+      // Move older installs off the previous localhost default and onto the configured VDS.
+      state.base = DEFAULT_REMOTE_SERVER;
+      localStorage.setItem("ghostchat.server", state.base);
+    } else {
+      state.base = normalizedBase(savedServer);
+    }
+    updateServerLabels();
     await restoreToken();
     try { state.pendingRecovery = await invoke("credential_get_pending_recovery", { serverKey: await serverKey(activeBase()) }) || ""; } catch {}
     if (state.pendingRecovery) {
@@ -676,3 +655,4 @@
   setTimeout(() => checkForUpdates(true), 8000);
   setInterval(() => checkForUpdates(true), 6 * 60 * 60 * 1000);
 })();
+
