@@ -2,8 +2,12 @@ name: Publish GhostChat release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
+    paths:
+      - "Cargo.toml"
+      - "crates/desktop/tauri.conf.json"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -31,9 +35,11 @@ jobs:
           if (-not $match.Success -or $config.version -ne $match.Groups[1].Value) {
             throw "The workspace and Tauri app versions must match before publishing."
           }
-          if ($env:GITHUB_REF_NAME -ne "v$($config.version)") {
-            throw "Push a v$($config.version) tag to publish this version."
+          if ($env:GITHUB_REF_NAME -ne "main") {
+            throw "Publish GhostChat releases from the main branch."
           }
+          $releaseTag = "v$($config.version)"
+          "RELEASE_TAG=$releaseTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Set the GitHub Releases update feed
         shell: pwsh
@@ -59,7 +65,7 @@ jobs:
           projectPath: crates/desktop
           tagName: v__VERSION__
           releaseName: GhostChat v__VERSION__
-          releaseBody: "Fixes live friend-request delivery and incoming-call alerts, adds Windows notifications for calls, friend requests, and messages, and includes a test-notification control in Settings. Restart the GhostChat demo server to load this release; existing demo-server data stays in the same local SQLite database. The Windows installer supports in-app updates."
+          releaseBody: "Fixes saving remote server addresses while the server is offline and accepts bare remote IP addresses as HTTPS. Adds live friend-request delivery, incoming-call alerts, Windows notifications, and a test-notification control. The selected server still needs a reachable HTTPS endpoint. The Windows installer supports in-app updates."
           releaseDraft: false
           prerelease: false
           args: --bundles msi
@@ -78,5 +84,7 @@ jobs:
           Copy-Item -LiteralPath $sourcePath -Destination $releasePath -Force
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $releasePath).Hash.ToLowerInvariant()
           Set-Content -LiteralPath $checksumPath -Value "$hash  ghostchat-server-windows-x64.exe" -NoNewline
-          gh release upload "$env:GITHUB_REF_NAME" "$releasePath#ghostchat-server-windows-x64.exe" "$checksumPath#ghostchat-server-windows-x64.exe.sha256"
+          $config = Get-Content -Raw "crates/desktop/tauri.conf.json" | ConvertFrom-Json
+          $releaseTag = "v$($config.version)"
+          gh release upload "$releaseTag" "$releasePath#ghostchat-server-windows-x64.exe" "$checksumPath#ghostchat-server-windows-x64.exe.sha256"
           if ($LASTEXITCODE -ne 0) { throw "Could not attach the standalone server assets to the GitHub Release." }

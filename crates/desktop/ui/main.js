@@ -173,6 +173,16 @@
     }
   }
   function normalizedBase(value) { return value.replace(/\/+$/, ""); }
+  function parseServerAddress(value) {
+    const input = value.trim();
+    if (!input) return "";
+    const hasScheme = /^[a-z][a-z\d+.-]*:\/\//i.test(input);
+    const isLocal = /^(localhost|127(?:\.\d{1,3}){3})(?::\d+)?(?:\/|$)/i.test(input);
+    const url = new URL(hasScheme ? input : `${isLocal ? "http" : "https"}://${input}`);
+    if (url.username || url.password || url.search || url.hash || (url.pathname !== "/" && url.pathname !== "")) throw new Error("Enter only the server address, without a path or extra URL details.");
+    if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) throw new Error("Remote servers must use HTTPS.");
+    return normalizedBase(url.origin);
+  }
   function activeBase() { return state.base || state.localBase; }
   async function serverKey(base) {
     const data = new TextEncoder().encode(normalizedBase(base));
@@ -610,12 +620,10 @@
   $("#saveSettings").onclick = async () => {
     const input = $("#serverAddressInput").value.trim();
     let changedServer = false;
+    let target = "";
     if (input) {
-      let url; try { url = new URL(input); } catch { toast("Enter a valid server URL.", true); return; }
-      if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) { toast("Remote servers must use HTTPS.", true); return; }
-      const target = normalizedBase(url.toString());
-      try { const response = await fetch(`${target}/health`); if (!response.ok) throw new Error(); }
-      catch { toast("The server health check failed. Verify the address and try again.", true); return; }
+      try { target = parseServerAddress(input); }
+      catch (error) { toast(error.message || "Enter a valid server address.", true); return; }
       changedServer = target !== state.base;
       state.base = target; localStorage.setItem("ghostchat.server", target);
     } else { changedServer = !!state.base; state.base = ""; localStorage.removeItem("ghostchat.server"); }
@@ -625,7 +633,13 @@
     persistVoiceSettings(); await applyPlaybackSettings();
     updateServerLabels(); $("#settingsDialog").close();
     if (changedServer) { await restoreToken(); if (state.token) await enterApp(); else show("authView"); }
-    toast("Settings saved.");
+    if (changedServer && target) {
+      const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 4000);
+      let reachable = false;
+      try { const response = await fetch(`${target}/health`, { signal: controller.signal }); reachable = response.ok; }
+      catch {} finally { clearTimeout(timeout); }
+      toast(reachable ? `Server address saved: ${new URL(target).host}` : `Server address saved: ${new URL(target).host}. The server is not reachable yet.`, !reachable);
+    } else toast("Settings saved.");
   };
   $("#exportSettings").onclick = () => { const data = { server: state.base || "local", theme: localStorage.getItem("ghostchat.theme") || "dark", textSize: localStorage.getItem("ghostchat.textSize") || "15" }; const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })); const link = create("a"); link.href = url; link.download = "ghostchat-preferences.json"; link.click(); URL.revokeObjectURL(url); };
   $("#exportAccount").onclick = async () => { try { const data = await request("/v1/data/export"); const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })); const link = create("a"); link.href = url; link.download = "ghostchat-account-export.json"; link.click(); URL.revokeObjectURL(url); toast("Account data exported."); } catch (error) { toast(error.message, true); } };
