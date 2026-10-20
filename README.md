@@ -16,7 +16,7 @@ The standalone backend defaults to `0.0.0.0:38241` so another device or reverse 
 
 ## Anonymous account recovery
 
-Account creation needs a display name and optionally a username. GhostChat does not request an email, phone number, or conventional password. Save the recovery key when it is shown. The server stores a salted Argon2 verifier plus a lookup digest; it never stores the raw recovery key. Losing both the Windows session and recovery key can permanently lock you out.
+Account creation asks only for a display name. GhostChat creates a unique random username tag, and you can optionally add a profile photo. It does not request an email, phone number, or conventional password. Save the recovery key when it is shown. The server stores a salted Argon2 verifier plus a lookup digest; it never stores the raw recovery key. Losing both the Windows session and recovery key can permanently lock you out.
 
 Sessions are stored in Windows Credential Manager, scoped to the selected server. Logout revokes the active server session. Recovery rotates sessions. Account data can be exported from Settings, or permanently deleted after a second confirmation.
 
