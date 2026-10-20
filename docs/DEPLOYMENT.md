@@ -38,4 +38,3 @@ See [server.env.example](../server.env.example) for placeholders. Do not place r
 ## Operational limits
 
 The server has health endpoint `GET /health`, SQLite WAL mode, versioned migrations, a five-second SQLite busy timeout, and graceful Ctrl+C shutdown. It does not include a TLS listener, clustered presence, replicated rate limits, automated backup rotation, metrics, or an operations dashboard. Use one server process per database.
-
