@@ -3,7 +3,7 @@ members = ["crates/server", "crates/desktop"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.3"
+version = "0.3.4"
 edition = "2021"
 license = "MIT"
 
@@ -21,3 +21,4 @@ tower-http = { version = "0.5.2", features = ["cors", "limit"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 uuid = { version = "1.28.0", features = ["v4", "serde"] }
+
