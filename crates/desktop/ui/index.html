@@ -31,7 +31,7 @@
         <button class="button primary wide" type="submit">Recover account <span>→</span></button>
         <p class="fine-print">Your recovery key is the only way to regain access if you lose this device.</p>
       </form>
-      <div class="server-note"><span class="status-dot"></span> Local server <span id="serverLabel">starting…</span><button id="serverSettings" class="text-button">Change</button></div>
+      <div class="server-note"><span class="status-dot"></span> <span id="serverModeLabel">Server</span> <span id="serverLabel">starting…</span><button id="serverSettings" class="text-button">Change</button></div>
     </section>
     <p class="privacy-note">GhostChat servers can access message content. Messages are not end-to-end encrypted.</p>
   </main>
@@ -85,7 +85,7 @@
   <dialog id="settingsDialog" class="dialog">
     <form method="dialog" class="dialog-top"><div><p class="eyebrow">PREFERENCES</p><h2>Settings</h2></div><button class="icon-button" aria-label="Close">×</button></form>
     <div class="dialog-body">
-      <label>Server address <span class="optional">Enter an IP or HTTPS address. Offline server addresses can still be saved.</span><input id="serverAddressInput" type="url" placeholder="Local server or 185.158.151.179"></label>
+      <label>Server address <span class="optional">Enter an IP or HTTPS address. Offline server addresses can still be saved.</span><input id="serverAddressInput" type="url" placeholder="https://185.158.151.179"></label>
       <p class="fine-print">Remote servers must use HTTPS and trust the GhostChat desktop origin. Session tokens are stored in Windows Credential Manager.</p>
       <label class="setting-row">Theme<select id="themeSelect"><option value="dark">Dark</option><option value="light">Light</option></select></label>
       <label class="setting-row">Text size<select id="textSize"><option value="14">Compact</option><option value="15">Default</option><option value="17">Large</option></select></label>
@@ -129,3 +129,4 @@
   <script src="main.js"></script>
 </body>
 </html>
+
