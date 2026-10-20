@@ -65,7 +65,7 @@ jobs:
           projectPath: crates/desktop
           tagName: v__VERSION__
           releaseName: GhostChat v__VERSION__
-          releaseBody: "Fixes saving remote server addresses while the server is offline and accepts bare remote IP addresses as HTTPS. Adds live friend-request delivery, incoming-call alerts, Windows notifications, and a test-notification control. The selected server still needs a reachable HTTPS endpoint. The Windows installer supports in-app updates."
+          releaseBody: "Defaults new installs and old localhost-based installs to the configured VDS, and labels local versus selected remote servers correctly. Remote server addresses are saved even while the server is offline. The selected server still needs a reachable HTTPS endpoint. The Windows installer supports in-app updates."
           releaseDraft: false
           prerelease: false
           args: --bundles msi
