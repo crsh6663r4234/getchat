@@ -12,7 +12,7 @@ The MSI and portable executables are unsigned. Windows may show an unfamiliar-ap
 
 The local server is private to one device. For a temporary free demo from a Windows computer, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#temporary-free-demo-from-a-windows-pc). For a stable deployment, place the standalone server on a host reachable by both devices behind an HTTPS reverse proxy, then open **Settings → Server address** in each client and enter the HTTPS address. Create a separate anonymous account on that server for each person.
 
-The backend defaults to `127.0.0.1:38241`. Set `GHOSTCHAT_BIND` and `GHOSTCHAT_DATABASE` to configure it. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), [docs/VOICE.md](docs/VOICE.md), and the placeholder-only [server.env.example](server.env.example). Do not expose the backend directly to the public internet without TLS termination, firewall rules, and operational monitoring.
+The standalone backend defaults to `0.0.0.0:38241` so another device or reverse proxy can reach it. Set `GHOSTCHAT_BIND=127.0.0.1:38241` when the HTTPS reverse proxy runs on the same host. Set `GHOSTCHAT_DATABASE` to configure storage. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), [docs/VOICE.md](docs/VOICE.md), and the placeholder-only [server.env.example](server.env.example). Keep the raw backend port blocked from public traffic; expose the service through HTTPS with firewall rules and operational monitoring.
 
 ## Anonymous account recovery
 
