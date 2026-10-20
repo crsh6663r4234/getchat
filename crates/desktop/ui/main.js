@@ -5,6 +5,23 @@
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
   const invoke = window.__TAURI__?.core?.invoke;
   const state = { localBase: "", base: "", token: "", user: null, pendingRecovery: "", page: "messages", conversations: [], friends: [], pending: [], seenFriendRequestIds: new Set(), active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null };
+  let signupAvatarData = null;
+  let profileAvatarData = null;
+  const trText = {
+    "Create account": "Hesap oluştur", "Recover": "Kurtar", "Name": "Ad", "Display name": "Görünen ad", "Profile picture": "Profil fotoğrafı", "Choose": "Seç", "Create anonymous account": "Anonim hesap oluştur", "Recover account": "Hesabı kurtar", "Recovery key": "Kurtarma anahtarı", "Your recovery key": "Kurtarma anahtarın", "Copy key": "Anahtarı kopyala", "Save backup": "Yedek kaydet", "Continue to GhostChat": "GhostChat'e devam et", "Messages": "Mesajlar", "Friends": "Arkadaşlar", "Find people": "Kişi bul", "Search messages": "Mesajlarda ara", "Settings": "Ayarlar", "Profile": "Profil", "Connection": "Bağlantı", "Appearance": "Görünüm", "Notifications": "Bildirimler", "Voice and screen sharing": "Sesli sohbet ve ekran paylaşımı", "Updates": "Güncellemeler", "Privacy and data": "Gizlilik ve veriler", "Theme": "Tema", "Text size": "Yazı boyutu", "Dark": "Koyu", "Light": "Açık", "Compact": "Küçük", "Default": "Varsayılan", "Large": "Büyük", "Windows notifications": "Windows bildirimleri", "Send test notification": "Test bildirimi gönder", "Microphone": "Mikrofon", "Speaker": "Hoparlör", "System default": "Sistem varsayılanı", "Refresh audio devices": "Ses aygıtlarını yenile", "Echo cancellation": "Yankı engelleme", "Noise suppression": "Gürültü azaltma", "Automatic microphone gain": "Otomatik mikrofon seviyesi", "Push to talk (hold Space)": "Bas-konuş (Boşluk tuşunu basılı tut)", "Share system audio with screen": "Ekranla sistem sesini paylaş", "Save settings": "Ayarları kaydet", "Check now": "Şimdi kontrol et", "Install and restart": "Yükle ve yeniden başlat", "Save profile": "Profili kaydet", "Remove photo": "Fotoğrafı kaldır", "Your quiet corner": "Sana özel alan", "A little more room to talk.": "Rahatça konuşabileceğin bir alan.", "Find someone by username, send a friend request, then start a private conversation. Your account does not need an email or phone number.": "Etiketiyle kişi bul, arkadaşlık isteği gönder ve özel sohbete başla. Hesap için e-posta veya telefon gerekmez.", "View friends": "Arkadaşları gör", "Search": "Ara", "Search by username or user ID. GhostChat does not publish a public directory.": "Kullanıcı etiketiyle veya kullanıcı kimliğiyle ara. GhostChat herkese açık bir rehber yayınlamaz.", "No conversations yet. Find a friend to start a chat.": "Henüz sohbet yok. Sohbet başlatmak için arkadaş ekle.", "No pending requests.": "Bekleyen istek yok.", "YOUR FRIENDS": "ARKADAŞLARIN", "REQUESTS": "İSTEKLER", "DIRECT MESSAGES": "ÖZEL MESAJLAR", "No friends yet. Use Find people to add someone.": "Henüz arkadaşın yok. Kişi bul bölümünden arkadaş ekleyebilirsin.", "Manage requests and start a private conversation.": "İstekleri yönet ve özel sohbet başlat.", "All friends": "Tüm arkadaşlar", "Accept": "Kabul et", "Ignore": "Yoksay", "Message": "Mesaj", "Add friend": "Arkadaş ekle", "Request sent": "İstek gönderildi", "No friend requests right now.": "Şu anda arkadaşlık isteği yok.", "No matching messages.": "Eşleşen mesaj yok.", "Edited": "Düzenlendi", "Edit": "Düzenle", "Delete": "Sil", "Write a message…": "Mesaj yaz…", "Load earlier messages": "Önceki mesajları yükle", "Call": "Ara", "End call": "Aramayı bitir", "Settings saved.": "Ayarlar kaydedildi.", "Profile saved.": "Profil kaydedildi.", "Friend request accepted.": "Arkadaşlık isteği kabul edildi.", "Request removed.": "İstek kaldırıldı.", "Choose an image file.": "Bir resim dosyası seç.", "That photo is too detailed. Choose a smaller image.": "Fotoğraf çok detaylı. Daha küçük bir görsel seç.", "Could not use that photo.": "Fotoğraf kullanılamadı.", "Checking for updates": "Güncellemeler kontrol ediliyor", "Update required": "Güncelleme gerekli", "Downloading update": "Güncelleme indiriliyor", "Update failed": "Güncelleme başarısız", "Try again": "Yeniden dene", "Getting the latest version ready…": "En yeni sürüm hazırlanıyor…", "This app version is out of date.": "Bu uygulama sürümü güncel değil.", "Preparing the update…": "Güncelleme hazırlanıyor…"
+  };
+  Object.assign(trText, {
+    "Choose a friend or find someone new.": "Bir arkadaş seç ya da yeni birini bul.", "Connected": "Bağlandı", "Reconnecting": "Yeniden bağlanıyor", "Voice ready": "Ses hazır", "Incoming call": "Gelen arama", "Calling…": "Aranıyor…", "Connecting…": "Bağlanıyor…", "In voice": "Sesli görüşmede", "Reconnecting…": "Yeniden bağlanıyor…", "Voice": "Ses", "Voice call": "Sesli arama", "Try microphone": "Mikrofonu dene", "Mic off": "Mikrofon kapalı", "Speaking": "Konuşuyor", "Hold Space": "Boşluk tuşunu basılı tut", "Turn mic on": "Mikrofonu aç", "Mute mic": "Mikrofonu kapat", "Sound off": "Ses kapalı", "Sound on": "Ses açık", "Starting…": "Başlatılıyor…", "Stop sharing": "Paylaşımı durdur", "Share screen": "Ekranı paylaş", "No microphone detected. Calls can still be joined muted so you can listen.": "Mikrofon bulunamadı. Yine de sessiz katılıp dinleyebilirsin.", "Microphone access is unavailable. You can stay muted or allow access and try again.": "Mikrofon erişimi yok. Sessiz kalabilir veya izin verip tekrar deneyebilirsin.", "No microphone found. You can still join calls muted.": "Mikrofon bulunamadı. Aramalara sessiz katılabilirsin.", "Audio devices refreshed.": "Ses aygıtları yenilendi.", "Checking voice relay support…": "Ses aktarım desteği kontrol ediliyor…", "Server address": "Sunucu adresi", "Selected server": "Seçili sunucu", "Local server": "Yerel sunucu", "Search @username or user ID": "@etiket veya kullanıcı kimliği ara", "Search people": "Kişi ara", "Search in your messages": "Mesajlarında ara", "Search for a username or user ID. Users are not listed publicly.": "Kullanıcı etiketiyle veya kimliğiyle ara. Kullanıcılar herkese açık listelenmez.", "Search messages from conversations you belong to.": "Üyesi olduğun sohbetlerdeki mesajları ara.", "No users found. Check the spelling and try again.": "Kullanıcı bulunamadı. Yazımı kontrol edip tekrar dene.", "Searching…": "Aranıyor…", "You are logged out.": "Oturum kapatıldı.", "Call audio is still blocked by Windows or the audio device.": "Arama sesi Windows veya ses aygıtı tarafından engelleniyor."
+  });
+  const tr = () => (localStorage.getItem("ghostchat.language") || "en") === "tr";
+  function translate(value) { return tr() ? (trText[value] || value) : value; }
+  function applyLanguage() {
+    const language = tr() ? "tr" : "en";
+    document.documentElement.lang = language;
+    $$("[data-en][data-tr]").forEach(node => { node.textContent = node.dataset[language]; });
+    $$("[data-en-placeholder][data-tr-placeholder]").forEach(node => { node.placeholder = node.getAttribute(`data-${language}-placeholder`); });
+    for (const selector of ["#languageSelect", "#authLanguageSelect"]) { const select = $(selector); if (select) select.value = language; }
+  }
   let voiceClient = null;
   let voiceUiState = { status: "idle" };
 
@@ -19,6 +36,7 @@
       shareSystemAudio: localStorage.getItem("ghostchat.voice.systemAudio") === "true",
       relayOnly: localStorage.getItem("ghostchat.voice.relayOnly") === "true",
       volume: Number(localStorage.getItem("ghostchat.voice.volume") || "100"),
+      speakerMuted: localStorage.getItem("ghostchat.voice.speakerMuted") === "true",
     };
   }
 
@@ -43,11 +61,18 @@
     $("#voiceShareAudio").checked = settings.shareSystemAudio;
     $("#voiceRelayOnly").checked = settings.relayOnly;
     $("#voiceVolume").value = String(Math.max(0, Math.min(100, settings.volume)));
-    const mic = $("#voiceMicSelect"); const speaker = $("#voiceSpeakerSelect");
-    if (settings.microphoneId && ![...mic.options].some(option => option.value === settings.microphoneId)) mic.add(new Option("Previously selected microphone", settings.microphoneId));
-    if (settings.speakerId && ![...speaker.options].some(option => option.value === settings.speakerId)) speaker.add(new Option("Previously selected speaker", settings.speakerId));
-    mic.value = settings.microphoneId;
-    speaker.value = settings.speakerId;
+    const micSelects = [$("#voiceMicSelect"), $("#voiceCallMicSelect")];
+    const speakerSelects = [$("#voiceSpeakerSelect"), $("#voiceCallSpeakerSelect")];
+    const canSelectSpeaker = typeof $("#remoteAudio").setSinkId === "function";
+    speakerSelects.forEach(select => { select.disabled = !canSelectSpeaker; });
+    for (const select of micSelects) {
+      if (settings.microphoneId && ![...select.options].some(option => option.value === settings.microphoneId)) select.add(new Option("Previously selected microphone", settings.microphoneId));
+      select.value = settings.microphoneId;
+    }
+    for (const select of speakerSelects) {
+      if (settings.speakerId && ![...select.options].some(option => option.value === settings.speakerId)) select.add(new Option("Previously selected speaker", settings.speakerId));
+      select.value = settings.speakerId;
+    }
     void checkVoiceRelaySupport();
   }
 
@@ -70,28 +95,40 @@
     }
   }
 
-  async function refreshAudioDevices() {
-    const button = $("#refreshAudioDevices");
-    button.disabled = true;
+  async function refreshAudioDevices({ requestPermission = true, quiet = false } = {}) {
+    const buttons = [$("#refreshAudioDevices"), $("#voiceRefreshDevices")].filter(Boolean);
+    buttons.forEach(button => { button.disabled = true; });
     try {
-      if (!navigator.mediaDevices?.getUserMedia || !navigator.mediaDevices?.enumerateDevices) throw new Error("Audio devices are not available in this app context.");
-      const temporaryStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-      temporaryStream.getTracks().forEach(track => track.stop());
+      if (!navigator.mediaDevices?.enumerateDevices) throw new Error("Audio devices are not available in this app context.");
+      let permissionError = "";
+      if (requestPermission && navigator.mediaDevices.getUserMedia) {
+        try {
+          const temporaryStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+          temporaryStream.getTracks().forEach(track => track.stop());
+        } catch (error) { permissionError = error.message || "Microphone permission is unavailable."; }
+      }
       const devices = await navigator.mediaDevices.enumerateDevices();
-      const mic = $("#voiceMicSelect"); const speaker = $("#voiceSpeakerSelect");
       const selectedMic = voiceSettings().microphoneId; const selectedSpeaker = voiceSettings().speakerId;
+      const microphones = devices.filter(device => device.kind === "audioinput");
       function fill(select, kind, selected, fallback) {
+        if (!select) return;
         const options = devices.filter(device => device.kind === kind);
-        select.replaceChildren(new Option("System default", ""));
+        select.replaceChildren(new Option(translate("System default"), ""));
         options.forEach((device, index) => select.add(new Option(device.label || `${fallback} ${index + 1}`, device.deviceId)));
         select.value = options.some(device => device.deviceId === selected) ? selected : "";
       }
-      fill(mic, "audioinput", selectedMic, "Microphone");
-      fill(speaker, "audiooutput", selectedSpeaker, "Speaker");
-      toast("Audio devices refreshed.");
+      for (const id of ["#voiceMicSelect", "#voiceCallMicSelect"]) fill($(id), "audioinput", selectedMic, "Microphone");
+      for (const id of ["#voiceSpeakerSelect", "#voiceCallSpeakerSelect"]) fill($(id), "audiooutput", selectedSpeaker, "Speaker");
+      const notice = $("#voiceDeviceNotice");
+      if (!microphones.length) notice.textContent = "No microphone detected. Calls can still be joined muted so you can listen.";
+      else if (permissionError && voiceUiState.status !== "idle") notice.textContent = "Microphone access is unavailable. You can stay muted or allow access and try again.";
+      if (!quiet) {
+        if (!microphones.length) toast("No microphone found. You can still join calls muted.");
+        else toast("Audio devices refreshed.");
+      }
     } catch (error) {
-      toast(error.message || "Could not read audio devices.", true);
-    } finally { button.disabled = false; }
+      if (!quiet) toast(error.message || "Could not read audio devices.", true);
+    } finally { buttons.forEach(button => { button.disabled = false; }); }
   }
 
   async function applyPlaybackSettings() {
@@ -99,14 +136,21 @@
     if (!audio) return;
     const settings = voiceSettings();
     audio.volume = Math.max(0, Math.min(100, settings.volume)) / 100;
+    audio.muted = settings.speakerMuted;
     if (typeof audio.setSinkId === "function") {
       try { await audio.setSinkId(settings.speakerId); }
-      catch { toast("That speaker could not be selected. The system default will be used.", true); }
+      catch {
+        try { await audio.setSinkId(""); } catch {}
+        localStorage.setItem("ghostchat.voice.speaker", "");
+        $("#voiceSpeakerSelect").value = "";
+        $("#voiceCallSpeakerSelect").value = "";
+        toast("That speaker is unavailable. The system default will be used.", true);
+      }
     }
   }
 
   function toast(message, error = false) {
-    const node = $("#toast"); node.textContent = message; node.classList.toggle("error", error); node.classList.add("show");
+    const node = $("#toast"); node.textContent = translate(message); node.classList.toggle("error", error); node.classList.add("show");
     clearTimeout(toast.timer); toast.timer = setTimeout(() => node.classList.remove("show"), 3000);
   }
   function friendRequestsStorageKey() { return `ghostchat.seenFriendRequests.${state.base || "local"}.${state.user?.id || ""}`; }
@@ -162,6 +206,30 @@
       if (checkButton) checkButton.disabled = false;
     }
   }
+  async function startupUpdateCheck() {
+    const gate = $("#startupUpdateGate");
+    const title = $("#startupUpdateTitle");
+    const status = $("#startupUpdateStatus");
+    const retry = $("#retryStartupUpdate");
+    gate.classList.remove("hidden"); retry.classList.add("hidden");
+    title.textContent = translate("Checking for updates"); status.textContent = translate("Getting the latest version ready…");
+    $("#startupUpdateProgress").style.width = "24%";
+    try {
+      if (!invoke) { gate.classList.add("hidden"); return true; }
+      const result = await invoke("check_for_update");
+      if (!result.configured || !result.available) { gate.classList.add("hidden"); return true; }
+      state.updateVersion = result.version;
+      title.textContent = translate("Update required"); status.textContent = `${translate("This app version is out of date.")} GhostChat ${result.version} ${translate("is downloading")}…`;
+      $("#startupUpdateProgress").style.width = "42%";
+      await invoke("install_update", { expectedVersion: result.version });
+      return false;
+    } catch (error) {
+      title.textContent = translate("Update failed"); status.textContent = error.message || translate("Could not check or install the required update.");
+      $("#startupUpdateProgress").style.width = "100%"; retry.classList.remove("hidden");
+      return false;
+    }
+  }
+  $("#retryStartupUpdate").onclick = () => { $("#retryStartupUpdate").disabled = true; void boot().finally(() => { $("#retryStartupUpdate").disabled = false; }); };
   async function installUpdate() {
     if (!state.updateVersion) return;
     const button = $("#installUpdate");
@@ -245,8 +313,35 @@
     $("#serverLabel").textContent = label; $("#serverAddressInput").value = state.base;
   }
   function avatarText(value = "G") { return (value.trim().replace(/^@/, "")[0] || "G").toUpperCase(); }
-  function create(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; }
+  function setAvatar(node, name = "G", image = null) {
+    if (!node) return;
+    node.replaceChildren();
+    if (image) { const img = document.createElement("img"); img.src = image; img.alt = ""; img.draggable = false; node.append(img); }
+    else node.textContent = avatarText(name);
+  }
+  function create(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = translate(text); return node; }
+  async function compressAvatar(file) {
+    if (!file || !file.type.startsWith("image/")) throw new Error(translate("Choose an image file."));
+    const bitmap = await createImageBitmap(file);
+    const side = Math.min(bitmap.width, bitmap.height);
+    const canvas = document.createElement("canvas"); canvas.width = 256; canvas.height = 256;
+    const context = canvas.getContext("2d", { alpha: false }); context.fillStyle = "#36313f"; context.fillRect(0, 0, 256, 256);
+    context.drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, 256, 256); bitmap.close();
+    for (const quality of [0.82, 0.72, 0.62, 0.52, 0.42]) {
+      const data = canvas.toDataURL("image/jpeg", quality);
+      if (data.length <= 46_000) return data;
+    }
+    throw new Error(translate("That photo is too detailed. Choose a smaller image."));
+  }
+  async function handleAvatarFile(input, preview, save) {
+    const file = input.files?.[0]; if (!file) return;
+    try { const image = await compressAvatar(file); save(image); setAvatar($(preview), state.user?.display_name || $("#createForm [name=display_name]")?.value || "G", image); }
+    catch (error) { toast(error.message || translate("Could not use that photo."), true); }
+    finally { input.value = ""; }
+  }
+  function setSignupAvatar(value) { signupAvatarData = value; }
   function setTheme() {
+    applyLanguage();
     const theme = localStorage.getItem("ghostchat.theme") || "dark";
     document.body.classList.toggle("light", theme === "light"); $("#themeSelect").value = theme;
     const size = localStorage.getItem("ghostchat.textSize") || "15";
@@ -255,8 +350,9 @@
   function updateIdentity() {
     $("#accountName").textContent = state.user.display_name;
     $("#accountTag").textContent = `@${state.user.username}`;
-    $("#accountAvatar").textContent = avatarText(state.user.display_name);
-    $("#profileButton").textContent = avatarText(state.user.display_name);
+    setAvatar($("#accountAvatar"), state.user.display_name, state.user.avatar_data);
+    setAvatar($("#profileButton"), state.user.display_name, state.user.avatar_data);
+    $("#profileTagLabel").textContent = `@${state.user.username}`;
   }
   async function enterApp() {
     try { state.user = await request("/v1/me"); }
@@ -267,8 +363,8 @@
   }
   function showWelcome() {
     if (state.page !== "messages" || state.active) return;
-    $("#chatTitle").textContent = "Your quiet corner"; $("#chatSubtitle").textContent = "Choose a friend or find someone new.";
-    $("#chatAvatar").textContent = "G"; $("#messagePanel").classList.add("hidden"); $("#pageContent").classList.remove("hidden");
+    $("#chatTitle").textContent = translate("Your quiet corner"); $("#chatSubtitle").textContent = translate("Choose a friend or find someone new.");
+    setAvatar($("#chatAvatar"), "G"); $("#messagePanel").classList.add("hidden"); $("#pageContent").classList.remove("hidden");
     $("#pageContent").innerHTML = "";
     const card = create("div", "welcome-card");
     card.append(create("div", "welcome-orb", "◌"), create("h2", "", "A little more room to talk."), create("p", "", "Find someone by username, send a friend request, then start a private conversation. Your account does not need an email or phone number."));
@@ -282,7 +378,7 @@
     if (page === "friends") state.searchTab = state.pending?.length ? "pending" : "all";
     $$(".rail-button[data-page]").forEach(button => button.classList.toggle("active", button.dataset.page === page));
     const titles = { messages: "Messages", friends: "Friends", search: "Find people", searchMessages: "Search messages" };
-    $("#sidebarTitle").textContent = titles[page]; $("#sidebarAction").title = page === "messages" ? "Start a conversation" : "Find people";
+    $("#sidebarTitle").textContent = translate(titles[page]); $("#sidebarAction").title = translate(page === "messages" ? "Start a conversation" : "Find people");
     if (page !== "messages") { $("#messagePanel").classList.add("hidden"); $("#pageContent").classList.remove("hidden"); renderPage(); }
     else if (state.active) openConversation(state.active.id, false);
     else showWelcome();
@@ -295,17 +391,17 @@
       const label = create("div", "section-label", "DIRECT MESSAGES"); root.append(label);
       for (const convo of state.conversations) {
         const row = create("button", `list-row${state.active?.id === convo.id ? " active" : ""}`); row.onclick = () => openConversation(convo.id);
-        row.append(create("div", "mini-avatar", avatarText(convo.display_name)));
+        const avatar = create("div", "mini-avatar"); setAvatar(avatar, convo.display_name, convo.avatar_data); row.append(avatar);
         const copy = create("div", "list-copy"); copy.append(create("strong", "", convo.display_name), create("span", "", convo.last_message || `@${convo.username}`)); row.append(copy); root.append(row);
       }
       return;
     }
     if (state.page === "friends") {
       const requestsLabel = create("div", "section-label", "REQUESTS"); root.append(requestsLabel);
-      for (const request of state.pending || []) { const row = create("button", "list-row"); row.append(create("div", "mini-avatar", avatarText(request.display_name))); const copy = create("div", "list-copy"); copy.append(create("strong", "", request.display_name), create("span", "", `@${request.username}`)); row.append(copy); root.append(row); }
+      for (const request of state.pending || []) { const row = create("button", "list-row"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, request.display_name, request.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", request.display_name), create("span", "", `@${request.username}`)); row.append(copy); root.append(row); }
       if (!(state.pending || []).length) root.append(create("div", "empty-list", "No pending requests."));
       root.append(create("div", "section-label", "YOUR FRIENDS"));
-      for (const friend of state.friends) { const row = create("button", "list-row"); row.onclick = () => startConversation(friend.id); row.append(create("div", "mini-avatar", avatarText(friend.display_name))); const copy = create("div", "list-copy"); copy.append(create("strong", "", friend.display_name), create("span", "", `@${friend.username}`)); row.append(copy); root.append(row); }
+      for (const friend of state.friends) { const row = create("button", "list-row"); row.onclick = () => startConversation(friend.id); const avatar = create("div", "mini-avatar"); setAvatar(avatar, friend.display_name, friend.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", friend.display_name), create("span", "", `@${friend.username}`)); row.append(copy); root.append(row); }
       if (!state.friends.length) root.append(create("div", "empty-list", "Friends you add will show up here."));
       return;
     }
@@ -316,10 +412,10 @@
     const page = create("div", "content-page");
     if (state.page === "search") {
       page.append(create("h2", "", "Find people"), create("p", "muted", "Search for a username or user ID. Users are not listed publicly."));
-      const form = create("form", "search-form"); const input = create("input"); input.placeholder = "Search @username or user ID"; input.setAttribute("aria-label", "Search people"); input.minLength = 2;
+      const form = create("form", "search-form"); const input = create("input"); input.placeholder = translate("Search @username or user ID"); input.setAttribute("aria-label", translate("Search people")); input.minLength = 2;
       const submit = create("button", "button primary", "Search"); submit.type = "submit"; form.append(input, submit); page.append(form);
       const results = create("div", "search-results"); page.append(results);
-      form.onsubmit = async event => { event.preventDefault(); if (input.value.trim().length < 2) return; results.replaceChildren(create("div", "empty-list", "Searching…")); try { const users = await request(`/v1/users/search?q=${encodeURIComponent(input.value.trim())}`); results.replaceChildren(); if (!users.length) results.append(create("div", "empty-list", "No users found. Check the spelling and try again.")); for (const user of users) { const card = create("div", "result-card"); card.append(create("div", "mini-avatar", avatarText(user.display_name))); const copy = create("div", "list-copy"); copy.append(create("strong", "", user.display_name), create("span", "", `@${user.username} · ${user.id.slice(0, 8)}`)); card.append(copy); const add = create("button", "button secondary", "Add friend"); add.onclick = async () => { try { await request("/v1/friends", { method: "POST", body: JSON.stringify({ user_id: user.id }) }); add.textContent = "Request sent"; add.disabled = true; toast("Friend request sent."); } catch (error) { toast(error.message, true); } }; card.append(add); results.append(card); } } catch (error) { results.replaceChildren(create("div", "empty-list", error.message)); } };
+      form.onsubmit = async event => { event.preventDefault(); if (input.value.trim().length < 2) return; results.replaceChildren(create("div", "empty-list", "Searching…")); try { const users = await request(`/v1/users/search?q=${encodeURIComponent(input.value.trim())}`); results.replaceChildren(); if (!users.length) results.append(create("div", "empty-list", "No users found. Check the spelling and try again.")); for (const user of users) { const card = create("div", "result-card"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, user.display_name, user.avatar_data); card.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", user.display_name), create("span", "", `@${user.username} · ${user.id.slice(0, 8)}`)); card.append(copy); const add = create("button", "button secondary", "Add friend"); add.onclick = async () => { try { await request("/v1/friends", { method: "POST", body: JSON.stringify({ user_id: user.id }) }); add.textContent = translate("Request sent"); add.disabled = true; toast(translate("Friend request sent.")); } catch (error) { toast(error.message, true); } }; card.append(add); results.append(card); } } catch (error) { results.replaceChildren(create("div", "empty-list", error.message)); } };
       setTimeout(() => input.focus(), 20);
     } else if (state.page === "friends") {
       page.append(create("h2", "", "Friends"), create("p", "muted", "Manage requests and start a private conversation."));
@@ -329,14 +425,14 @@
       const list = create("div", "friend-results"); page.append(list);
       if (state.searchTab === "pending") {
         if (!(state.pending || []).length) list.append(create("div", "empty-list", "No friend requests right now."));
-        for (const item of state.pending || []) { const row = create("div", "request-card"); row.append(create("div", "mini-avatar", avatarText(item.display_name))); const copy = create("div", "list-copy"); copy.append(create("strong", "", item.display_name), create("span", "", `@${item.username}`)); row.append(copy); const actions = create("div", "request-actions"); const accept = create("button", "button primary", "Accept"); accept.onclick = () => respondFriend(item.id, "accept"); const reject = create("button", "button secondary", "Ignore"); reject.onclick = () => respondFriend(item.id, "reject"); actions.append(accept, reject); row.append(actions); list.append(row); }
+        for (const item of state.pending || []) { const row = create("div", "request-card"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, item.display_name, item.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", item.display_name), create("span", "", `@${item.username}`)); row.append(copy); const actions = create("div", "request-actions"); const accept = create("button", "button primary", "Accept"); accept.onclick = () => respondFriend(item.id, "accept"); const reject = create("button", "button secondary", "Ignore"); reject.onclick = () => respondFriend(item.id, "reject"); actions.append(accept, reject); row.append(actions); list.append(row); }
       } else {
         if (!state.friends.length) list.append(create("div", "empty-list", "No friends yet. Use Find people to add someone."));
-        for (const friend of state.friends) { const row = create("div", "result-card"); row.append(create("div", "mini-avatar", avatarText(friend.display_name))); const copy = create("div", "list-copy"); copy.append(create("strong", "", friend.display_name), create("span", "", `@${friend.username}`)); row.append(copy); const message = create("button", "button primary", "Message"); message.onclick = () => startConversation(friend.id); row.append(message); list.append(row); }
+        for (const friend of state.friends) { const row = create("div", "result-card"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, friend.display_name, friend.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", friend.display_name), create("span", "", `@${friend.username}`)); row.append(copy); const message = create("button", "button primary", "Message"); message.onclick = () => startConversation(friend.id); row.append(message); list.append(row); }
       }
     } else if (state.page === "searchMessages") {
       page.append(create("h2", "", "Search messages"), create("p", "muted", "Search messages from conversations you belong to."));
-      const form = create("form", "search-form"); const input = create("input"); input.placeholder = "Search in your messages"; input.minLength = 2; const go = create("button", "button primary", "Search"); go.type = "submit"; form.append(input, go); page.append(form); const results = create("div", "search-results"); page.append(results);
+      const form = create("form", "search-form"); const input = create("input"); input.placeholder = translate("Search in your messages"); input.minLength = 2; const go = create("button", "button primary", "Search"); go.type = "submit"; form.append(input, go); page.append(form); const results = create("div", "search-results"); page.append(results);
       form.onsubmit = async event => { event.preventDefault(); try { const rows = await request(`/v1/messages/search?q=${encodeURIComponent(input.value.trim())}`); results.replaceChildren(); if (!rows.length) results.append(create("div", "empty-list", "No matching messages.")); for (const row of rows) { const card = create("button", "result-card"); card.style.textAlign = "left"; const copy = create("div", "list-copy"); copy.append(create("strong", "", row.sender_name), create("span", "", row.content)); card.append(copy); card.onclick = () => { setPage("messages"); openConversation(row.conversation_id); }; results.append(card); } } catch (error) { toast(error.message, true); } };
       setTimeout(() => input.focus(), 20);
     }
@@ -382,7 +478,7 @@
     const convo = state.conversations.find(item => item.id === id);
     if (!convo) { await refreshConversations(); }
     state.active = state.conversations.find(item => item.id === id) || { id, display_name: "Conversation", username: "" };
-    $("#chatTitle").textContent = state.active.display_name; $("#chatSubtitle").textContent = `@${state.active.username}`; $("#chatAvatar").textContent = avatarText(state.active.display_name);
+    $("#chatTitle").textContent = state.active.display_name; $("#chatSubtitle").textContent = `@${state.active.username}`; setAvatar($("#chatAvatar"), state.active.display_name, state.active.avatar_data);
     renderVoiceControls();
     await loadMessages(false);
   }
@@ -393,7 +489,7 @@
   function appendMessage(message, prepend = false) {
     const container = $("#messages"); if ($(`[data-message-id="${CSS.escape(message.id)}"]`, container)) return;
     const row = create("article", "message"); row.dataset.messageId = message.id; row.dataset.sequence = String(message.sequence);
-    row.append(create("div", "mini-avatar", avatarText(message.sender_name)));
+    const avatar = create("div", "mini-avatar"); setAvatar(avatar, message.sender_name, message.sender_avatar); row.append(avatar);
     const main = create("div", "message-main"); const meta = create("div", "message-meta"); meta.append(create("strong", "", message.sender_name)); const time = create("time", "", timeLabel(message.created_at)); time.dateTime = message.created_at; meta.append(time); if (message.edited_at) meta.append(create("span", "optional", "edited"));
     main.append(meta, create("div", "message-body", message.content)); row.append(main);
     if (message.sender_id === state.user.id) {
@@ -430,7 +526,7 @@
     catch (error) { toast(error.message, true); }
   }
   function setConnection(online) {
-    const node = $("#connectionState"); node.classList.toggle("offline", !online); node.innerHTML = `<i class="status-dot ${online ? "" : "offline"}"></i>${online ? "Connected" : "Reconnecting"}`;
+    const node = $("#connectionState"); node.classList.toggle("offline", !online); node.innerHTML = `<i class="status-dot ${online ? "" : "offline"}"></i>${translate(online ? "Connected" : "Reconnecting")}`;
   }
   function connectSocket() {
     if (state.socket) { try { state.socket.close(); } catch {} }
@@ -452,6 +548,7 @@
         refreshConversations();
       }
       else if (data.type === "friend_request") { void refreshFriends(); }
+      else if (data.type === "profile_updated") { void refreshFriends({ notifyNew: false }); void refreshConversations(); if (state.active) void loadMessages(false); }
       else if (data.type === "friend_request_accepted") {
         void refreshFriends();
         if (data.by_user_id !== state.user?.id) {
@@ -476,27 +573,47 @@
     const activeCall = !["idle", "incoming"].includes(voice.status);
     const visible = !!state.active || voice.status !== "idle";
     $("#voiceTools").classList.toggle("hidden", !visible);
-    $("#voiceCallButton").classList.toggle("hidden", voice.status === "incoming");
-    $("#voiceCallButton").textContent = activeCall ? "×" : "☎";
-    $("#voiceCallButton").title = activeCall ? "End call" : "Start voice call";
-    $("#voiceCallButton").setAttribute("aria-label", activeCall ? "End call" : "Start voice call");
-    $("#voiceCallButton").disabled = !activeCall && !state.active;
-    $("#voiceMicButton").classList.toggle("hidden", !activeCall);
-    $("#voiceMicButton").textContent = voice.micMuted ? "🔇" : "🎙";
-    $("#voiceMicButton").title = voice.pushToTalk ? (voice.micMuted ? "Hold Space to talk" : "Microphone is live") : (voice.micMuted ? "Unmute microphone" : "Mute microphone");
-    $("#voiceMicButton").setAttribute("aria-label", $("#voiceMicButton").title);
-    $("#voiceMicButton").setAttribute("aria-pressed", String(voice.micMuted));
-    $("#voiceShareButton").classList.toggle("hidden", !activeCall || !["connected", "reconnecting"].includes(voice.status));
-    $("#voiceShareButton").textContent = voice.screenSharing ? "■" : "▣";
-    $("#voiceShareButton").title = voice.screenSharing ? "Stop sharing screen" : "Share screen";
-    $("#voiceShareButton").disabled = !!voice.screenStarting;
-    $("#voiceAcceptButton").classList.toggle("hidden", voice.status !== "incoming");
-    $("#voiceDeclineButton").classList.toggle("hidden", voice.status !== "incoming");
+    $("#voiceCallButton").classList.toggle("hidden", !state.active || voice.status !== "idle");
+    $("#voiceCallButton").disabled = !state.active;
     const labels = { idle: "Voice ready", incoming: "Incoming call", calling: "Calling…", connecting: "Connecting…", connected: "In voice", reconnecting: "Reconnecting…" };
-    $("#voiceStatus").textContent = labels[voice.status] || "Voice";
+    $("#voiceStatus").textContent = translate(labels[voice.status] || "Voice");
     const conversation = state.conversations.find(item => item.id === voice.conversationId);
     const peer = conversation?.display_name || "Your friend";
-    $("#voiceStageStatus").textContent = voice.status === "incoming" ? `${peer} is calling. Accept to connect your microphone.` : `${peer} · ${labels[voice.status] || "Voice"}${voice.pushToTalk ? " · Hold Space to talk" : ""}`;
+    $("#voicePeerName").textContent = peer;
+    setAvatar($("#voicePeerAvatar"), peer, conversation?.avatar_data);
+    $("#voiceStageStatus").textContent = translate(voice.status === "incoming" ? "Incoming call" : (labels[voice.status] || "Voice call"));
+    $("#voiceStageDot").classList.toggle("connecting", !["connected", "incoming"].includes(voice.status));
+    $("#voiceStageDot").classList.toggle("offline", voice.status === "reconnecting");
+    $("#voiceDeviceRow").classList.toggle("hidden", !activeCall);
+    $("#voiceStageMicButton").classList.toggle("hidden", !activeCall);
+    $("#voiceStageMicButton").classList.toggle("is-muted", voice.micMuted && (!voice.pushToTalk || voice.micManuallyMuted || !voice.micAvailable));
+    $("#voiceStageMicButton").setAttribute("aria-pressed", String(voice.micMuted));
+    $("#voiceStageMicIcon").textContent = voice.micMuted ? "🎙" : "🎤";
+    $("#voiceStageMicLabel").textContent = translate(!voice.micAvailable ? "Try microphone" : voice.pushToTalk ? (voice.micManuallyMuted ? "Mic off" : (voice.pushToTalkPressed ? "Speaking" : "Hold Space")) : (voice.micMuted ? "Turn mic on" : "Mute mic"));
+    $("#voiceStageMicButton").title = !voice.micAvailable ? "Try to connect a microphone; if none is available you can keep listening muted" : (voice.micMuted ? "Turn microphone on" : "Mute microphone");
+    $("#voiceOutputButton").classList.toggle("hidden", !activeCall);
+    $("#voiceOutputButton").classList.toggle("is-muted", voice.speakerMuted);
+    $("#voiceOutputButton").setAttribute("aria-pressed", String(voice.speakerMuted));
+    $("#voiceOutputIcon").textContent = voice.speakerMuted ? "🔇" : "🔊";
+    $("#voiceOutputLabel").textContent = translate(voice.speakerMuted ? "Sound off" : "Sound on");
+    $("#voiceStageShareButton").classList.toggle("hidden", !activeCall || !["connected", "reconnecting"].includes(voice.status));
+    $("#voiceStageShareIcon").textContent = voice.screenSharing ? "■" : "▣";
+    $("#voiceStageShareLabel").textContent = translate(voice.screenStarting ? "Starting…" : (voice.screenSharing ? "Stop sharing" : "Share screen"));
+    $("#voiceStageShareButton").disabled = !!voice.screenStarting;
+    $("#voiceStageAccept").classList.toggle("hidden", voice.status !== "incoming");
+    $("#voiceStageDecline").classList.toggle("hidden", voice.status !== "incoming");
+    $("#voiceHangupButton").classList.toggle("hidden", !activeCall);
+    $("#voiceDeviceNotice").textContent = voice.status === "incoming"
+      ? "Join the call when you are ready. If no microphone is available, you can still listen muted."
+      : !voice.micAvailable && activeCall
+        ? (voice.micUnavailableReason || "No microphone found. You joined muted and can still listen.")
+        : voice.pushToTalk
+          ? "Push to talk is on. Hold Space to speak; your microphone stays muted otherwise."
+          : voice.micMuted && activeCall
+            ? "Your microphone is off. You can still hear the call."
+            : activeCall
+              ? "Your microphone is on. Use the controls above to switch devices or mute."
+              : "Choose your microphone and speaker, or join muted and listen.";
     const hasRemoteVideo = !!voice.remoteVideoStream?.getVideoTracks().some(track => track.readyState === "live");
     $("#remoteScreen").classList.toggle("hidden", !hasRemoteVideo);
     $("#voiceStage").classList.toggle("hidden", voice.status === "idle");
@@ -570,9 +687,11 @@
   }
 
   $$(".auth-tab").forEach(button => button.addEventListener("click", () => setAuthTab(button.dataset.authTab)));
+  $("#signupAvatar").addEventListener("change", event => { void handleAvatarFile(event.currentTarget, "#signupAvatarPreview", setSignupAvatar); });
+  $("#profileAvatarInput").addEventListener("change", event => { void handleAvatarFile(event.currentTarget, "#profileAvatarPreview", value => { profileAvatarData = value; }); });
   $("#createForm").addEventListener("submit", async event => {
     event.preventDefault(); const form = new FormData(event.currentTarget); const button = event.currentTarget.querySelector("button[type=submit]"); button.disabled = true;
-    try { const reply = await request("/v1/accounts", { method: "POST", body: JSON.stringify({ display_name: form.get("display_name"), username: form.get("username") || null }) }); await authenticateReply(reply); }
+    try { const reply = await request("/v1/accounts", { method: "POST", body: JSON.stringify({ display_name: form.get("display_name"), avatar_data: signupAvatarData }) }); await authenticateReply(reply); }
     catch (error) { toast(error.message, true); } finally { button.disabled = false; }
   });
   $("#recoverForm").addEventListener("submit", async event => {
@@ -592,7 +711,12 @@
   $("#messageInput").addEventListener("input", event => { event.target.style.height = "auto"; event.target.style.height = `${Math.min(event.target.scrollHeight, 180)}px`; });
   $("#loadOlder").onclick = () => loadMessages(true);
   function openSettings() {
+    $(".settings-section").forEach(section => { if (section.querySelector("#profileNameInput")) section.classList.toggle("hidden", !state.user); });
     $("#serverAddressInput").value = state.base;
+    $("#profileNameInput").value = state.user?.display_name || "";
+    profileAvatarData = state.user?.avatar_data || null;
+    setAvatar($("#profileAvatarPreview"), state.user?.display_name, profileAvatarData);
+    $("#languageSelect").value = tr() ? "tr" : "en";
     $("#desktopNotificationsEnabled").checked = localStorage.getItem("ghostchat.desktopNotifications") !== "false";
     populateVoiceSettings();
     $("#settingsDialog").showModal();
@@ -600,6 +724,18 @@
   $("#settingsButton").onclick = openSettings;
   $("#serverSettings").onclick = openSettings;
   $("#profileButton").onclick = openSettings;
+  for (const selector of ["#languageSelect", "#authLanguageSelect"]) $(selector).onchange = event => { localStorage.setItem("ghostchat.language", event.target.value); applyLanguage(); renderSidebar(); if (["friends", "search", "searchMessages"].includes(state.page)) renderPage(); else if (!state.active) showWelcome(); renderVoiceControls(); };
+  $("#removeProfileAvatar").onclick = () => { profileAvatarData = null; setAvatar($("#profileAvatarPreview"), state.user?.display_name); };
+  $("#saveProfile").onclick = async event => {
+    const button = event.currentTarget; button.disabled = true;
+    try {
+      state.user = await request("/v1/me/profile", { method: "PATCH", body: JSON.stringify({ display_name: $("#profileNameInput").value, avatar_data: profileAvatarData }) });
+      updateIdentity(); await refreshFriends({ notifyNew: false }); await refreshConversations();
+      if (state.active) { await loadMessages(false); }
+      toast(translate("Profile saved."));
+    } catch (error) { toast(error.message, true); }
+    finally { button.disabled = false; }
+  };
   $("#desktopNotificationsEnabled").onchange = event => localStorage.setItem("ghostchat.desktopNotifications", String(event.target.checked));
   $("#testDesktopNotification").onclick = async () => {
     const button = $("#testDesktopNotification"); button.disabled = true;
@@ -610,20 +746,44 @@
     finally { button.disabled = false; }
   };
   $("#refreshAudioDevices").onclick = refreshAudioDevices;
+  $("#voiceRefreshDevices").onclick = () => void refreshAudioDevices();
+  function bindVoiceDeviceSelect(selectId, companionId, storageKey, kind) {
+    $(selectId).addEventListener("change", async event => {
+      const deviceId = event.currentTarget.value;
+      localStorage.setItem(storageKey, deviceId);
+      const companion = $(companionId);
+      if (companion && [...companion.options].some(option => option.value === deviceId)) companion.value = deviceId;
+      try {
+        if (kind === "microphone" && ["calling", "connecting", "connected", "reconnecting"].includes(voiceClient.getState().status)) {
+          await voiceClient.setMicrophoneDevice(deviceId);
+        } else if (kind === "speaker") await applyPlaybackSettings();
+      } catch (error) { toast(error.message || "Could not change the audio device.", true); }
+      renderVoiceControls();
+    });
+  }
+  bindVoiceDeviceSelect("#voiceMicSelect", "#voiceCallMicSelect", "ghostchat.voice.microphone", "microphone");
+  bindVoiceDeviceSelect("#voiceCallMicSelect", "#voiceMicSelect", "ghostchat.voice.microphone", "microphone");
+  bindVoiceDeviceSelect("#voiceSpeakerSelect", "#voiceCallSpeakerSelect", "ghostchat.voice.speaker", "speaker");
+  bindVoiceDeviceSelect("#voiceCallSpeakerSelect", "#voiceSpeakerSelect", "ghostchat.voice.speaker", "speaker");
   $("#voiceCallButton").onclick = () => {
-    if (["calling", "connecting", "connected", "reconnecting"].includes(voiceClient.getState().status)) voiceClient.hangup();
-    else if (state.active) {
+    if (state.active) {
       $("#voiceCallButton").disabled = true;
       void voiceClient.start(state.active).catch(error => toast(error.message, true)).finally(renderVoiceControls);
     }
   };
-  $("#voiceAcceptButton").onclick = () => {
-    $("#voiceAcceptButton").disabled = true;
-    void voiceClient.accept().catch(error => toast(error.message, true)).finally(() => { $("#voiceAcceptButton").disabled = false; renderVoiceControls(); });
+  $("#voiceStageAccept").onclick = () => {
+    $("#voiceStageAccept").disabled = true;
+    void voiceClient.accept().catch(error => toast(error.message, true)).finally(() => { $("#voiceStageAccept").disabled = false; renderVoiceControls(); });
   };
-  $("#voiceDeclineButton").onclick = () => voiceClient.decline();
-  $("#voiceMicButton").onclick = () => voiceClient.toggleMicrophone();
-  $("#voiceShareButton").onclick = () => void voiceClient.toggleScreenSharing().catch(error => toast(error.message, true));
+  $("#voiceStageDecline").onclick = () => voiceClient.decline();
+  $("#voiceHangupButton").onclick = () => voiceClient.hangup();
+  $("#voiceStageMicButton").onclick = () => void voiceClient.toggleMicrophone().catch(error => toast(error.message, true));
+  $("#voiceOutputButton").onclick = () => {
+    localStorage.setItem("ghostchat.voice.speakerMuted", String(!voiceSettings().speakerMuted));
+    void applyPlaybackSettings();
+    renderVoiceControls();
+  };
+  $("#voiceStageShareButton").onclick = () => void voiceClient.toggleScreenSharing().catch(error => toast(error.message, true));
   $("#enableCallAudio").onclick = () => void $("#remoteAudio").play().then(() => $("#enableCallAudio").classList.add("hidden")).catch(() => toast("Call audio is still blocked by Windows or the audio device.", true));
   $("#voiceVolume").addEventListener("input", () => { $("#remoteAudio").volume = Number($("#voiceVolume").value) / 100; });
   $("#saveSettings").onclick = async () => {
@@ -638,6 +798,7 @@
     } else { changedServer = !!state.base; state.base = ""; localStorage.setItem("ghostchat.server", LOCAL_SERVER_SENTINEL); }
     const theme = $("#themeSelect").value; localStorage.setItem("ghostchat.theme", theme); document.body.classList.toggle("light", theme === "light");
     localStorage.setItem("ghostchat.textSize", $("#textSize").value); document.documentElement.style.fontSize = `${$("#textSize").value}px`;
+    applyLanguage();
     if (changedServer) { voiceClient?.hangup(); state.active = null; state.friends = []; state.conversations = []; }
     persistVoiceSettings(); await applyPlaybackSettings();
     updateServerLabels(); $("#settingsDialog").close();
@@ -658,7 +819,11 @@
   $("#installUpdate").onclick = installUpdate;
   window.__TAURI__?.event?.listen?.("ghostchat:update-progress", event => {
     const percent = Number(event.payload);
-    if (Number.isFinite(percent)) $("#updateStatus").textContent = `Downloading update… ${Math.min(100, Math.max(0, percent))}%.`;
+    if (Number.isFinite(percent)) {
+      $("#updateStatus").textContent = `${translate("Downloading update")}… ${Math.min(100, Math.max(0, percent))}%.`;
+      $("#startupUpdateStatus").textContent = `${translate("Downloading update")}… ${Math.min(100, Math.max(0, percent))}%.`;
+      $("#startupUpdateProgress").style.width = `${Math.min(100, Math.max(0, percent))}%`;
+    }
   });
   document.addEventListener("keydown", event => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setPage("search"); }
@@ -668,11 +833,14 @@
   document.addEventListener("keyup", event => { if (event.code === "Space") voiceClient?.setPushToTalk(false); });
   window.addEventListener("blur", () => voiceClient?.setPushToTalk(false));
   setupVoiceClient();
+  void refreshAudioDevices({ requestPermission: false, quiet: true });
+  navigator.mediaDevices?.addEventListener?.("devicechange", () => { void refreshAudioDevices({ requestPermission: false, quiet: true }); });
 
   async function boot() {
     setTheme();
     try { state.localBase = await invoke("api_base"); }
     catch { state.localBase = "http://127.0.0.1:38241"; }
+    if (!await startupUpdateCheck()) return;
     const savedServer = localStorage.getItem("ghostchat.server");
     if (savedServer === LOCAL_SERVER_SENTINEL) {
       state.base = "";

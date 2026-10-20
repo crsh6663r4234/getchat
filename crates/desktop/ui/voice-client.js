@@ -11,7 +11,12 @@
         conversationId: call?.conversationId || incoming?.conversationId || "",
         peerId: call?.peerId || incoming?.peerId || "",
         micMuted: call ? !call.localAudioTrack?.enabled : false,
+        micAvailable: !!call?.localAudioTrack,
+        micManuallyMuted: !!call?.manualMute,
+        pushToTalkPressed: !!call?.pushToTalkPressed,
+        micUnavailableReason: call?.micUnavailableReason || "",
         pushToTalk: !!api.getSettings().pushToTalk,
+        speakerMuted: !!api.getSettings().speakerMuted,
         screenSharing: !!call?.screenStream,
         screenStarting: !!call?.screenStarting,
         remoteAudioStream: call?.remoteAudioStream || null,
@@ -68,6 +73,60 @@
           video: false,
         });
       }
+    }
+
+    async function tryCaptureMicrophone(settings) {
+      try {
+        return { stream: await captureMicrophone(settings), error: "" };
+      } catch (error) {
+        if (error?.name === "NotAllowedError" || error?.name === "PermissionDeniedError") {
+          return { stream: null, error: "Microphone permission was denied. You joined muted and can still listen; allow access to speak." };
+        }
+        if (error?.name === "NotFoundError" || error?.name === "OverconstrainedError") {
+          return { stream: null, error: "No microphone was found. You joined muted and can still listen." };
+        }
+        if (error?.name === "NotReadableError") {
+          return { stream: null, error: "The microphone is busy in another app. You joined muted and can still listen." };
+        }
+        return { stream: null, error: `${explainMediaError(error)} You joined muted and can still listen.` };
+      }
+    }
+
+    function findAudioTransceiver(activeCall) {
+      return activeCall.audioTransceiver || activeCall.pc?.getTransceivers().find(item => item.receiver?.track?.kind === "audio") || null;
+    }
+
+    async function attachMicrophone(activeCall, stream, { keepMuted = false } = {}) {
+      const previousStream = activeCall.localStream;
+      const previousTrack = activeCall.localAudioTrack;
+      const track = stream?.getAudioTracks()[0] || null;
+      const transceiver = findAudioTransceiver(activeCall) || activeCall.pc.addTransceiver("audio", { direction: track ? "sendrecv" : "recvonly" });
+      activeCall.audioTransceiver = transceiver;
+      if (transceiver.sender.track !== track) await transceiver.sender.replaceTrack(track);
+      activeCall.localStream = stream || null;
+      activeCall.localAudioTrack = track;
+      if (track) {
+        const settings = api.getSettings();
+        activeCall.manualMute = !!keepMuted;
+        track.enabled = !activeCall.manualMute && (!settings.pushToTalk || !!activeCall.pushToTalkPressed);
+        transceiver.direction = "sendrecv";
+        track.onended = () => {
+          if (call !== activeCall || activeCall.localAudioTrack !== track) return;
+          activeCall.localAudioTrack = null;
+          activeCall.localStream = null;
+          activeCall.manualMute = true;
+          activeCall.micUnavailableReason = "The microphone disconnected. You are still in the call, muted.";
+          void transceiver.sender.replaceTrack(null).then(() => { transceiver.direction = "recvonly"; notify(); }).catch(notify);
+        };
+        activeCall.micUnavailableReason = "";
+      } else {
+        activeCall.manualMute = true;
+        activeCall.micUnavailableReason ||= "No microphone is available. You joined muted and can still listen.";
+        transceiver.direction = "recvonly";
+      }
+      if (previousTrack && previousTrack !== track) previousTrack.onended = null;
+      if (previousStream && previousStream !== stream) previousStream.getTracks().forEach(item => { item.onended = null; item.stop(); });
+      notify();
     }
 
     function closeCall({ notifyPeer = false, message = "" } = {}) {
@@ -164,13 +223,16 @@
       if (!conversation?.id || !conversation?.peer_id) throw new Error("Open a private conversation before starting a call.");
       const settings = api.getSettings();
       const configuration = await loadIceConfiguration(settings);
-      const localStream = await captureMicrophone(settings);
+      const microphone = await tryCaptureMicrophone(settings);
+      const localStream = microphone.stream;
       const activeCall = {
         conversationId: conversation.id,
         peerId: conversation.peer_id,
         status: "calling",
         localStream,
-        localAudioTrack: localStream.getAudioTracks()[0],
+        localAudioTrack: localStream?.getAudioTracks()[0] || null,
+        micUnavailableReason: microphone.error,
+        manualMute: !localStream,
         remoteAudioStream: null,
         remoteVideoStream: null,
         screenStream: null,
@@ -184,8 +246,11 @@
       call = activeCall;
       try {
         const pc = makePeer(activeCall, configuration);
-        if (settings.pushToTalk) activeCall.localAudioTrack.enabled = false;
-        pc.addTrack(activeCall.localAudioTrack, localStream);
+        activeCall.audioTransceiver = pc.addTransceiver("audio", { direction: activeCall.localAudioTrack ? "sendrecv" : "recvonly" });
+        if (activeCall.localAudioTrack) {
+          if (settings.pushToTalk) activeCall.localAudioTrack.enabled = false;
+          await activeCall.audioTransceiver.sender.replaceTrack(activeCall.localAudioTrack);
+        }
         notify();
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
@@ -214,6 +279,8 @@
         status: "connecting",
         localStream: null,
         localAudioTrack: null,
+        micUnavailableReason: "",
+        manualMute: false,
         remoteAudioStream: null,
         remoteVideoStream: null,
         screenStream: null,
@@ -231,10 +298,10 @@
         const pc = makePeer(activeCall, configuration);
         await pc.setRemoteDescription(request.offer);
         for (const candidate of activeCall.pendingRemoteIce.splice(0)) await pc.addIceCandidate(candidate);
-        activeCall.localStream = await captureMicrophone(settings);
-        activeCall.localAudioTrack = activeCall.localStream.getAudioTracks()[0];
-        if (settings.pushToTalk) activeCall.localAudioTrack.enabled = false;
-        pc.addTrack(activeCall.localAudioTrack, activeCall.localStream);
+        const microphone = await tryCaptureMicrophone(settings);
+        activeCall.micUnavailableReason = microphone.error;
+        activeCall.audioTransceiver = findAudioTransceiver(activeCall) || pc.addTransceiver("audio", { direction: "recvonly" });
+        await attachMicrophone(activeCall, microphone.stream, { keepMuted: !microphone.stream });
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
         send(activeCall.conversationId, activeCall.peerId, "answer", {
@@ -366,16 +433,40 @@
       }
     }
 
-    function toggleMicrophone() {
-      if (!call?.localAudioTrack) return;
+    async function toggleMicrophone() {
+      if (!call) return;
       const settings = api.getSettings();
+      if (!call.localAudioTrack) {
+        const microphone = await tryCaptureMicrophone(settings);
+        if (!microphone.stream) {
+          call.micUnavailableReason = microphone.error || "No microphone is available. You can still listen to the call.";
+          notify();
+          throw new Error(call.micUnavailableReason);
+        }
+        await attachMicrophone(call, microphone.stream, { keepMuted: false });
+        return;
+      }
       if (settings.pushToTalk) {
         call.manualMute = !call.manualMute;
         call.localAudioTrack.enabled = !call.manualMute && !!call.pushToTalkPressed;
       } else {
         call.localAudioTrack.enabled = !call.localAudioTrack.enabled;
+        call.manualMute = !call.localAudioTrack.enabled;
       }
       notify();
+    }
+
+    async function setMicrophoneDevice(deviceId) {
+      if (!call) return;
+      const currentTrack = call.localAudioTrack;
+      const keepMuted = currentTrack ? !!call.manualMute : true;
+      const microphone = await tryCaptureMicrophone({ ...api.getSettings(), microphoneId: deviceId || "" });
+      if (!microphone.stream) {
+        call.micUnavailableReason = microphone.error || "The selected microphone is unavailable. You are still in the call, muted.";
+        notify();
+        throw new Error(call.micUnavailableReason);
+      }
+      await attachMicrophone(call, microphone.stream, { keepMuted });
     }
 
     function setPushToTalk(active) {
@@ -395,7 +486,7 @@
     }
 
     function getState() { return snapshot(); }
-    return { start, accept, decline, hangup, toggleMicrophone, toggleScreenSharing, setPushToTalk, handleSignal, getState };
+    return { start, accept, decline, hangup, toggleMicrophone, setMicrophoneDevice, toggleScreenSharing, setPushToTalk, handleSignal, getState };
   }
 
   window.GhostChatVoice = { create: createVoiceClient };

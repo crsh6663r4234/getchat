@@ -187,6 +187,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/sessions/recover", post(recover_account))
         .route("/v1/sessions", delete(logout))
         .route("/v1/me", get(me))
+        .route("/v1/me/profile", patch(update_profile))
         .route("/v1/data/export", get(export_data))
         .route("/v1/me/account", delete(delete_account))
         .route("/v1/users/search", get(search_users))
@@ -266,6 +267,7 @@ struct PublicUser {
     id: String,
     username: String,
     display_name: String,
+    avatar_data: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -280,6 +282,7 @@ struct SessionReply {
 struct CreateAccount {
     username: Option<String>,
     display_name: String,
+    avatar_data: Option<String>,
 }
 
 async fn create_account(
@@ -321,11 +324,12 @@ async fn create_account(
             "Username must be 3 to 24 letters, numbers, or underscores.",
         ));
     }
+    let avatar_data = validate_avatar(request.avatar_data)?;
     let id = Uuid::new_v4().to_string();
     let recovery = new_secret();
     let verifier = recovery_verifier(&recovery)?;
-    let result = sqlx::query("INSERT INTO users(id,username,display_name,recovery_lookup,recovery_verifier) VALUES(?,?,?,?,?)")
-        .bind(&id).bind(&username).bind(display_name).bind(recovery_lookup(&recovery)).bind(verifier).execute(&state.db).await;
+    let result = sqlx::query("INSERT INTO users(id,username,display_name,recovery_lookup,recovery_verifier,avatar_data) VALUES(?,?,?,?,?,?)")
+        .bind(&id).bind(&username).bind(display_name).bind(recovery_lookup(&recovery)).bind(verifier).bind(&avatar_data).execute(&state.db).await;
     if result.is_err() {
         return Err(ApiError::conflict("That username is already in use."));
     }
@@ -335,6 +339,7 @@ async fn create_account(
             id,
             username,
             display_name: display_name.to_owned(),
+            avatar_data,
         },
         session_token,
         recovery_token: Some(recovery),
@@ -359,15 +364,15 @@ async fn recover_account(
     if request.recovery_token.len() < 32 || request.recovery_token.len() > 128 {
         return Err(ApiError::unauthorized());
     }
-    let row = sqlx::query_as::<_, (String, String, String, String)>(
-        "SELECT id,username,display_name,recovery_verifier FROM users WHERE recovery_lookup=?",
+    let row = sqlx::query_as::<_, (String, String, String, Option<String>, String)>(
+        "SELECT id,username,display_name,avatar_data,recovery_verifier FROM users WHERE recovery_lookup=?",
     )
     .bind(recovery_lookup(&request.recovery_token))
     .fetch_optional(&state.db)
     .await
     .map_err(|_| ApiError::internal())?
     .ok_or_else(ApiError::unauthorized)?;
-    let (id, username, display_name, verifier) = row;
+    let (id, username, display_name, avatar_data, verifier) = row;
     if !verify_recovery(&request.recovery_token, &verifier) {
         return Err(ApiError::unauthorized());
     }
@@ -375,6 +380,7 @@ async fn recover_account(
         id,
         username,
         display_name,
+        avatar_data,
     };
     let mut tx = state.db.begin().await.map_err(|_| ApiError::internal())?;
     sqlx::query("DELETE FROM sessions WHERE user_id=?")
@@ -408,7 +414,7 @@ async fn authenticate(headers: &HeaderMap, state: &AppState) -> Result<PublicUse
     if token.len() < 32 || token.len() > 128 {
         return Err(ApiError::unauthorized());
     }
-    sqlx::query_as::<_, PublicUser>("SELECT u.id,u.username,u.display_name FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND datetime(s.expires_at)>datetime('now')")
+    sqlx::query_as::<_, PublicUser>("SELECT u.id,u.username,u.display_name,u.avatar_data FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND datetime(s.expires_at)>datetime('now')")
         .bind(session_hash(token)).fetch_optional(&state.db).await.map_err(|_| ApiError::internal())?.ok_or_else(ApiError::unauthorized)
 }
 
@@ -505,6 +511,69 @@ async fn me(
     Ok(Json(authenticate(&headers, &state).await?))
 }
 
+#[derive(Deserialize)]
+struct UpdateProfile {
+    display_name: String,
+    avatar_data: Option<String>,
+}
+
+fn validate_avatar(value: Option<String>) -> Result<Option<String>, ApiError> {
+    let Some(value) = value else { return Ok(None) };
+    if value.len() > 48_000 || !value.starts_with("data:image/jpeg;base64,") {
+        return Err(ApiError::bad("Profile photo must be a small JPEG image."));
+    }
+    let encoded = value
+        .strip_prefix("data:image/jpeg;base64,")
+        .ok_or_else(|| ApiError::bad("Profile photo must be a small JPEG image."))?;
+    let bytes = STANDARD
+        .decode(encoded)
+        .map_err(|_| ApiError::bad("Profile photo is not valid."))?;
+    if bytes.len() > 32_000
+        || !bytes.starts_with(&[0xff, 0xd8, 0xff])
+        || !bytes.ends_with(&[0xff, 0xd9])
+    {
+        return Err(ApiError::bad(
+            "Profile photo must be a valid JPEG under 32 KB.",
+        ));
+    }
+    Ok(Some(value))
+}
+
+async fn update_profile(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<UpdateProfile>,
+) -> Result<Json<PublicUser>, ApiError> {
+    let user = authenticate(&headers, &state).await?;
+    let display_name = request.display_name.trim();
+    if !(2..=32).contains(&display_name.chars().count()) {
+        return Err(ApiError::bad("Display name must be 2 to 32 characters."));
+    }
+    let avatar_data = validate_avatar(request.avatar_data)?;
+    sqlx::query("UPDATE users SET display_name=?,avatar_data=? WHERE id=?")
+        .bind(display_name)
+        .bind(&avatar_data)
+        .bind(&user.id)
+        .execute(&state.db)
+        .await
+        .map_err(|_| ApiError::internal())?;
+    let friends = sqlx::query_scalar::<_, String>(
+        "SELECT CASE WHEN user_low=? THEN user_high ELSE user_low END FROM friendships WHERE user_low=? OR user_high=?",
+    )
+    .bind(&user.id).bind(&user.id).bind(&user.id).fetch_all(&state.db).await.map_err(|_| ApiError::internal())?;
+    if !friends.is_empty() {
+        let _ = state.events.send(ServerEvent {
+            recipients: friends,
+            event: serde_json::json!({"type":"profile_updated","user_id":user.id}),
+        });
+    }
+    Ok(Json(PublicUser {
+        display_name: display_name.to_owned(),
+        avatar_data,
+        ..user
+    }))
+}
+
 #[derive(Serialize)]
 struct ExportConversation {
     conversation: ConversationRow,
@@ -524,7 +593,7 @@ async fn export_data(
     headers: HeaderMap,
 ) -> Result<Json<DataExport>, ApiError> {
     let user = authenticate(&headers, &state).await?;
-    let friends = sqlx::query_as::<_, PublicUser>("SELECT u.id,u.username,u.display_name FROM friendships f JOIN users u ON u.id=CASE WHEN f.user_low=? THEN f.user_high ELSE f.user_low END WHERE f.user_low=? OR f.user_high=? ORDER BY u.display_name COLLATE NOCASE")
+    let friends = sqlx::query_as::<_, PublicUser>("SELECT u.id,u.username,u.display_name,u.avatar_data FROM friendships f JOIN users u ON u.id=CASE WHEN f.user_low=? THEN f.user_high ELSE f.user_low END WHERE f.user_low=? OR f.user_high=? ORDER BY u.display_name COLLATE NOCASE")
         .bind(&user.id).bind(&user.id).bind(&user.id).fetch_all(&state.db).await.map_err(|_| ApiError::internal())?;
     let ids = sqlx::query_scalar::<_, String>(
         "SELECT conversation_id FROM conversation_members WHERE user_id=? ORDER BY conversation_id",
@@ -536,7 +605,7 @@ async fn export_data(
     let mut conversations = Vec::with_capacity(ids.len());
     for id in ids {
         let conversation = conversation_row(&state.db, &id, &user.id).await?;
-        let messages = sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,m.client_message_id,m.content,m.created_at,m.edited_at FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? ORDER BY m.rowid")
+        let messages = sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,u.avatar_data AS sender_avatar,m.client_message_id,m.content,m.created_at,m.edited_at FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? ORDER BY m.rowid")
             .bind(&id).fetch_all(&state.db).await.map_err(|_| ApiError::internal())?;
         conversations.push(ExportConversation {
             conversation,
@@ -592,7 +661,7 @@ async fn search_users(
     if q.len() < 2 || q.len() > 64 {
         return Ok(Json(vec![]));
     }
-    let rows = sqlx::query_as::<_, PublicUser>("SELECT id,username,display_name FROM users WHERE id LIKE ? OR username LIKE ? ORDER BY username LIMIT 20")
+    let rows = sqlx::query_as::<_, PublicUser>("SELECT id,username,display_name,avatar_data FROM users WHERE id LIKE ? OR username LIKE ? ORDER BY username LIMIT 20")
         .bind(format!("{q}%")).bind(format!("{q}%")).fetch_all(&state.db).await.map_err(|_| ApiError::internal())?;
     Ok(Json(
         rows.into_iter().filter(|row| row.id != user.id).collect(),
@@ -606,6 +675,7 @@ struct FriendRequestRow {
     user_id: String,
     username: String,
     display_name: String,
+    avatar_data: Option<String>,
 }
 
 async fn send_friend_request(
@@ -678,6 +748,7 @@ async fn send_friend_request(
                 "user_id": user.id,
                 "username": user.username,
                 "display_name": user.display_name,
+                "avatar_data": user.avatar_data,
             }
         }),
     });
@@ -697,7 +768,7 @@ async fn pending_requests(
     headers: HeaderMap,
 ) -> Result<Json<Vec<FriendRequestRow>>, ApiError> {
     let user = authenticate(&headers, &state).await?;
-    let rows = sqlx::query_as::<_, FriendRequestRow>("SELECT r.id,r.created_at,u.id AS user_id,u.username,u.display_name FROM friend_requests r JOIN users u ON u.id=r.sender_id WHERE r.recipient_id=? ORDER BY r.created_at DESC")
+    let rows = sqlx::query_as::<_, FriendRequestRow>("SELECT r.id,r.created_at,u.id AS user_id,u.username,u.display_name,u.avatar_data FROM friend_requests r JOIN users u ON u.id=r.sender_id WHERE r.recipient_id=? ORDER BY r.created_at DESC")
         .bind(user.id).fetch_all(&state.db).await.map_err(|_| ApiError::internal())?;
     Ok(Json(rows))
 }
@@ -770,7 +841,7 @@ async fn list_friends(
     headers: HeaderMap,
 ) -> Result<Json<Vec<PublicUser>>, ApiError> {
     let user = authenticate(&headers, &state).await?;
-    let rows = sqlx::query_as::<_, PublicUser>("SELECT u.id,u.username,u.display_name FROM friendships f JOIN users u ON u.id=CASE WHEN f.user_low=? THEN f.user_high ELSE f.user_low END WHERE f.user_low=? OR f.user_high=? ORDER BY u.display_name COLLATE NOCASE")
+    let rows = sqlx::query_as::<_, PublicUser>("SELECT u.id,u.username,u.display_name,u.avatar_data FROM friendships f JOIN users u ON u.id=CASE WHEN f.user_low=? THEN f.user_high ELSE f.user_low END WHERE f.user_low=? OR f.user_high=? ORDER BY u.display_name COLLATE NOCASE")
         .bind(&user.id).bind(&user.id).bind(&user.id).fetch_all(&state.db).await.map_err(|_| ApiError::internal())?;
     Ok(Json(rows))
 }
@@ -802,6 +873,7 @@ struct ConversationRow {
     peer_id: String,
     username: String,
     display_name: String,
+    avatar_data: Option<String>,
     last_message: Option<String>,
     last_at: Option<String>,
 }
@@ -861,7 +933,7 @@ async fn conversation_row(
     id: &str,
     user_id: &str,
 ) -> Result<ConversationRow, ApiError> {
-    sqlx::query_as::<_, ConversationRow>("SELECT c.id,u.id AS peer_id,u.username,u.display_name,(SELECT content FROM messages m WHERE m.conversation_id=c.id ORDER BY m.rowid DESC LIMIT 1) AS last_message,(SELECT created_at FROM messages m WHERE m.conversation_id=c.id ORDER BY m.rowid DESC LIMIT 1) AS last_at FROM conversations c JOIN conversation_members a ON a.conversation_id=c.id JOIN conversation_members b ON b.conversation_id=c.id JOIN users u ON u.id=b.user_id WHERE c.id=? AND a.user_id=? AND b.user_id<>? LIMIT 1")
+    sqlx::query_as::<_, ConversationRow>("SELECT c.id,u.id AS peer_id,u.username,u.display_name,u.avatar_data,(SELECT content FROM messages m WHERE m.conversation_id=c.id ORDER BY m.rowid DESC LIMIT 1) AS last_message,(SELECT created_at FROM messages m WHERE m.conversation_id=c.id ORDER BY m.rowid DESC LIMIT 1) AS last_at FROM conversations c JOIN conversation_members a ON a.conversation_id=c.id JOIN conversation_members b ON b.conversation_id=c.id JOIN users u ON u.id=b.user_id WHERE c.id=? AND a.user_id=? AND b.user_id<>? LIMIT 1")
         .bind(id).bind(user_id).bind(user_id).fetch_optional(db).await.map_err(|_| ApiError::internal())?.ok_or_else(ApiError::not_found)
 }
 
@@ -894,6 +966,7 @@ struct MessageRow {
     conversation_id: String,
     sender_id: String,
     sender_name: String,
+    sender_avatar: Option<String>,
     client_message_id: String,
     content: String,
     created_at: String,
@@ -935,10 +1008,10 @@ async fn list_messages(
         .get("before")
         .and_then(|value| value.parse::<i64>().ok());
     let rows = if let Some(before) = before {
-        sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,m.client_message_id,m.content,m.created_at,m.edited_at FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? AND m.rowid<? ORDER BY m.rowid DESC LIMIT ?")
+        sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,u.avatar_data AS sender_avatar,m.client_message_id,m.content,m.created_at,m.edited_at FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? AND m.rowid<? ORDER BY m.rowid DESC LIMIT ?")
             .bind(&id).bind(before).bind(limit).fetch_all(&state.db).await.map_err(|_| ApiError::internal())?
     } else {
-        sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,m.client_message_id,m.content,m.created_at,m.edited_at FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? ORDER BY m.rowid DESC LIMIT ?")
+        sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,u.avatar_data AS sender_avatar,m.client_message_id,m.content,m.created_at,m.edited_at FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? ORDER BY m.rowid DESC LIMIT ?")
             .bind(&id).bind(limit).fetch_all(&state.db).await.map_err(|_| ApiError::internal())?
     };
     Ok(Json(rows.into_iter().rev().collect()))
@@ -983,7 +1056,7 @@ async fn send_message(
     let id = Uuid::new_v4().to_string();
     let inserted = sqlx::query("INSERT OR IGNORE INTO messages(id,conversation_id,sender_id,client_message_id,content) VALUES(?,?,?,?,?)")
         .bind(&id).bind(&conversation_id).bind(&user.id).bind(&body.client_message_id).bind(content).execute(&state.db).await.map_err(|_| ApiError::internal())?;
-    let message = sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,m.client_message_id,m.content,m.created_at,m.edited_at FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? AND m.sender_id=? AND m.client_message_id=?")
+    let message = sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,u.avatar_data AS sender_avatar,m.client_message_id,m.content,m.created_at,m.edited_at FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? AND m.sender_id=? AND m.client_message_id=?")
         .bind(&conversation_id).bind(&user.id).bind(&body.client_message_id).fetch_one(&state.db).await.map_err(|_| ApiError::internal())?;
     if inserted.rows_affected() > 0 {
         publish_message(&state, &conversation_id, &message).await?;
@@ -1026,7 +1099,7 @@ async fn edit_message(
             "Messages must contain 1 to 4,000 characters.",
         ));
     }
-    let msg = sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,m.client_message_id,m.content,m.created_at,m.edited_at FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.id=?")
+    let msg = sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,u.avatar_data AS sender_avatar,m.client_message_id,m.content,m.created_at,m.edited_at FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.id=?")
         .bind(&id).fetch_optional(&state.db).await.map_err(|_| ApiError::internal())?.ok_or_else(ApiError::not_found)?;
     if msg.sender_id != user.id {
         return Err(ApiError::forbidden());
@@ -1039,7 +1112,7 @@ async fn edit_message(
     .execute(&state.db)
     .await
     .map_err(|_| ApiError::internal())?;
-    let updated = sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,m.client_message_id,m.content,m.created_at,m.edited_at FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.id=?")
+    let updated = sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,u.avatar_data AS sender_avatar,m.client_message_id,m.content,m.created_at,m.edited_at FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.id=?")
         .bind(&id).fetch_one(&state.db).await.map_err(|_| ApiError::internal())?;
     publish_message(&state, &updated.conversation_id, &updated).await?;
     Ok(Json(updated))
@@ -1091,7 +1164,7 @@ async fn search_messages(
     if q.len() < 2 || q.len() > 128 {
         return Ok(Json(vec![]));
     }
-    let rows = sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,m.client_message_id,m.content,m.created_at,m.edited_at FROM messages m JOIN users u ON u.id=m.sender_id JOIN conversation_members c ON c.conversation_id=m.conversation_id WHERE c.user_id=? AND m.content LIKE ? ORDER BY m.rowid DESC LIMIT 50")
+    let rows = sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,u.avatar_data AS sender_avatar,m.client_message_id,m.content,m.created_at,m.edited_at FROM messages m JOIN users u ON u.id=m.sender_id JOIN conversation_members c ON c.conversation_id=m.conversation_id WHERE c.user_id=? AND m.content LIKE ? ORDER BY m.rowid DESC LIMIT 50")
         .bind(user.id).bind(format!("%{q}%")).fetch_all(&state.db).await.map_err(|_| ApiError::internal())?;
     Ok(Json(rows))
 }
@@ -1187,7 +1260,7 @@ async fn websocket_session(mut socket: WebSocket, state: AppState) {
         let _ = socket.close().await;
         return;
     };
-    let user = match sqlx::query_as::<_, PublicUser>("SELECT u.id,u.username,u.display_name FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND datetime(s.expires_at)>datetime('now')")
+    let user = match sqlx::query_as::<_, PublicUser>("SELECT u.id,u.username,u.display_name,u.avatar_data FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND datetime(s.expires_at)>datetime('now')")
         .bind(session_hash(&token)).fetch_optional(&state.db).await { Ok(Some(user)) => user, _ => { let _ = socket.close().await; return; } };
     if socket
         .send(WsMessage::Text(
