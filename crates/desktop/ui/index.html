@@ -57,7 +57,7 @@
       <button class="brand-mark rail-brand" title="GhostChat" aria-label="GhostChat">G</button>
       <div class="rail-divider"></div>
       <button class="rail-button active" data-page="messages" title="Messages" aria-label="Messages"><span class="icon">◷</span></button>
-      <button class="rail-button" data-page="friends" title="Friends" aria-label="Friends"><span class="icon">♧</span></button>
+      <button id="friendsNavButton" class="rail-button" data-page="friends" title="Friends" aria-label="Friends"><span class="icon">♧</span><span id="friendRequestBadge" class="rail-badge hidden"></span></button>
       <button class="rail-button" data-page="search" title="Find people" aria-label="Find people"><span class="icon">⌕</span></button>
       <div class="rail-spacer"></div>
       <button id="settingsButton" class="rail-button" title="Settings" aria-label="Settings"><span class="icon">⚙</span></button>
@@ -89,6 +89,11 @@
       <p class="fine-print">Remote servers must use HTTPS and trust the GhostChat desktop origin. Session tokens are stored in Windows Credential Manager.</p>
       <label class="setting-row">Theme<select id="themeSelect"><option value="dark">Dark</option><option value="light">Light</option></select></label>
       <label class="setting-row">Text size<select id="textSize"><option value="14">Compact</option><option value="15">Default</option><option value="17">Large</option></select></label>
+      <div class="settings-divider"></div>
+      <h3>Notifications</h3>
+      <p class="muted small-copy">GhostChat can show Windows notifications for friend requests, calls, and messages while it is running.</p>
+      <label class="setting-row"><span>Windows notifications</span><input id="desktopNotificationsEnabled" type="checkbox" checked></label>
+      <div class="dialog-actions"><button id="testDesktopNotification" class="button secondary" type="button">Send test notification</button></div>
       <div class="settings-divider"></div>
       <h3>Voice and screen sharing</h3>
       <p class="muted small-copy">WebRTC sends live media directly between callers when possible. The default public STUN service and the person you call may see your network address. Relay-only mode needs a TURN server configured by the server owner. Screen sharing always uses the system picker so you choose what to share.</p>

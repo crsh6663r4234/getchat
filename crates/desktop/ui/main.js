@@ -2,7 +2,7 @@
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
   const invoke = window.__TAURI__?.core?.invoke;
-  const state = { localBase: "", base: "", token: "", user: null, pendingRecovery: "", page: "messages", conversations: [], friends: [], active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null };
+  const state = { localBase: "", base: "", token: "", user: null, pendingRecovery: "", page: "messages", conversations: [], friends: [], pending: [], seenFriendRequestIds: new Set(), active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null };
   let voiceClient = null;
   let voiceUiState = { status: "idle" };
 
@@ -106,6 +106,20 @@
   function toast(message, error = false) {
     const node = $("#toast"); node.textContent = message; node.classList.toggle("error", error); node.classList.add("show");
     clearTimeout(toast.timer); toast.timer = setTimeout(() => node.classList.remove("show"), 3000);
+  }
+  function friendRequestsStorageKey() { return `ghostchat.seenFriendRequests.${state.base || "local"}.${state.user?.id || ""}`; }
+  async function sendDesktopNotification(title, body) {
+    if (localStorage.getItem("ghostchat.desktopNotifications") === "false") return;
+    try { await invoke("show_desktop_notification", { title, body }); }
+    catch (error) { console.warn("Windows notification could not be shown", error); }
+  }
+  function updateFriendRequestBadge() {
+    const badge = $("#friendRequestBadge");
+    if (!badge) return;
+    const count = state.pending?.length || 0;
+    badge.classList.toggle("hidden", count === 0);
+    badge.textContent = count > 9 ? "9+" : String(count);
+    $("#friendsNavButton")?.setAttribute("aria-label", count ? `Friends, ${count} pending request${count === 1 ? "" : "s"}` : "Friends");
   }
   async function checkForUpdates(quiet = false) {
     const statusNode = $("#updateStatus");
@@ -246,6 +260,7 @@
   }
   function setPage(page) {
     state.page = page; state.active = page === "messages" ? state.active : null;
+    if (page === "friends") state.searchTab = state.pending?.length ? "pending" : "all";
     $$(".rail-button[data-page]").forEach(button => button.classList.toggle("active", button.dataset.page === page));
     const titles = { messages: "Messages", friends: "Friends", search: "Find people", searchMessages: "Search messages" };
     $("#sidebarTitle").textContent = titles[page]; $("#sidebarAction").title = page === "messages" ? "Start a conversation" : "Find people";
@@ -308,8 +323,26 @@
     }
     root.append(page); $("#messagePanel").classList.add("hidden");
   }
-  async function refreshFriends() {
-    try { [state.friends, state.pending] = await Promise.all([request("/v1/friends"), request("/v1/friends/requests")]); } catch (error) { console.warn(error); }
+  async function refreshFriends({ notifyNew = true } = {}) {
+    try {
+      const [friends, pending] = await Promise.all([request("/v1/friends"), request("/v1/friends/requests")]);
+      const key = friendRequestsStorageKey();
+      let seen = new Set(state.seenFriendRequestIds);
+      try { for (const id of JSON.parse(localStorage.getItem(key) || "[]")) seen.add(id); } catch {}
+      const newRequests = pending.filter(item => !seen.has(item.id));
+      state.friends = friends;
+      state.pending = pending;
+      state.seenFriendRequestIds = new Set(pending.map(item => item.id));
+      localStorage.setItem(key, JSON.stringify([...state.seenFriendRequestIds]));
+      if (notifyNew && newRequests.length) {
+        if (state.page === "friends") state.searchTab = "pending";
+        for (const item of newRequests) {
+          toast(`${item.display_name} sent you a friend request.`);
+          void sendDesktopNotification("New friend request", `${item.display_name} sent you a friend request.`);
+        }
+      }
+    } catch (error) { console.warn(error); }
+    updateFriendRequestBadge();
     renderSidebar(); if (state.page === "friends") renderPage();
   }
   async function refreshConversations() {
@@ -389,9 +422,24 @@
     socket.addEventListener("message", event => {
       if (socket !== state.socket) return;
       let data; try { data = JSON.parse(event.data); } catch { return; }
-      if (data.type === "ready") { state.reconnect = 1200; setConnection(true); refreshConversations(); if (state.active) loadMessages(false); }
+      if (data.type === "ready") { state.reconnect = 1200; setConnection(true); void refreshFriends(); refreshConversations(); if (state.active) loadMessages(false); }
       else if (data.type === "session_revoked") { voiceClient?.hangup(); state.token = ""; state.user = null; state.active = null; if (state.socket) state.socket.close(); void (async () => { try { await invoke("credential_delete", { serverKey: await serverKey(activeBase()) }); } catch {} })(); show("authView"); toast("This session was revoked. Recover your account to sign in again.", true); }
-      else if (data.type === "message" && data.message) { if (state.active?.id === data.message.conversation_id) { appendMessage(data.message); $("#messages").scrollTop = $("#messages").scrollHeight; } refreshConversations(); }
+      else if (data.type === "message" && data.message) {
+        const message = data.message;
+        if (state.active?.id === message.conversation_id) { appendMessage(message); $("#messages").scrollTop = $("#messages").scrollHeight; }
+        if (message.sender_id !== state.user?.id && (state.active?.id !== message.conversation_id || !document.hasFocus())) {
+          void sendDesktopNotification(`Message from ${message.sender_name}`, "You received a new message in GhostChat.");
+        }
+        refreshConversations();
+      }
+      else if (data.type === "friend_request") { void refreshFriends(); }
+      else if (data.type === "friend_request_accepted") {
+        void refreshFriends();
+        if (data.by_user_id !== state.user?.id) {
+          toast("Your friend request was accepted.");
+          void sendDesktopNotification("Friend request accepted", "You can now chat with your new friend.");
+        }
+      }
       else if (data.type === "voice_signal") { void voiceClient?.handleSignal(data); }
       else if (data.type === "deleted" || data.type === "refresh") { if (state.active) loadMessages(false); }
     });
@@ -483,7 +531,9 @@
           $("#pageContent").classList.add("hidden");
           renderSidebar();
         }
-        toast(`${convo?.display_name || "Your friend"} is calling.`);
+        const caller = convo?.display_name || "Your friend";
+        toast(`${caller} is calling.`);
+        void sendDesktopNotification("Incoming GhostChat call", `${caller} is calling you.`);
       },
       onError: message => toast(message, true),
     });
@@ -522,10 +572,24 @@
   $("#messageInput").addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("#composer").requestSubmit(); } });
   $("#messageInput").addEventListener("input", event => { event.target.style.height = "auto"; event.target.style.height = `${Math.min(event.target.scrollHeight, 180)}px`; });
   $("#loadOlder").onclick = () => loadMessages(true);
-  function openSettings() { $("#serverAddressInput").value = state.base; populateVoiceSettings(); $("#settingsDialog").showModal(); }
+  function openSettings() {
+    $("#serverAddressInput").value = state.base;
+    $("#desktopNotificationsEnabled").checked = localStorage.getItem("ghostchat.desktopNotifications") !== "false";
+    populateVoiceSettings();
+    $("#settingsDialog").showModal();
+  }
   $("#settingsButton").onclick = openSettings;
   $("#serverSettings").onclick = openSettings;
   $("#profileButton").onclick = openSettings;
+  $("#desktopNotificationsEnabled").onchange = event => localStorage.setItem("ghostchat.desktopNotifications", String(event.target.checked));
+  $("#testDesktopNotification").onclick = async () => {
+    const button = $("#testDesktopNotification"); button.disabled = true;
+    try {
+      await invoke("show_desktop_notification", { title: "GhostChat notifications", body: "Windows notifications are working." });
+      toast("Test notification sent. If it is hidden, check Windows notification settings.");
+    } catch (error) { toast(error.message || "Windows could not show the test notification.", true); }
+    finally { button.disabled = false; }
+  };
   $("#refreshAudioDevices").onclick = refreshAudioDevices;
   $("#voiceCallButton").onclick = () => {
     if (["calling", "connecting", "connected", "reconnecting"].includes(voiceClient.getState().status)) voiceClient.hangup();

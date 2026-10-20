@@ -661,13 +661,26 @@ async fn send_friend_request(
         accept_friend(state, &user.id, &id).await?;
         return Ok(StatusCode::NO_CONTENT);
     }
+    let request_id = Uuid::new_v4().to_string();
     sqlx::query("INSERT INTO friend_requests(id,sender_id,recipient_id) VALUES(?,?,?)")
-        .bind(Uuid::new_v4().to_string())
-        .bind(user.id)
+        .bind(&request_id)
+        .bind(&user.id)
         .bind(target)
         .execute(&state.db)
         .await
         .map_err(|_| ApiError::conflict("A request is already pending."))?;
+    let _ = state.events.send(ServerEvent {
+        recipients: vec![target.to_owned()],
+        event: serde_json::json!({
+            "type": "friend_request",
+            "request": {
+                "id": request_id,
+                "user_id": user.id,
+                "username": user.username,
+                "display_name": user.display_name,
+            }
+        }),
+    });
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -713,6 +726,14 @@ async fn accept_friend(state: AppState, user_id: &str, request_id: &str) -> Resu
         .await
         .map_err(|_| ApiError::internal())?;
     tx.commit().await.map_err(|_| ApiError::internal())?;
+    let _ = state.events.send(ServerEvent {
+        recipients: vec![sender.clone(), user_id.to_owned()],
+        event: serde_json::json!({
+            "type": "friend_request_accepted",
+            "by_user_id": user_id,
+            "requester_id": sender,
+        }),
+    });
     Ok(())
 }
 

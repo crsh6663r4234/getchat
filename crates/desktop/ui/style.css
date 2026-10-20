@@ -8,3 +8,4 @@ body.light{--bg:#f5f6fa;--surface:#fff;--surface-2:#f1f2f6;--surface-3:#e8eaf0;-
 
 .update-actions{gap:8px}.update-actions .button{font-size:11px;padding:8px 11px}
 .dialog{max-height:92vh;overflow:auto}
+.rail-button .rail-badge{position:absolute;top:-2px;right:-3px;min-width:16px;height:16px;padding:0 4px;border-radius:10px;background:var(--danger);color:white;font-size:9px;font-weight:750;line-height:16px;text-align:center;box-shadow:0 0 0 2px var(--surface)}

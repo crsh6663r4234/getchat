@@ -9,7 +9,8 @@
 - Temporary recovery-key backup in a separate Windows Credential Manager entry until the user confirms saving it.
 - Authenticated user lookup, user search by username or ID prefix, friend requests, request acceptance/rejection, and friend removal.
 - Authorized one-to-one conversations, SQLite persistence, bounded history pages, message search, edit/delete, timestamps, and duplicate-send protection.
-- Authenticated WebSocket delivery with recipient filtering, reconnect support in the client, and immediate session-revocation events.
+- Authenticated WebSocket delivery with recipient filtering, reconnect recovery, immediate friend-request and acceptance events, and session-revocation events.
+- Windows desktop notifications for incoming calls, friend requests, accepted requests, and messages outside the active conversation; notification controls and a test action are available in Settings while the app is running.
 - One-to-one WebRTC voice calls with authenticated offer/answer/ICE signaling, device selection, audio processing controls, push-to-talk, and optional coturn TURN credentials.
 - In-call screen sharing through the operating system's display picker, with optional system audio sharing.
 - Server-side account/session/message input checks, request-size limits, and process-local rate limits.

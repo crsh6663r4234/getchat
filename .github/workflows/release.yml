@@ -59,7 +59,7 @@ jobs:
           projectPath: crates/desktop
           tagName: v__VERSION__
           releaseName: GhostChat v__VERSION__
-          releaseBody: "Voice-server compatibility update. If your PC-hosted server is outdated, stop its old host window with Ctrl+C and rerun the demo script to install the current server. Existing demo-server data stays in the same local SQLite database. The Windows installer supports in-app updates."
+          releaseBody: "Fixes live friend-request delivery and incoming-call alerts, adds Windows notifications for calls, friend requests, and messages, and includes a test-notification control in Settings. Restart the GhostChat demo server to load this release; existing demo-server data stays in the same local SQLite database. The Windows installer supports in-app updates."
           releaseDraft: false
           prerelease: false
           args: --bundles msi

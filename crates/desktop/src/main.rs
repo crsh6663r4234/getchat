@@ -6,6 +6,7 @@ use tauri::{
     webview::{PermissionKind, PermissionResponse},
     Emitter, Manager, State,
 };
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::UpdaterExt;
 
 #[derive(Serialize)]
@@ -94,6 +95,25 @@ async fn install_update(app: tauri::AppHandle, expected_version: String) -> Resu
     app.restart();
 }
 
+#[tauri::command]
+fn show_desktop_notification(
+    app: tauri::AppHandle,
+    title: String,
+    body: String,
+) -> Result<(), String> {
+    let title: String = title.chars().take(80).collect();
+    let body: String = body.chars().take(240).collect();
+    if title.is_empty() || body.is_empty() {
+        return Err("A notification title and message are required.".into());
+    }
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|error| error.to_string())
+}
+
 struct DesktopState {
     api_base: String,
 }
@@ -144,6 +164,7 @@ fn main() {
     install_panic_dialog();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .on_permission_request(|_, permission| match permission {
             PermissionKind::Microphone | PermissionKind::DisplayCapture => {
@@ -183,7 +204,8 @@ fn main() {
             credential_set_pending_recovery,
             credential_delete_pending_recovery,
             check_for_update,
-            install_update
+            install_update,
+            show_desktop_notification
         ])
         .run(tauri::generate_context!())
         .expect("GhostChat failed to start");
