@@ -24,7 +24,7 @@ The MSI will be written below `target/release/bundle/msi`. The application and i
 
 1. Download the standalone server asset for your platform from GitHub Releases, or build `ghostchat-server` with Rust and the system SQLite prerequisites from SQLx (SQLite is bundled in this workspace build). The automated release currently publishes the Windows x64 server binary.
 2. Create a service account and a private data directory writable only by that account.
-3. Set `GHOSTCHAT_DATABASE` to an absolute path inside that directory. Set `GHOSTCHAT_BIND=127.0.0.1:38241` when using a local reverse proxy.
+3. Set `GHOSTCHAT_DATABASE` to an absolute path inside that directory. If the HTTPS reverse proxy runs on the same VDS, use `GHOSTCHAT_BIND=127.0.0.1:38241`. Use `GHOSTCHAT_BIND=0.0.0.0:38241` only when a proxy on another machine must reach the API, and restrict that port to the proxy in the VDS firewall.
 4. Run the server behind an HTTPS reverse proxy. Permit public traffic only to the proxy's TLS port; do not expose the raw application port. For reliable voice calls across restrictive NATs, also run a public coturn TURN service on a host that accepts UDP/TCP traffic. Set `GHOSTCHAT_TURN_URLS` and `GHOSTCHAT_TURN_SHARED_SECRET` on GhostChat; use the same secret as coturn's `static-auth-secret` and enable `use-auth-secret`. Configure coturn's relay port range and firewall accordingly.
 5. In GhostChat on each computer, set the server address to the public `https://` URL. The WebSocket endpoint upgrades from HTTPS to WSS automatically.
 6. Back up SQLite using a SQLite-aware online backup tool, or stop the service cleanly before copying the database. Protect backups as readable private-message data.
