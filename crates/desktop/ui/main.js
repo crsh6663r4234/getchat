@@ -711,7 +711,7 @@
   $("#messageInput").addEventListener("input", event => { event.target.style.height = "auto"; event.target.style.height = `${Math.min(event.target.scrollHeight, 180)}px`; });
   $("#loadOlder").onclick = () => loadMessages(true);
   function openSettings() {
-    $(".settings-section").forEach(section => { if (section.querySelector("#profileNameInput")) section.classList.toggle("hidden", !state.user); });
+    $$(".settings-section").forEach(section => { if (section.querySelector("#profileNameInput")) section.classList.toggle("hidden", !state.user); });
     $("#serverAddressInput").value = state.base;
     $("#profileNameInput").value = state.user?.display_name || "";
     profileAvatarData = state.user?.avatar_data || null;

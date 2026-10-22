@@ -65,7 +65,7 @@ jobs:
           projectPath: crates/desktop
           tagName: v__VERSION__
           releaseName: GhostChat v__VERSION__
-          releaseBody: "Adds profile photos with automatically generated user tags, Turkish language support, organized settings, improved voice controls, and a required animated update check at startup. The standalone VDS server listens on 0.0.0.0:38241 by default; keep the raw API port blocked from public traffic and expose it through HTTPS."
+          releaseBody: "Fixes the Settings and Change server buttons so both open reliably. This client update does not require a server update."
           releaseDraft: false
           prerelease: false
           args: --bundles msi
