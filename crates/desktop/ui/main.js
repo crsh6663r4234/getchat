@@ -1,5 +1,6 @@
 (() => {
-  const DEFAULT_REMOTE_SERVER = "https://185.158.151.179";
+  const DEFAULT_REMOTE_SERVER = "https://ghost-cassper.duckdns.org";
+  const LEGACY_DEFAULT_REMOTE_SERVER = "https://185.158.151.179";
   const LOCAL_SERVER_SENTINEL = "__ghostchat_local__";
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -259,11 +260,28 @@
     if (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1"].includes(url.hostname))) throw new Error("Remote servers must use HTTPS.");
     return normalizedBase(url.origin);
   }
+  function isLegacyDefaultServer(value) {
+    try { return parseServerAddress(value) === LEGACY_DEFAULT_REMOTE_SERVER; }
+    catch { return false; }
+  }
   function activeBase() { return state.base || state.localBase; }
   async function serverKey(base) {
     const data = new TextEncoder().encode(normalizedBase(base));
     const digest = await crypto.subtle.digest("SHA-256", data);
     return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
+  }
+  async function migrateServerCredentials(from, to) {
+    try {
+      const oldKey = await serverKey(from), newKey = await serverKey(to);
+      const [oldToken, newToken] = await Promise.all([
+        invoke("credential_get", { serverKey: oldKey }), invoke("credential_get", { serverKey: newKey })
+      ]);
+      if (oldToken && !newToken) await invoke("credential_set", { serverKey: newKey, token: oldToken });
+      const [oldRecovery, newRecovery] = await Promise.all([
+        invoke("credential_get_pending_recovery", { serverKey: oldKey }), invoke("credential_get_pending_recovery", { serverKey: newKey })
+      ]);
+      if (oldRecovery && !newRecovery) await invoke("credential_set_pending_recovery", { serverKey: newKey, token: oldRecovery });
+    } catch (error) { console.warn("Could not migrate saved credentials to the default server", error); }
   }
   async function request(path, options = {}) {
     const headers = new Headers(options.headers || {});
@@ -722,7 +740,11 @@
     $("#settingsDialog").showModal();
   }
   $("#settingsButton").onclick = openSettings;
-  $("#serverSettings").onclick = openSettings;
+  $("#serverSettings").onclick = () => {
+    openSettings();
+    $("#connectionSettingsSection").open = true;
+    $("#serverAddressInput").focus();
+  };
   $("#profileButton").onclick = openSettings;
   for (const selector of ["#languageSelect", "#authLanguageSelect"]) $(selector).onchange = event => { localStorage.setItem("ghostchat.language", event.target.value); applyLanguage(); renderSidebar(); if (["friends", "search", "searchMessages"].includes(state.page)) renderPage(); else if (!state.active) showWelcome(); renderVoiceControls(); };
   $("#removeProfileAvatar").onclick = () => { profileAvatarData = null; setAvatar($("#profileAvatarPreview"), state.user?.display_name); };
@@ -786,30 +808,45 @@
   $("#voiceStageShareButton").onclick = () => void voiceClient.toggleScreenSharing().catch(error => toast(error.message, true));
   $("#enableCallAudio").onclick = () => void $("#remoteAudio").play().then(() => $("#enableCallAudio").classList.add("hidden")).catch(() => toast("Call audio is still blocked by Windows or the audio device.", true));
   $("#voiceVolume").addEventListener("input", () => { $("#remoteAudio").volume = Number($("#voiceVolume").value) / 100; });
-  $("#saveSettings").onclick = async () => {
-    const input = $("#serverAddressInput").value.trim();
-    let changedServer = false;
+  $("#changeServerButton").onclick = async event => {
+    const button = event.currentTarget;
     let target = "";
+    const input = $("#serverAddressInput").value.trim();
     if (input) {
       try { target = parseServerAddress(input); }
       catch (error) { toast(error.message || "Enter a valid server address.", true); return; }
-      changedServer = target !== state.base;
-      state.base = target; localStorage.setItem("ghostchat.server", target);
-    } else { changedServer = !!state.base; state.base = ""; localStorage.setItem("ghostchat.server", LOCAL_SERVER_SENTINEL); }
+    }
+    if (target === state.base) { toast(tr() ? "Bu sunucu zaten seçili." : "This server is already selected.", true); return; }
+    button.disabled = true;
+    try {
+      state.base = target;
+      localStorage.setItem("ghostchat.server", target || LOCAL_SERVER_SENTINEL);
+      voiceClient?.hangup();
+      const oldSocket = state.socket; state.socket = null; oldSocket?.close();
+      state.user = null; state.active = null; state.friends = []; state.conversations = []; state.pending = [];
+      updateServerLabels(); $("#settingsDialog").close();
+      await restoreToken();
+      try { state.pendingRecovery = await invoke("credential_get_pending_recovery", { serverKey: await serverKey(activeBase()) }) || ""; } catch { state.pendingRecovery = ""; }
+      if (state.pendingRecovery) {
+        $("#recoveryValue").textContent = state.pendingRecovery;
+        $("#recoveryConfirm").checked = false; $("#continueAfterRecovery").disabled = true; show("recoveryView");
+      } else if (state.token) await enterApp(); else show("authView");
+      if (target) {
+        const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 4000);
+        let reachable = false;
+        try { const response = await fetch(`${target}/health`, { signal: controller.signal }); reachable = response.ok; }
+        catch {} finally { clearTimeout(timeout); }
+        toast(reachable ? `Server address saved: ${new URL(target).host}` : `Server address saved: ${new URL(target).host}. The server is not reachable yet.`, !reachable);
+      } else toast(tr() ? "Yerel sunucu seçildi." : "Server changed to the local server.");
+    } catch (error) { toast(error.message || "Could not change the server.", true); }
+    finally { button.disabled = false; }
+  };
+  $("#saveSettings").onclick = async () => {
     const theme = $("#themeSelect").value; localStorage.setItem("ghostchat.theme", theme); document.body.classList.toggle("light", theme === "light");
     localStorage.setItem("ghostchat.textSize", $("#textSize").value); document.documentElement.style.fontSize = `${$("#textSize").value}px`;
     applyLanguage();
-    if (changedServer) { voiceClient?.hangup(); state.active = null; state.friends = []; state.conversations = []; }
     persistVoiceSettings(); await applyPlaybackSettings();
-    updateServerLabels(); $("#settingsDialog").close();
-    if (changedServer) { await restoreToken(); if (state.token) await enterApp(); else show("authView"); }
-    if (changedServer && target) {
-      const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 4000);
-      let reachable = false;
-      try { const response = await fetch(`${target}/health`, { signal: controller.signal }); reachable = response.ok; }
-      catch {} finally { clearTimeout(timeout); }
-      toast(reachable ? `Server address saved: ${new URL(target).host}` : `Server address saved: ${new URL(target).host}. The server is not reachable yet.`, !reachable);
-    } else toast("Settings saved.");
+    $("#settingsDialog").close(); toast("Settings saved.");
   };
   $("#exportSettings").onclick = () => { const data = { server: state.base || "local", theme: localStorage.getItem("ghostchat.theme") || "dark", textSize: localStorage.getItem("ghostchat.textSize") || "15" }; const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })); const link = create("a"); link.href = url; link.download = "ghostchat-preferences.json"; link.click(); URL.revokeObjectURL(url); };
   $("#exportAccount").onclick = async () => { try { const data = await request("/v1/data/export"); const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })); const link = create("a"); link.href = url; link.download = "ghostchat-account-export.json"; link.click(); URL.revokeObjectURL(url); toast("Account data exported."); } catch (error) { toast(error.message, true); } };
@@ -844,10 +881,11 @@
     const savedServer = localStorage.getItem("ghostchat.server");
     if (savedServer === LOCAL_SERVER_SENTINEL) {
       state.base = "";
-    } else if (!savedServer || isLocalServer(savedServer)) {
-      // Move older installs off the previous localhost default and onto the configured VDS.
+    } else if (!savedServer || isLocalServer(savedServer) || isLegacyDefaultServer(savedServer)) {
+      const migrateLegacyCredentials = isLegacyDefaultServer(savedServer);
       state.base = DEFAULT_REMOTE_SERVER;
       localStorage.setItem("ghostchat.server", state.base);
+      if (migrateLegacyCredentials) await migrateServerCredentials(LEGACY_DEFAULT_REMOTE_SERVER, DEFAULT_REMOTE_SERVER);
     } else {
       state.base = normalizedBase(savedServer);
     }

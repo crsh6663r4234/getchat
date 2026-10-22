@@ -43,7 +43,7 @@
         <button class="button primary wide" type="submit">Recover account <span>→</span></button>
         <p class="fine-print" data-en="Your recovery key is the only way to regain access if you lose this device." data-tr="Bu cihazı kaybedersen hesabına erişmenin tek yolu kurtarma anahtarındır.">Your recovery key is the only way to regain access if you lose this device.</p>
       </form>
-      <div class="server-note"><span class="status-dot"></span> <span id="serverModeLabel">Server</span> <span id="serverLabel">starting…</span><button id="serverSettings" class="text-button">Change</button></div>
+      <div class="server-note"><span class="status-dot"></span> <span id="serverModeLabel">Server</span> <span id="serverLabel">starting…</span><button id="serverSettings" class="text-button" type="button" data-en="Change server" data-tr="Sunucuyu değiştir">Change server</button></div>
     </section>
     <p class="privacy-note">GhostChat servers can access message content. Messages are not end-to-end encrypted.</p>
   </main>
@@ -134,10 +134,11 @@
           <p class="fine-print"><span data-en="Your random tag" data-tr="Rastgele etiketin">Your random tag</span> <strong id="profileTagLabel">@username</strong></p>
         </div>
       </details>
-      <details class="settings-section">
+      <details id="connectionSettingsSection" class="settings-section">
         <summary data-en="Connection" data-tr="Bağlantı">Connection</summary>
         <div class="settings-section-content">
-          <label><span data-en="Server address" data-tr="Sunucu adresi">Server address</span> <span class="optional" data-en="Enter an IP or HTTPS address. Offline server addresses can still be saved." data-tr="IP veya HTTPS adresi gir. Çevrimdışı adresler de kaydedilebilir.">Enter an IP or HTTPS address. Offline server addresses can still be saved.</span><input id="serverAddressInput" type="url" placeholder="https://185.158.151.179"></label>
+          <label><span data-en="Server address" data-tr="Sunucu adresi">Server address</span> <span class="optional" data-en="Enter an HTTPS address, then choose Change server. Leave empty to use the local server." data-tr="HTTPS adresini girip Sunucuyu değiştir'e bas. Yerel sunucu için boş bırak.">Enter an HTTPS address, then choose Change server. Leave empty to use the local server.</span><input id="serverAddressInput" type="url" placeholder="https://ghost-cassper.duckdns.org"></label>
+          <div class="dialog-actions"><button id="changeServerButton" class="button primary" type="button" data-en="Change server" data-tr="Sunucuyu değiştir">Change server</button></div>
           <p class="fine-print" data-en="Remote servers must use HTTPS and trust the GhostChat desktop origin. Session tokens are stored in Windows Credential Manager." data-tr="Uzak sunucular HTTPS kullanmalı ve GhostChat masaüstü kaynağına izin vermeli. Oturum anahtarları Windows Kimlik Bilgisi Yöneticisi'nde saklanır.">Remote servers must use HTTPS and trust the GhostChat desktop origin. Session tokens are stored in Windows Credential Manager.</p>
         </div>
       </details>

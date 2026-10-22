@@ -65,7 +65,7 @@ jobs:
           projectPath: crates/desktop
           tagName: v__VERSION__
           releaseName: GhostChat v__VERSION__
-          releaseBody: "Fixes the Settings and Change server buttons so both open reliably. This client update does not require a server update."
+          releaseBody: "Sets the default GhostChat server to ghost-cassper.duckdns.org and adds a dedicated Change server action. Existing sessions are carried over from the previous VDS IP. No VDS update is required."
           releaseDraft: false
           prerelease: false
           args: --bundles msi
