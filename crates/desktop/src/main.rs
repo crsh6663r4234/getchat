@@ -1,11 +1,21 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod crypto;
+mod crypto_attachments;
+
 use serde::Serialize;
-use std::{fs, path::PathBuf};
-use tauri::{
-    webview::{PermissionKind, PermissionResponse},
-    Emitter, Manager, State,
+use std::{
+    fs,
+    path::PathBuf,
+    sync::{Arc, Mutex},
 };
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    webview::{PermissionKind, PermissionResponse},
+    Emitter, Manager, State, WindowEvent,
+};
+use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::UpdaterExt;
 
@@ -116,11 +126,343 @@ fn show_desktop_notification(
 
 struct DesktopState {
     api_base: String,
+    crypto_db: sqlx::SqlitePool,
+}
+
+#[derive(Default)]
+struct PendingGroupInvites(Arc<Mutex<Vec<String>>>);
+
+fn group_invite_code_from_deep_link(url: &str) -> Option<String> {
+    let code = url.strip_prefix("ghostchat://invite/")?;
+    if code.len() != 43
+        || !code
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return None;
+    }
+    Some(code.to_string())
+}
+
+fn queue_group_invite_urls(queue: &Arc<Mutex<Vec<String>>>, urls: impl Iterator<Item = String>) {
+    let Ok(mut pending) = queue.lock() else {
+        return;
+    };
+    for url in urls {
+        if let Some(code) = group_invite_code_from_deep_link(&url) {
+            if pending.len() == 8 {
+                pending.remove(0);
+            }
+            pending.push(code);
+        }
+    }
+}
+
+#[tauri::command]
+fn take_pending_group_invites(pending: State<'_, PendingGroupInvites>) -> Vec<String> {
+    pending
+        .0
+        .lock()
+        .map(|mut codes| std::mem::take(&mut *codes))
+        .unwrap_or_default()
 }
 
 #[tauri::command]
 fn api_base(state: State<'_, DesktopState>) -> String {
     state.api_base.clone()
+}
+
+#[tauri::command]
+async fn crypto_prepare_device(
+    state: State<'_, DesktopState>,
+    user_id: String,
+) -> Result<crypto::DevicePreparation, String> {
+    crypto::prepare_device(&state.crypto_db, &user_id).await
+}
+
+#[tauri::command]
+async fn crypto_inspect_key_package(
+    state: State<'_, DesktopState>,
+    peer_user_id: String,
+    peer_device_id: String,
+    payload: String,
+) -> Result<crypto::KeyPackageInspection, String> {
+    crypto::inspect_key_package(&state.crypto_db, &peer_user_id, &peer_device_id, &payload).await
+}
+
+#[tauri::command]
+async fn crypto_create_direct_group(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    peer_user_id: String,
+    peer_device_id: String,
+    peer_package_payload: String,
+) -> Result<crypto::DirectGroupStart, String> {
+    crypto::create_direct_group(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &peer_user_id,
+        &peer_device_id,
+        &peer_package_payload,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn crypto_create_group(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    peers: Vec<crypto::GroupPeerKeyPackage>,
+) -> Result<crypto::DirectGroupStart, String> {
+    crypto::create_group(&state.crypto_db, &user_id, &conversation_id, &peers).await
+}
+
+#[tauri::command]
+async fn crypto_get_pending_group_membership_update(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+) -> Result<Option<crypto::GroupMembershipUpdate>, String> {
+    crypto::get_pending_group_membership_update(&state.crypto_db, &user_id, &conversation_id).await
+}
+
+#[tauri::command]
+async fn crypto_prepare_group_membership_update(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    expected_member_ids: Vec<String>,
+    peers: Vec<crypto::GroupPeerKeyPackage>,
+) -> Result<crypto::GroupMembershipUpdate, String> {
+    crypto::prepare_group_membership_update(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &expected_member_ids,
+        &peers,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn crypto_prepare_group_removal_update(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    expected_member_ids: Vec<String>,
+    removed_member_ids: Vec<String>,
+) -> Result<crypto::GroupMembershipUpdate, String> {
+    crypto::prepare_group_removal_update(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &expected_member_ids,
+        &removed_member_ids,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn crypto_prepare_group_leave_proposal(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    expected_member_ids: Vec<String>,
+) -> Result<crypto::GroupMembershipUpdate, String> {
+    crypto::prepare_group_leave_proposal(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &expected_member_ids,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn crypto_prepare_group_leave_commit(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    operation_id: String,
+    leaving_user_id: String,
+    expected_member_ids: Vec<String>,
+) -> Result<crypto::GroupMembershipUpdate, String> {
+    crypto::prepare_group_leave_commit(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &operation_id,
+        &leaving_user_id,
+        &expected_member_ids,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn crypto_forget_group_state(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+) -> Result<(), String> {
+    crypto::forget_group_state(&state.crypto_db, &user_id, &conversation_id).await
+}
+
+#[tauri::command]
+async fn crypto_finalize_group_membership_update(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    operation_id: String,
+) -> Result<String, String> {
+    crypto::finalize_group_membership_update(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &operation_id,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn crypto_get_pending_bootstrap(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+) -> Result<Option<crypto::DirectGroupStart>, String> {
+    crypto::get_pending_bootstrap(&state.crypto_db, &user_id, &conversation_id).await
+}
+
+#[tauri::command]
+async fn crypto_clear_pending_bootstrap(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+) -> Result<(), String> {
+    crypto::clear_pending_bootstrap(&state.crypto_db, &user_id, &conversation_id).await
+}
+
+#[tauri::command]
+async fn crypto_encrypt_text(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    client_message_id: String,
+    content: String,
+) -> Result<crypto::EncryptedApplicationMessage, String> {
+    crypto::encrypt_text(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &client_message_id,
+        &content,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn crypto_get_cached_sent_text(
+    state: State<'_, DesktopState>,
+    client_message_id: String,
+) -> Result<Option<String>, String> {
+    crypto::get_cached_sent_text(&state.crypto_db, &client_message_id).await
+}
+
+#[tauri::command]
+async fn crypto_process_event(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    sender_id: String,
+    client_message_id: Option<String>,
+    event_sequence: i64,
+    conversation_is_group: bool,
+    expected_member_ids: Vec<String>,
+    payload: String,
+) -> Result<crypto::CryptoEventResult, String> {
+    crypto::process_crypto_event(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &sender_id,
+        client_message_id.as_deref(),
+        event_sequence,
+        conversation_is_group,
+        &expected_member_ids,
+        &payload,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn crypto_get_event_cursor(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+) -> Result<Option<i64>, String> {
+    crypto::get_crypto_event_cursor(&state.crypto_db, &user_id, &conversation_id).await
+}
+
+#[tauri::command]
+async fn crypto_advance_event_cursor(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    sequence: i64,
+) -> Result<i64, String> {
+    crypto::advance_crypto_event_cursor(&state.crypto_db, &user_id, &conversation_id, sequence)
+        .await
+}
+
+#[tauri::command]
+async fn crypto_upload_encrypted_attachment(
+    app: tauri::AppHandle,
+    conversation_id: String,
+    server_base: String,
+    token: String,
+) -> Result<Option<crypto_attachments::EncryptedAttachmentManifest>, String> {
+    crypto_attachments::upload(app, conversation_id, server_base, token).await
+}
+
+#[tauri::command]
+async fn crypto_download_encrypted_attachment(
+    app: tauri::AppHandle,
+    server_base: String,
+    token: String,
+    manifest: crypto_attachments::EncryptedAttachmentManifest,
+) -> Result<Option<String>, String> {
+    crypto_attachments::download(app, server_base, token, manifest).await
+}
+
+#[tauri::command]
+async fn crypto_has_direct_group(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+) -> Result<bool, String> {
+    crypto::has_direct_group(&state.crypto_db, &user_id, &conversation_id).await
+}
+
+#[tauri::command]
+async fn crypto_direct_peer_fingerprint(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    peer_user_id: String,
+    conversation_id: String,
+) -> Result<Option<String>, String> {
+    crypto::direct_peer_fingerprint(&state.crypto_db, &user_id, &peer_user_id, &conversation_id)
+        .await
+}
+
+#[tauri::command]
+async fn crypto_group_fingerprint(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+) -> Result<Option<String>, String> {
+    crypto::group_fingerprint(&state.crypto_db, &user_id, &conversation_id).await
 }
 
 #[tauri::command]
@@ -153,10 +495,81 @@ fn credential_delete_pending_recovery(server_key: String) -> Result<(), String> 
     windows_credential::delete_pending_recovery(&server_key)
 }
 
+#[tauri::command]
+fn credential_get_recovery(server_key: String) -> Result<Option<String>, String> {
+    windows_credential::get_recovery(&server_key)
+}
+
+#[tauri::command]
+fn credential_set_recovery(server_key: String, token: String) -> Result<(), String> {
+    windows_credential::set_recovery(&server_key, &token)
+}
+
+#[tauri::command]
+fn credential_delete_recovery(server_key: String) -> Result<(), String> {
+    windows_credential::delete_recovery(&server_key)
+}
+
 fn app_database_path(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let directory = app.path().app_data_dir()?;
     fs::create_dir_all(&directory)?;
     Ok(directory.join("ghostchat.sqlite"))
+}
+
+#[tauri::command]
+fn get_start_at_login() -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+
+        let current_user = RegKey::predef(HKEY_CURRENT_USER);
+        let run_key =
+            match current_user.open_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Run") {
+                Ok(key) => key,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+                Err(error) => return Err(error.to_string()),
+            };
+        match run_key.get_value::<String, _>("GhostChat") {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(false)
+    }
+}
+
+#[tauri::command]
+fn set_start_at_login(enabled: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+
+        let current_user = RegKey::predef(HKEY_CURRENT_USER);
+        let (run_key, _) = current_user
+            .create_subkey("Software\\Microsoft\\Windows\\CurrentVersion\\Run")
+            .map_err(|error| error.to_string())?;
+        if enabled {
+            let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+            let command = format!("\"{}\"", executable.display());
+            run_key
+                .set_value("GhostChat", &command)
+                .map_err(|error| error.to_string())
+        } else {
+            match run_key.delete_value("GhostChat") {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error.to_string()),
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = enabled;
+        Err("Starting GhostChat with Windows is only available on Windows.".to_string())
+    }
 }
 
 fn main() {
@@ -164,6 +577,10 @@ fn main() {
     install_panic_dialog();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main_window(app);
+        }))
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .on_permission_request(|_, permission| match permission {
@@ -172,14 +589,77 @@ fn main() {
             }
             _ => PermissionResponse::Default,
         })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .setup(|app| {
-            let path = app_database_path(app.handle())?;
-            let path = path.to_string_lossy().to_string();
-            let api = tauri::async_runtime::block_on(async move {
+            app.manage(PendingGroupInvites::default());
+            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            app.deep_link().register_all()?;
+            let pending_group_invites = app.state::<PendingGroupInvites>().0.clone();
+            if let Some(urls) = app.deep_link().get_current()? {
+                queue_group_invite_urls(
+                    &pending_group_invites,
+                    urls.into_iter().map(|url| url.to_string()),
+                );
+            }
+            let app_handle = app.handle().clone();
+            app.deep_link().on_open_url(move |event| {
+                queue_group_invite_urls(
+                    &pending_group_invites,
+                    event.urls().iter().map(ToString::to_string),
+                );
+                let _ = app_handle.emit("ghostchat:group-invite-ready", ());
+            });
+            let open_item = MenuItem::with_id(app, "open", "Open GhostChat", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit GhostChat", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&open_item, &quit_item])?;
+            let tray_icon = app
+                .default_window_icon()
+                .cloned()
+                .ok_or_else(|| std::io::Error::other("GhostChat tray icon is missing"))?;
+            TrayIconBuilder::new()
+                .icon(tray_icon)
+                .tooltip("GhostChat")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "open" => show_main_window(app),
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if matches!(
+                        event,
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } | TrayIconEvent::DoubleClick {
+                            button: MouseButton::Left,
+                            ..
+                        }
+                    ) {
+                        show_main_window(tray.app_handle());
+                    }
+                })
+                .build(app)?;
+            let database_path = app_database_path(app.handle())?;
+            let attachment_dir = database_path
+                .parent()
+                .ok_or_else(|| std::io::Error::other("GhostChat data directory is missing"))?
+                .join("attachments");
+            let path = database_path.to_string_lossy().to_string();
+            let (api, crypto_db) = tauri::async_runtime::block_on(async move {
                 let db = ghostchat_server::open_database(&path)
                     .await
                     .map_err(|error| error.to_string())?;
-                let state = ghostchat_server::build_state(db).await;
+                let crypto_db = db.clone();
+                let state =
+                    ghostchat_server::build_state_with_attachment_dir(db, attachment_dir).await;
                 let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
                     .await
                     .map_err(|error| error.to_string())?;
@@ -189,10 +669,13 @@ fn main() {
                         eprintln!("GhostChat local service stopped: {error}");
                     }
                 });
-                Ok::<String, String>(format!("http://{address}"))
+                Ok::<(String, sqlx::SqlitePool), String>((format!("http://{address}"), crypto_db))
             })
             .map_err(std::io::Error::other)?;
-            app.manage(DesktopState { api_base: api });
+            app.manage(DesktopState {
+                api_base: api,
+                crypto_db,
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -203,12 +686,49 @@ fn main() {
             credential_get_pending_recovery,
             credential_set_pending_recovery,
             credential_delete_pending_recovery,
+            credential_get_recovery,
+            credential_set_recovery,
+            credential_delete_recovery,
+            crypto_prepare_device,
+            crypto_inspect_key_package,
+            crypto_create_direct_group,
+            crypto_create_group,
+            crypto_get_pending_group_membership_update,
+            crypto_prepare_group_membership_update,
+            crypto_prepare_group_removal_update,
+            crypto_prepare_group_leave_proposal,
+            crypto_prepare_group_leave_commit,
+            crypto_forget_group_state,
+            crypto_finalize_group_membership_update,
+            crypto_get_pending_bootstrap,
+            crypto_clear_pending_bootstrap,
+            crypto_encrypt_text,
+            crypto_get_cached_sent_text,
+            crypto_process_event,
+            crypto_get_event_cursor,
+            crypto_advance_event_cursor,
+            crypto_upload_encrypted_attachment,
+            crypto_download_encrypted_attachment,
+            crypto_has_direct_group,
+            crypto_direct_peer_fingerprint,
+            crypto_group_fingerprint,
+            get_start_at_login,
+            set_start_at_login,
+            take_pending_group_invites,
             check_for_update,
             install_update,
             show_desktop_notification
         ])
         .run(tauri::generate_context!())
         .expect("GhostChat failed to start");
+}
+
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
 }
 
 #[cfg(all(windows, not(debug_assertions)))]
@@ -237,11 +757,14 @@ fn install_panic_dialog() {
 
 #[cfg(windows)]
 mod windows_credential {
+    #[cfg(not(test))]
+    use rand::RngCore;
     use std::{ptr, slice};
     use windows_sys::Win32::Security::Credentials::{
         CredDeleteW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE,
         CRED_TYPE_GENERIC,
     };
+    use zeroize::Zeroizing;
 
     fn wide(value: &str) -> Vec<u16> {
         value.encode_utf16().chain(std::iter::once(0)).collect()
@@ -281,12 +804,16 @@ mod windows_credential {
         get_at(target(server_key, "RecoveryPending")?)
     }
 
+    pub fn get_recovery(server_key: &str) -> Result<Option<String>, String> {
+        get_at(target(server_key, "Recovery")?)
+    }
+
     fn set_at(mut target: Vec<u16>, token: &str, username: &str) -> Result<(), String> {
         if token.is_empty() || token.len() > 128 {
             return Err("The credential value is invalid.".into());
         }
         let mut username = wide(username);
-        let mut bytes = token.as_bytes().to_vec();
+        let mut bytes = Zeroizing::new(token.as_bytes().to_vec());
         let credential = CREDENTIALW {
             Flags: 0,
             Type: CRED_TYPE_GENERIC,
@@ -321,6 +848,41 @@ mod windows_credential {
         )
     }
 
+    pub fn set_recovery(server_key: &str, token: &str) -> Result<(), String> {
+        set_at(
+            target(server_key, "Recovery")?,
+            token,
+            "GhostChat recovery key",
+        )
+    }
+
+    #[cfg(not(test))]
+    pub fn get_or_create_crypto_storage_key() -> Result<Zeroizing<[u8; 32]>, String> {
+        let key_target = wide("GhostChat.MlsStorageKey");
+        if let Some(existing) = get_at(key_target.clone())?.map(Zeroizing::new) {
+            if existing.len() != 64 || !existing.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err("The saved local MLS storage key is invalid; encrypted data was left untouched.".into());
+            }
+            let mut key = Zeroizing::new([0u8; 32]);
+            for (index, byte) in key.iter_mut().enumerate() {
+                let start = index * 2;
+                *byte = u8::from_str_radix(&existing[start..start + 2], 16)
+                    .map_err(|_| "The saved local MLS storage key is invalid; encrypted data was left untouched.".to_string())?;
+            }
+            return Ok(key);
+        }
+
+        let mut key = Zeroizing::new([0u8; 32]);
+        rand::rngs::OsRng.fill_bytes(&mut *key);
+        let encoded = Zeroizing::new(
+            key.iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
+        );
+        set_at(key_target, &encoded, "GhostChat MLS storage key")?;
+        Ok(key)
+    }
+
     fn delete_at(mut target: Vec<u16>) -> Result<(), String> {
         let _ = unsafe { CredDeleteW(target.as_mut_ptr(), CRED_TYPE_GENERIC, 0) };
         Ok(())
@@ -332,6 +894,10 @@ mod windows_credential {
 
     pub fn delete_pending_recovery(server_key: &str) -> Result<(), String> {
         delete_at(target(server_key, "RecoveryPending")?)
+    }
+
+    pub fn delete_recovery(server_key: &str) -> Result<(), String> {
+        delete_at(target(server_key, "Recovery")?)
     }
 }
 
@@ -349,10 +915,23 @@ mod windows_credential {
     pub fn get_pending_recovery(_: &str) -> Result<Option<String>, String> {
         Ok(None)
     }
+    pub fn get_recovery(_: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
     pub fn set_pending_recovery(_: &str, _: &str) -> Result<(), String> {
         Err("Secure recovery storage is only available on Windows.".into())
     }
+    pub fn set_recovery(_: &str, _: &str) -> Result<(), String> {
+        Err("Secure recovery storage is only available on Windows.".into())
+    }
+    #[cfg(not(test))]
+    pub fn get_or_create_crypto_storage_key() -> Result<zeroize::Zeroizing<[u8; 32]>, String> {
+        Err("Encrypted MLS device storage currently requires Windows Credential Manager.".into())
+    }
     pub fn delete_pending_recovery(_: &str) -> Result<(), String> {
+        Ok(())
+    }
+    pub fn delete_recovery(_: &str) -> Result<(), String> {
         Ok(())
     }
 }

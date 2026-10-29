@@ -1,6 +1,6 @@
 # GhostChat
 
-GhostChat is a lightweight Windows desktop chat client with a self-hostable Rust server. It provides anonymous accounts, recoverable access keys, friend requests, persistent one-to-one messages, voice calls, and screen sharing.
+GhostChat is a lightweight Windows desktop chat client with a self-hostable Rust server. The current stable release remains 0.3.8. The unreleased 4.0 work adds group chats, file sharing, profile controls, tray behavior, and experimental opt-in MLS encryption for direct and group text. New attachments in verified MLS chats are encrypted on Windows; earlier messages and files remain plaintext. MLS attachments and messaging still need two-device validation and independent security review. Encrypted groups support experimental staged addition, removal, and owner-committed non-owner self-leave flows. See [docs/SECURITY.md](docs/SECURITY.md) before using it for sensitive conversations. Direct calls remain peer-to-peer; experimental group calls and screen sharing require a separately deployed LiveKit SFU and are not end-to-end encrypted. Group calling is not release-ready until deployment and member-removal behavior are validated.
 
 ## Run the Windows app
 
@@ -43,3 +43,5 @@ The installed Windows app checks for signed updates in Settings and on startup. 
 ## Current scope
 
 See [docs/FEATURES.md](docs/FEATURES.md) for the implementation checklist, [docs/SECURITY.md](docs/SECURITY.md) for data handling and security limits, and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for common setup issues. Test results are recorded in [docs/TEST_REPORT.md](docs/TEST_REPORT.md). Measured performance and its limits are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+
+The planned major release scope and delivery stages are tracked in [docs/GHOSTCHAT_4_0_ROADMAP.md](docs/GHOSTCHAT_4_0_ROADMAP.md). The encrypted-event relay foundation is documented in [docs/CRYPTO_EVENT_RELAY.md](docs/CRYPTO_EVENT_RELAY.md); the unreleased direct and group encryption code uses this relay for MLS setup events and stores text ciphertext through the normal message history API.

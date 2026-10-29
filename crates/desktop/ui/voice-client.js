@@ -19,6 +19,8 @@
         speakerMuted: !!api.getSettings().speakerMuted,
         screenSharing: !!call?.screenStream,
         screenStarting: !!call?.screenStarting,
+        localAudioStream: call?.localStream || null,
+        localScreenStream: call?.screenStream || null,
         remoteAudioStream: call?.remoteAudioStream || null,
         remoteVideoStream: call?.remoteVideoStream || null,
       };
@@ -94,6 +96,54 @@
 
     function findAudioTransceiver(activeCall) {
       return activeCall.audioTransceiver || activeCall.pc?.getTransceivers().find(item => item.receiver?.track?.kind === "audio") || null;
+    }
+
+    function findVideoTransceiver(activeCall) {
+      return activeCall.videoTransceiver || activeCall.pc?.getTransceivers().find(item => item.receiver?.track?.kind === "video") || null;
+    }
+
+    async function tuneScreenSender(sender) {
+      if (!sender?.getParameters || !sender?.setParameters) return;
+      try {
+        const parameters = sender.getParameters();
+        if (!parameters.encodings?.length) return;
+        // Prefer a stable frame cadence on weaker networks. WebRTC may lower
+        // resolution automatically instead of freezing at a fixed 1080p.
+        parameters.degradationPreference = "balanced";
+        parameters.encodings[0].maxBitrate = 2_400_000;
+        parameters.encodings[0].maxFramerate = 24;
+        await sender.setParameters(parameters);
+      } catch (error) {
+        console.debug("Could not apply the low-latency screen profile; WebRTC defaults will be used.", error);
+      }
+    }
+
+    async function captureScreen(settings) {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        preferCurrentTab: false,
+        selfBrowserSurface: "exclude",
+        surfaceSwitching: "include",
+        video: {
+          width: { ideal: 1920, max: 1920 },
+          height: { ideal: 1080, max: 1080 },
+          frameRate: { ideal: 20, max: 24 },
+        },
+        audio: settings.shareSystemAudio,
+      });
+      const track = stream.getVideoTracks()[0];
+      if (track) {
+        try { track.contentHint = "detail"; } catch {}
+        try {
+          await track.applyConstraints({
+            width: { ideal: 1920, max: 1920 },
+            height: { ideal: 1080, max: 1080 },
+            frameRate: { ideal: 20, max: 24 },
+          });
+        } catch (error) {
+          console.debug("Screen capture constraints were not fully supported by this WebView.", error);
+        }
+      }
+      return stream;
     }
 
     async function attachMicrophone(activeCall, stream, { keepMuted = false } = {}) {
@@ -184,6 +234,8 @@
           activeCall.remoteVideoStream ||= new MediaStream();
           if (!activeCall.remoteVideoStream.getTracks().some(item => item.id === track.id)) activeCall.remoteVideoStream.addTrack(track);
           track.onended = notify;
+          track.onmute = notify;
+          track.onunmute = notify;
         }
         track.onended ||= notify;
         notify();
@@ -247,6 +299,8 @@
       try {
         const pc = makePeer(activeCall, configuration);
         activeCall.audioTransceiver = pc.addTransceiver("audio", { direction: activeCall.localAudioTrack ? "sendrecv" : "recvonly" });
+        activeCall.videoTransceiver = pc.addTransceiver("video", { direction: "sendrecv" });
+        await tuneScreenSender(activeCall.videoTransceiver.sender);
         if (activeCall.localAudioTrack) {
           if (settings.pushToTalk) activeCall.localAudioTrack.enabled = false;
           await activeCall.audioTransceiver.sender.replaceTrack(activeCall.localAudioTrack);
@@ -297,6 +351,11 @@
       try {
         const pc = makePeer(activeCall, configuration);
         await pc.setRemoteDescription(request.offer);
+        activeCall.videoTransceiver = findVideoTransceiver(activeCall);
+        if (activeCall.videoTransceiver) {
+          activeCall.videoTransceiver.direction = "sendrecv";
+          await tuneScreenSender(activeCall.videoTransceiver.sender);
+        }
         for (const candidate of activeCall.pendingRemoteIce.splice(0)) await pc.addIceCandidate(candidate);
         const microphone = await tryCaptureMicrophone(settings);
         activeCall.micUnavailableReason = microphone.error;
@@ -401,7 +460,11 @@
         call.screenStream = null;
         for (const track of stream.getTracks()) {
           const sender = call.pc.getSenders().find(item => item.track === track);
-          if (sender) call.pc.removeTrack(sender);
+          if (sender && track.kind === "video" && sender === findVideoTransceiver(call)?.sender) {
+            await sender.replaceTrack(null);
+          } else if (sender) {
+            call.pc.removeTrack(sender);
+          }
           track.onended = null;
           track.stop();
         }
@@ -414,20 +477,75 @@
       call.screenStarting = true;
       notify();
       try {
-        const stream = await navigator.mediaDevices.getDisplayMedia({
-          video: { frameRate: { ideal: 30, max: 60 } },
-          audio: settings.shareSystemAudio,
-        });
+        const stream = await captureScreen(settings);
         if (!call || call !== activeCall) { stream.getTracks().forEach(track => track.stop()); return; }
         call.screenStream = stream;
         for (const track of stream.getTracks()) {
           track.onended = () => { if (call?.screenStream === stream) void toggleScreenSharing(); };
-          call.pc.addTrack(track, stream);
+          if (track.kind === "video") {
+            let transceiver = findVideoTransceiver(call);
+            if (!transceiver) {
+              transceiver = call.pc.addTransceiver("video", { direction: "sendrecv" });
+              call.videoTransceiver = transceiver;
+              await tuneScreenSender(transceiver.sender);
+            }
+            await transceiver.sender.replaceTrack(track);
+          } else {
+            call.pc.addTrack(track, stream);
+          }
         }
         notify();
       } catch (error) {
         if (error?.name === "NotAllowedError" || error?.name === "AbortError") return;
         throw new Error(explainMediaError(error));
+      } finally {
+        if (call === activeCall) { call.screenStarting = false; notify(); }
+      }
+    }
+
+    async function refreshScreenSharing() {
+      if (!call || !call.screenStream || call.status === "calling") throw new Error("Start sharing your screen before refreshing it.");
+      if (call.screenStarting) return;
+      const activeCall = call;
+      const previousStream = call.screenStream;
+      const settings = api.getSettings();
+      if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("Screen capture is unavailable in this WebView. Update the Microsoft Edge WebView2 Runtime.");
+      call.screenStarting = true;
+      notify();
+      try {
+        const nextStream = await captureScreen(settings);
+        if (!call || call !== activeCall) { nextStream.getTracks().forEach(track => track.stop()); return; }
+        const nextTracks = [...nextStream.getTracks()];
+        const usedTracks = new Set();
+        for (const oldTrack of previousStream.getTracks()) {
+          const sender = call.pc.getSenders().find(item => item.track === oldTrack);
+          const replacement = nextTracks.find(track => track.kind === oldTrack.kind && !usedTracks.has(track));
+          if (replacement) {
+            usedTracks.add(replacement);
+            if (oldTrack.kind === "video") {
+              const transceiver = findVideoTransceiver(call);
+              if (transceiver) await transceiver.sender.replaceTrack(replacement);
+              else if (sender) await sender.replaceTrack(replacement);
+              else call.pc.addTrack(replacement, nextStream);
+            } else if (sender) await sender.replaceTrack(replacement);
+            else call.pc.addTrack(replacement, nextStream);
+          } else if (sender && oldTrack.kind === "video" && sender === findVideoTransceiver(call)?.sender) {
+            await sender.replaceTrack(null);
+          } else if (sender) call.pc.removeTrack(sender);
+          oldTrack.onended = null;
+          oldTrack.stop();
+        }
+        for (const track of nextTracks) {
+          if (!usedTracks.has(track) && track.kind === "video") {
+            const transceiver = findVideoTransceiver(call);
+            if (transceiver) await transceiver.sender.replaceTrack(track);
+            else call.pc.addTrack(track, nextStream);
+          } else if (!usedTracks.has(track)) call.pc.addTrack(track, nextStream);
+          track.onended = () => { if (call?.screenStream === nextStream) void toggleScreenSharing(); };
+        }
+        call.screenStream = nextStream;
+      } catch (error) {
+        if (error?.name !== "NotAllowedError" && error?.name !== "AbortError") throw new Error(explainMediaError(error));
       } finally {
         if (call === activeCall) { call.screenStarting = false; notify(); }
       }
@@ -486,7 +604,7 @@
     }
 
     function getState() { return snapshot(); }
-    return { start, accept, decline, hangup, toggleMicrophone, setMicrophoneDevice, toggleScreenSharing, setPushToTalk, handleSignal, getState };
+    return { start, accept, decline, hangup, toggleMicrophone, setMicrophoneDevice, toggleScreenSharing, refreshScreenSharing, setPushToTalk, handleSignal, getState };
   }
 
   window.GhostChatVoice = { create: createVoiceClient };

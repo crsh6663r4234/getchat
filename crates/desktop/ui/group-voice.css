@@ -1,0 +1,63 @@
+.group-voice-participants {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.group-voice-participant {
+  cursor: context-menu;
+}
+
+.group-voice-participant[aria-pressed="true"] {
+  border-color: #70434c;
+}
+
+.group-voice-media {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr));
+  gap: 12px;
+}
+
+.group-voice-media.hidden,
+.group-voice-participants.hidden {
+  display: none;
+}
+
+.group-voice-audio {
+  display: none;
+}
+
+.group-screen-tile {
+  position: relative;
+  overflow: hidden;
+  min-width: 0;
+  aspect-ratio: 16 / 9;
+  border: 1px solid #393a46;
+  border-radius: 13px;
+  background: #090a0e;
+}
+
+.group-screen-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #08090c;
+}
+
+.screen-share-layout.is-group {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.screen-share-layout.is-group #remoteScreenPanel,
+.screen-share-layout.is-group #localScreenPanel {
+  display: none;
+}
+
+.light .group-screen-tile {
+  border-color: #d9d4e3;
+}

@@ -6,6 +6,9 @@
   <meta name="theme-color" content="#111318">
   <title>GhostChat</title>
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="attachments.css">
+  <link rel="stylesheet" href="group-voice.css">
+  <link rel="stylesheet" href="design-system.css">
 </head>
 <body>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -68,11 +71,11 @@
     <nav class="rail" aria-label="Main navigation">
       <button class="brand-mark rail-brand" title="GhostChat" aria-label="GhostChat">G</button>
       <div class="rail-divider"></div>
-      <button class="rail-button active" data-page="messages" title="Messages" aria-label="Messages"><span class="icon">◷</span></button>
-      <button id="friendsNavButton" class="rail-button" data-page="friends" title="Friends" aria-label="Friends"><span class="icon">♧</span><span id="friendRequestBadge" class="rail-badge hidden"></span></button>
-      <button class="rail-button" data-page="search" title="Find people" aria-label="Find people"><span class="icon">⌕</span></button>
+      <button class="rail-button active" data-page="messages" title="Messages" aria-label="Messages" aria-current="page"><span class="icon" aria-hidden="true">◷</span><span class="rail-label" data-en="Messages" data-tr="Mesajlar">Messages</span></button>
+      <button id="friendsNavButton" class="rail-button" data-page="friends" title="Friends" aria-label="Friends"><span class="icon" aria-hidden="true">♧</span><span class="rail-label" data-en="Friends" data-tr="Arkadaşlar">Friends</span><span id="friendRequestBadge" class="rail-badge hidden"></span></button>
+      <button class="rail-button" data-page="search" title="Find people" aria-label="Find people"><span class="icon" aria-hidden="true">⌕</span><span class="rail-label" data-en="Find people" data-tr="Kişi bul">Find people</span></button>
       <div class="rail-spacer"></div>
-      <button id="settingsButton" class="rail-button" title="Settings" aria-label="Settings"><span class="icon">⚙</span></button>
+      <button id="settingsButton" class="rail-button" title="Settings" aria-label="Settings"><span class="icon" aria-hidden="true">⚙</span><span class="rail-label" data-en="Settings" data-tr="Ayarlar">Settings</span></button>
       <button id="profileButton" class="profile-avatar" title="Your profile" aria-label="Your profile">?</button>
     </nav>
 
@@ -83,20 +86,46 @@
     </aside>
 
     <section class="chat-area">
-      <header id="chatHeader" class="chat-header"><div class="chat-heading"><div class="mini-avatar large-avatar" id="chatAvatar">G</div><div><h2 id="chatTitle">Your quiet corner</h2><p id="chatSubtitle" class="muted">Choose a friend or find someone new.</p></div></div><div class="chat-tools"><div id="voiceTools" class="voice-tools hidden"><span id="voiceStatus" class="voice-status">Voice ready</span><button id="voiceCallButton" class="voice-start-button" title="Start voice call" aria-label="Start voice call"><span aria-hidden="true">☎</span><span>Call</span></button></div><span id="connectionState" class="connection-state"><i class="status-dot"></i>Connecting</span><button id="searchInChat" class="icon-button" title="Search messages" aria-label="Search messages">⌕</button></div></header>
+      <header id="chatHeader" class="chat-header"><button id="sidebarToggleButton" class="icon-button sidebar-toggle" type="button" aria-label="Show conversations" aria-controls="sidebarContent" aria-expanded="false" data-en-title="Show conversations" data-tr-title="Sohbetleri göster">☰</button><div class="chat-heading"><div class="mini-avatar large-avatar" id="chatAvatar">G</div><div class="chat-heading-copy"><p id="chatKindLabel" class="chat-kind-label">DIRECT MESSAGE</p><h2 id="chatTitle">Your quiet corner</h2><p id="chatSubtitle" class="muted">Choose a friend or find someone new.</p><p id="cryptoConversationStatus" class="crypto-conversation-status hidden" aria-live="polite"></p><p id="typingIndicator" class="typing-indicator hidden" aria-live="polite"></p></div></div><div class="chat-tools"><div id="voiceTools" class="voice-tools hidden"><span id="voiceStatus" class="voice-status">Voice ready</span><button id="voiceCallButton" class="voice-start-button" title="Start voice call" aria-label="Start voice call"><span aria-hidden="true">☎</span><span>Call</span></button></div><span id="connectionState" class="connection-state"><i class="status-dot"></i>Connecting</span><button id="enableEncryptionButton" class="button secondary crypto-toggle hidden" type="button">Enable encryption</button><button id="manageGroupButton" class="icon-button hidden" title="Manage group" aria-label="Manage group" data-en-title="Manage group" data-tr-title="Grubu yönet">♙</button><button id="userSafetyButton" class="button secondary hidden" type="button" data-en="Safety" data-tr="Güvenlik">Safety</button><button id="searchInChat" class="icon-button" title="Search messages" aria-label="Search messages">⌕</button></div></header>
       <div id="pageContent" class="page-content"></div>
       <div id="messagePanel" class="message-panel hidden">
         <section id="voiceStage" class="voice-stage hidden">
           <div class="voice-stage-head">
-            <div id="voicePeerAvatar" class="voice-peer-avatar">G</div>
-            <div class="voice-peer-details"><p class="voice-kicker">VOICE CALL</p><h3 id="voicePeerName">Your friend</h3><p class="voice-status-line"><i id="voiceStageDot" class="status-dot connecting"></i><span id="voiceStageStatus" aria-live="polite">Waiting to connect…</span></p></div>
+            <div class="voice-peer-details"><p class="voice-kicker" data-en="VOICE CALL" data-tr="SESLİ ARAMA">VOICE CALL</p><h3 data-en="Who’s here" data-tr="Görüşmedekiler">Who’s here</h3><p class="voice-status-line"><i id="voiceStageDot" class="status-dot connecting"></i><span id="voiceStageStatus" aria-live="polite">Waiting to connect…</span></p></div>
             <span class="voice-encryption-note">LIVE · AUDIO</span>
           </div>
-          <video id="remoteScreen" class="remote-screen hidden" autoplay playsinline muted></video>
+          <div class="voice-participants" aria-label="Call participants">
+            <button id="voicePeerCard" class="voice-participant-card peer-participant" type="button" aria-haspopup="menu" aria-expanded="false" title="Right-click to mute or unmute this caller">
+              <span id="voicePeerAvatar" class="voice-peer-avatar voice-participant-avatar">G</span>
+              <span class="voice-participant-copy"><strong id="voicePeerName">Your friend</strong><span class="voice-participant-speaking"><i class="voice-speaking-dot"></i><span id="voicePeerSpeaking">Listening</span></span></span>
+              <span id="voicePeerMutedBadge" class="voice-participant-muted hidden">Muted for you</span>
+            </button>
+            <div id="voiceLocalCard" class="voice-participant-card local-participant">
+              <span id="voiceLocalAvatar" class="voice-peer-avatar voice-participant-avatar">G</span>
+              <span class="voice-participant-copy"><strong id="voiceLocalName">You</strong><span class="voice-participant-speaking"><i class="voice-speaking-dot"></i><span id="voiceLocalSpeaking">Microphone on</span></span></span>
+              <span id="voiceLocalMutedBadge" class="voice-participant-muted hidden">Mic off</span>
+            </div>
+            <div id="groupVoiceParticipants" class="group-voice-participants hidden" aria-live="polite"></div>
+          </div>
+          <div id="voiceParticipantMenu" class="voice-participant-menu hidden" role="menu">
+            <button id="voiceParticipantMuteAction" type="button" role="menuitem">Mute their audio</button>
+            <p data-en="Only changes what you hear." data-tr="Yalnızca senin duyduğun sesi etkiler.">Only changes what you hear.</p>
+          </div>
+          <div id="screenShareLayout" class="screen-share-layout">
+            <div id="groupVoiceMedia" class="group-voice-media hidden"></div>
+            <div id="remoteScreenPanel" class="screen-share-panel remote-screen-panel hidden">
+              <span class="screen-share-badge" data-en="FRIEND'S SCREEN" data-tr="ARKADAŞININ EKRANI">FRIEND'S SCREEN</span>
+              <video id="remoteScreen" class="remote-screen" autoplay playsinline muted></video>
+            </div>
+            <div id="localScreenPanel" class="screen-share-panel local-screen-panel hidden">
+              <span class="screen-share-badge live" data-en="YOU ARE SHARING" data-tr="EKRANINI PAYLAŞIYORSUN">YOU ARE SHARING</span>
+              <video id="localScreen" class="local-screen" autoplay playsinline muted></video>
+            </div>
+          </div>
           <div class="voice-stage-body">
             <div id="voiceDeviceRow" class="voice-device-row hidden">
-              <label class="voice-device-picker"><span>Microphone</span><select id="voiceCallMicSelect"><option value="">System default</option></select></label>
-              <label class="voice-device-picker"><span>Speaker</span><select id="voiceCallSpeakerSelect"><option value="">System default</option></select></label>
+              <label class="voice-device-picker"><span data-en="Microphone" data-tr="Mikrofon">Microphone</span><select id="voiceCallMicSelect"><option value="" data-en="System default" data-tr="Sistem varsayılanı">System default</option></select></label>
+              <label class="voice-device-picker"><span data-en="Speaker" data-tr="Hoparlör">Speaker</span><select id="voiceCallSpeakerSelect"><option value="" data-en="System default" data-tr="Sistem varsayılanı">System default</option></select></label>
               <button id="voiceRefreshDevices" class="voice-refresh-button" type="button" title="Refresh audio devices" aria-label="Refresh audio devices">↻</button>
             </div>
             <div class="voice-stage-controls">
@@ -104,6 +133,7 @@
                 <button id="voiceStageMicButton" class="voice-control-button" type="button" aria-pressed="true"><span id="voiceStageMicIcon" class="voice-control-icon" aria-hidden="true">🎙</span><span id="voiceStageMicLabel">Turn mic on</span></button>
                 <button id="voiceOutputButton" class="voice-control-button" type="button" aria-pressed="false"><span id="voiceOutputIcon" class="voice-control-icon" aria-hidden="true">🔊</span><span id="voiceOutputLabel">Sound on</span></button>
                 <button id="voiceStageShareButton" class="voice-control-button hidden" type="button"><span id="voiceStageShareIcon" class="voice-control-icon" aria-hidden="true">▣</span><span id="voiceStageShareLabel">Share screen</span></button>
+                <button id="voiceRefreshScreenButton" class="voice-control-button hidden" type="button" title="Refresh screen share" data-en-title="Refresh screen share" data-tr-title="Ekran paylaşımını yenile"><span class="voice-control-icon" aria-hidden="true">↻</span><span data-en="Refresh share" data-tr="Paylaşımı yenile">Refresh share</span></button>
               </div>
               <div class="voice-control-group voice-call-actions">
                 <button id="voiceStageAccept" class="button primary hidden" type="button">Join call</button>
@@ -117,54 +147,136 @@
         </section>
         <div id="loadOlderRow" class="load-older-row"><button id="loadOlder" class="text-button">Load earlier messages</button></div>
         <div id="messages" class="messages" role="log" aria-live="polite"></div>
-        <form id="composer" class="composer"><textarea id="messageInput" rows="1" maxlength="4000" placeholder="Write a message…" aria-label="Write a message" data-en-placeholder="Write a message…" data-tr-placeholder="Mesaj yaz…"></textarea><button class="send-button" type="submit" aria-label="Send message">↑</button><div class="composer-hint">Enter to send <span>·</span> Shift + Enter for a new line</div></form>
+        <div id="replyComposerPreview" class="reply-composer-preview hidden"><span id="replyComposerText"></span><button id="cancelReply" type="button" class="icon-button" aria-label="Cancel reply">×</button></div>
+        <form id="composer" class="composer"><input id="attachmentInput" class="visually-hidden" type="file"><button id="attachFileButton" class="attach-file-button" type="button" title="Attach a photo, video, or file" aria-label="Attach a photo, video, or file" data-en-title="Attach a photo, video, or file" data-tr-title="Fotoğraf, video veya dosya ekle">＋</button><textarea id="messageInput" rows="1" maxlength="4000" placeholder="Write a message…" aria-label="Write a message" data-en-placeholder="Write a message…" data-tr-placeholder="Mesaj yaz…"></textarea><button class="send-button" type="submit" aria-label="Send message">↑</button><div class="composer-hint">Enter to send <span>·</span> Shift + Enter for a new line</div></form>
       </div>
     </section>
   </div>
 
+  <dialog id="newConversationDialog" class="dialog">
+    <form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="MESSAGES" data-tr="MESAJLAR">MESSAGES</p><h2 data-en="Start a conversation" data-tr="Sohbet başlat">Start a conversation</h2></div><button class="icon-button" aria-label="Close">×</button></form>
+    <div class="dialog-body">
+      <p class="muted small-copy" data-en="Start a private chat or bring a few friends together." data-tr="Özel sohbet başlat ya da birkaç arkadaşını bir araya getir.">Start a private chat or bring a few friends together.</p>
+      <div class="dialog-actions conversation-options"><button id="findPeopleAction" class="button secondary" type="button" data-en="Find people" data-tr="Kişi bul">Find people</button><button id="createGroupAction" class="button primary" type="button" data-en="Create group" data-tr="Grup oluştur">Create group</button><button id="joinGroupAction" class="button secondary" type="button" data-en="Join with invite code" data-tr="Davet koduyla katıl">Join with invite code</button></div>
+    </div>
+  </dialog>
+
+  <dialog id="groupDialog" class="dialog">
+    <form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="GROUP CHAT" data-tr="GRUP SOHBETİ">GROUP CHAT</p><h2 data-en="Create a group" data-tr="Grup oluştur">Create a group</h2></div><button class="icon-button" aria-label="Close">×</button></form>
+    <form id="groupForm" class="dialog-body">
+      <label><span data-en="Group name" data-tr="Grup adı">Group name</span><input id="groupNameInput" maxlength="50" required></label>
+      <div><div class="section-label" data-en="CHOOSE 2 TO 15 FRIENDS" data-tr="2 İLE 15 ARKADAŞ SEÇ">CHOOSE 2 TO 15 FRIENDS</div><div id="groupFriendList" class="group-friend-list"></div></div>
+      <p class="fine-print" data-en="Only accepted friends can be added. You can invite up to 15 friends." data-tr="Yalnızca arkadaş olarak eklediğin kişileri seçebilirsin. En fazla 15 arkadaş davet edebilirsin.">Only accepted friends can be added. You can invite up to 15 friends.</p>
+      <div class="dialog-actions"><button id="submitGroup" class="button primary" type="submit" data-en="Create group" data-tr="Grup oluştur">Create group</button></div>
+    </form>
+  </dialog>
+  <dialog id="groupManageDialog" class="dialog group-manage-dialog">
+    <form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="GROUP SETTINGS" data-tr="GRUP AYARLARI">GROUP SETTINGS</p><h2 id="manageGroupTitle" data-en="Manage group" data-tr="Grubu yönet">Manage group</h2></div><button class="icon-button" aria-label="Close">×</button></form>
+    <div class="dialog-body">
+      <section id="groupNameEditor" class="group-manage-section hidden">
+        <label><span data-en="Group name" data-tr="Grup adı">Group name</span><input id="manageGroupName" maxlength="50"></label>
+        <button id="saveGroupName" class="button secondary" type="button" data-en="Save name" data-tr="Adı kaydet">Save name</button>
+      </section>
+      <section class="group-manage-section"><h3 data-en="Members" data-tr="Üyeler">Members</h3><div id="groupMembersList" class="group-members-list" aria-live="polite"></div></section>
+      <section id="groupInviteSection" class="group-manage-section hidden"><h3 data-en="Invite friends" data-tr="Arkadaş davet et">Invite friends</h3><p id="encryptedGroupInviteHint" class="fine-print hidden" data-en="Verify each selected friend's full security code through another trusted channel before adding them to this encrypted group." data-tr="Seçtiğin her arkadaşın tam güvenlik kodunu şifreli gruba eklemeden önce başka güvenilir bir kanaldan doğrula.">Verify each selected friend's full security code through another trusted channel before adding them to this encrypted group.</p><div id="groupInviteList" class="group-friend-list"></div><button id="inviteGroupFriends" class="button primary" type="button" data-en="Add selected friends" data-tr="Seçilen arkadaşları ekle">Add selected friends</button><div id="groupInviteCodeSection"><div class="group-manage-divider"></div><h3 data-en="Invite codes" data-tr="Davet kodları">Invite codes</h3><p class="fine-print" data-en="Each code expires after 7 days, allows up to 20 joins, and is shown only once. You can copy the code or a link that opens GhostChat." data-tr="Her kod 7 gün sonra geçersiz olur, en fazla 20 katılıma izin verir ve yalnızca bir kez gösterilir. Kodu ya da GhostChat'i açan bağlantıyı kopyalayabilirsin.">Each code expires after 7 days, allows up to 20 joins, and is shown only once. You can copy the code or a link that opens GhostChat.</p><div id="groupInvitesList" class="group-invites-list"></div><button id="generateGroupInvite" class="button secondary" type="button" data-en="Create invite code" data-tr="Davet kodu oluştur">Create invite code</button></div></section>
+      <p id="groupManageStatus" class="fine-print" aria-live="polite"></p>
+    </div>
+  </dialog>
+
+  <dialog id="joinGroupDialog" class="dialog">
+    <form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="GROUP CHAT" data-tr="GRUP SOHBETİ">GROUP CHAT</p><h2 data-en="Join a group" data-tr="Gruba katıl">Join a group</h2></div><button class="icon-button" aria-label="Close">×</button></form>
+    <form id="joinGroupForm" class="dialog-body"><label><span data-en="Invite code" data-tr="Davet kodu">Invite code</span><input id="groupInviteCodeInput" maxlength="64" autocomplete="off" spellcheck="false" required></label><p class="fine-print" data-en="Only use invite codes from people you trust." data-tr="Yalnızca güvendiğin kişilerden gelen davet kodlarını kullan.">Only use invite codes from people you trust.</p><div class="dialog-actions"><button id="submitGroupInvite" class="button primary" type="submit" data-en="Join group" data-tr="Gruba katıl">Join group</button></div></form>
+  </dialog>
+
+  <dialog id="userSafetyDialog" class="dialog">
+    <form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="DIRECT MESSAGE" data-tr="ÖZEL MESAJ">DIRECT MESSAGE</p><h2 data-en="Safety and reporting" data-tr="Güvenlik ve bildirim">Safety and reporting</h2></div><button class="icon-button" aria-label="Close">×</button></form>
+    <div class="dialog-body">
+      <p class="muted small-copy" data-en="Blocking removes the friendship and stops new direct messages and calls. Existing chat history stays available. Reports are sent to and stored by this server, and its operator can read them. Only the reason and details you enter are included; chat messages and attachments are never attached automatically. GhostChat has no moderation console or guaranteed response time." data-tr="Engellemek arkadaşlığı kaldırır ve yeni özel mesajları ile aramaları durdurur. Eski sohbet geçmişi görünür kalır. Bildirim bu sunucuya gönderilir ve kaydedilir; sunucu yöneticisi okuyabilir. Yalnızca seçtiğin neden ve yazdığın açıklama eklenir; mesajlar ve dosyalar otomatik eklenmez. GhostChat'te moderasyon paneli veya yanıt süresi garantisi yoktur.">Blocking removes the friendship and stops new direct messages and calls. Existing chat history stays available. Reports are sent to and stored by this server, and its operator can read them. Only the reason and details you enter are included; chat messages and attachments are never attached automatically. GhostChat has no moderation console or guaranteed response time.</p>
+      <button id="safetyBlockButton" class="button danger" type="button" data-en="Block user" data-tr="Kullanıcıyı engelle">Block user</button>
+      <form id="safetyReportForm" class="dialog-body safety-report-form">
+        <h3 data-en="Report this user" data-tr="Bu kullanıcıyı bildir">Report this user</h3>
+        <label><span data-en="Reason" data-tr="Neden">Reason</span><select id="safetyReportCategory" required><option value="" data-en="Choose a reason" data-tr="Bir neden seç">Choose a reason</option><option value="harassment" data-en="Harassment" data-tr="Taciz">Harassment</option><option value="spam" data-en="Spam or scams" data-tr="Spam veya dolandırıcılık">Spam or scams</option><option value="threats" data-en="Threats" data-tr="Tehdit">Threats</option><option value="other" data-en="Other" data-tr="Diğer">Other</option></select></label>
+        <label><span data-en="Details (optional)" data-tr="Açıklama (isteğe bağlı)">Details (optional)</span><textarea id="safetyReportDetails" maxlength="1000" rows="4"></textarea></label>
+        <div class="dialog-actions"><button class="button primary" type="submit" data-en="Send report" data-tr="Bildirimi gönder">Send report</button></div>
+      </form>
+    </div>
+  </dialog>
+
   <dialog id="settingsDialog" class="dialog">
     <form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="PREFERENCES" data-tr="TERCİHLER">PREFERENCES</p><h2 data-en="Settings" data-tr="Ayarlar">Settings</h2></div><button class="icon-button" aria-label="Close">×</button></form>
     <div class="dialog-body">
-      <details class="settings-section" open>
-        <summary data-en="Profile" data-tr="Profil">Profile</summary>
+      <section class="settings-section">
+        <h3 class="settings-section-title" data-en="Profile" data-tr="Profil">Profile</h3>
         <div class="settings-section-content">
           <label><span data-en="Display name" data-tr="Görünen ad">Display name</span><input id="profileNameInput" maxlength="32"></label>
+          <label><span data-en="Username" data-tr="Kullanıcı adı">Username</span><input id="profileUsernameInput" maxlength="24" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="username"><small class="optional" data-en="3–24 letters, numbers, or underscores. Your tag changes when you save." data-tr="3–24 harf, rakam veya alt çizgi. Kaydedince etiketin değişir.">3–24 letters, numbers, or underscores. Your tag changes when you save.</small></label>
           <label class="avatar-upload-row profile-photo-row" for="profileAvatarInput"><span id="profileAvatarPreview" class="mini-avatar avatar-preview">G</span><span class="avatar-upload-copy"><strong data-en="Profile picture" data-tr="Profil fotoğrafı">Profile picture</strong><small data-en="JPG or PNG · max 32 KB after resizing" data-tr="JPG veya PNG · boyutlandırılmış en fazla 32 KB">JPG or PNG · max 32 KB after resizing</small></span><span class="button secondary avatar-choose" data-en="Choose" data-tr="Seç">Choose</span><input id="profileAvatarInput" class="visually-hidden" type="file" accept="image/*"></label>
           <div class="dialog-actions"><button id="removeProfileAvatar" class="button secondary" type="button" data-en="Remove photo" data-tr="Fotoğrafı kaldır">Remove photo</button><button id="saveProfile" class="button primary" type="button" data-en="Save profile" data-tr="Profili kaydet">Save profile</button></div>
           <p class="fine-print"><span data-en="Your random tag" data-tr="Rastgele etiketin">Your random tag</span> <strong id="profileTagLabel">@username</strong></p>
         </div>
-      </details>
-      <details id="connectionSettingsSection" class="settings-section">
-        <summary data-en="Connection" data-tr="Bağlantı">Connection</summary>
+      </section>
+      <section id="encryptionSettingsSection" class="settings-section">
+        <h3 class="settings-section-title" data-en="Private messaging setup" data-tr="Özel mesaj hazırlığı">Private messaging setup</h3>
+        <div class="settings-section-content">
+          <p class="muted small-copy" data-en="Prepare this device and publish a one-time key package. This only prepares the device; direct-message encryption starts after both people set it up and verify each other." data-tr="Bu cihazı hazırla ve tek kullanımlık anahtar paketi yayımla. Bu yalnızca cihazı hazırlar; özel mesaj şifrelemesi iki taraf da kurulumu tamamlayıp birbirini doğrulayınca başlar.">Prepare this device and publish a one-time key package. This only prepares the device; direct-message encryption starts after both people set it up and verify each other.</p>
+          <p class="fine-print crypto-recovery-warning" data-en="Encrypted chat keys are stored on this Windows device. Your account recovery key does not restore them. Reinstalling Windows or losing this device can make existing encrypted chats unreadable; device backup and transfer are not supported yet." data-tr="Şifreli sohbet anahtarları bu Windows cihazında tutulur. Hesap kurtarma anahtarın bunları geri yüklemez. Windows'u yeniden kurmak veya bu cihazı kaybetmek mevcut şifreli sohbetleri okunamaz hâle getirebilir; cihaz yedekleme ve aktarımı henüz desteklenmiyor.">Encrypted chat keys are stored on this Windows device. Your account recovery key does not restore them. Reinstalling Windows or losing this device can make existing encrypted chats unreadable; device backup and transfer are not supported yet.</p>
+          <div class="dialog-actions"><button id="prepareCryptoDeviceButton" class="button secondary" type="button" data-en="Prepare this device" data-tr="Bu cihazı hazırla">Prepare this device</button></div>
+          <div id="cryptoDeviceDetails" class="crypto-device-details hidden" aria-live="polite">
+            <p><span data-en="Device ID" data-tr="Cihaz kimliği">Device ID</span> <strong id="cryptoDeviceIdValue"></strong></p>
+            <p><span data-en="Identity fingerprint" data-tr="Kimlik parmak izi">Identity fingerprint</span> <strong id="cryptoFingerprintValue" class="crypto-fingerprint"></strong></p>
+          </div>
+          <p id="cryptoDeviceStatus" class="fine-print" aria-live="polite" data-en="No encryption device is prepared on this account yet." data-tr="Bu hesap için henüz şifreleme cihazı hazırlanmadı.">No encryption device is prepared on this account yet.</p>
+          <div class="crypto-device-manager">
+            <div class="dialog-actions"><button id="refreshCryptoDevices" class="button secondary" type="button" data-en="Manage encryption devices" data-tr="Şifreleme cihazlarını yönet">Manage encryption devices</button></div>
+            <p class="fine-print" data-en="Revocation blocks this encryption-device ID from claiming unclaimed key packages on this server. It does not sign out the device's app sessions, block account access, revoke packages already claimed, or remove it from existing encrypted groups." data-tr="İptal, bu şifreleme cihazı kimliğinin sunucudaki alınmamış anahtar paketlerini almasını engeller. Cihazın uygulama oturumlarını kapatmaz, hesap erişimini engellemez, alınmış paketleri iptal etmez veya mevcut şifreli gruplardan çıkarmaz.">Revocation blocks this encryption-device ID from claiming unclaimed key packages on this server. It does not sign out the device's app sessions, block account access, revoke packages already claimed, or remove it from existing encrypted groups.</p>
+            <div id="cryptoDeviceList" class="crypto-device-list" aria-live="polite"></div>
+          </div>
+        </div>
+      </section>
+      <section id="connectionSettingsSection" class="settings-section">
+        <h3 class="settings-section-title" data-en="Connection" data-tr="Bağlantı">Connection</h3>
         <div class="settings-section-content">
           <label><span data-en="Server address" data-tr="Sunucu adresi">Server address</span> <span class="optional" data-en="Enter an HTTPS address, then choose Change server. Leave empty to use the local server." data-tr="HTTPS adresini girip Sunucuyu değiştir'e bas. Yerel sunucu için boş bırak.">Enter an HTTPS address, then choose Change server. Leave empty to use the local server.</span><input id="serverAddressInput" type="url" placeholder="https://ghost-cassper.duckdns.org"></label>
           <div class="dialog-actions"><button id="changeServerButton" class="button primary" type="button" data-en="Change server" data-tr="Sunucuyu değiştir">Change server</button></div>
           <p class="fine-print" data-en="Remote servers must use HTTPS and trust the GhostChat desktop origin. Session tokens are stored in Windows Credential Manager." data-tr="Uzak sunucular HTTPS kullanmalı ve GhostChat masaüstü kaynağına izin vermeli. Oturum anahtarları Windows Kimlik Bilgisi Yöneticisi'nde saklanır.">Remote servers must use HTTPS and trust the GhostChat desktop origin. Session tokens are stored in Windows Credential Manager.</p>
         </div>
-      </details>
-      <details class="settings-section">
-        <summary data-en="Appearance" data-tr="Görünüm">Appearance</summary>
+      </section>
+      <section class="settings-section">
+        <h3 class="settings-section-title" data-en="Appearance" data-tr="Görünüm">Appearance</h3>
         <div class="settings-section-content">
           <label class="setting-row"><span data-en="Language" data-tr="Dil">Language</span><select id="languageSelect"><option value="en">English</option><option value="tr">Türkçe</option></select></label>
           <label class="setting-row"><span data-en="Theme" data-tr="Tema">Theme</span><select id="themeSelect"><option value="dark" data-en="Dark" data-tr="Koyu">Dark</option><option value="light" data-en="Light" data-tr="Açık">Light</option></select></label>
           <label class="setting-row"><span data-en="Text size" data-tr="Yazı boyutu">Text size</span><select id="textSize"><option value="14" data-en="Compact" data-tr="Küçük">Compact</option><option value="15" data-en="Default" data-tr="Varsayılan">Default</option><option value="17" data-en="Large" data-tr="Büyük">Large</option></select></label>
         </div>
-      </details>
-      <details class="settings-section">
-        <summary data-en="Notifications" data-tr="Bildirimler">Notifications</summary>
+      </section>
+      <section class="settings-section">
+        <h3 class="settings-section-title" data-en="Notifications" data-tr="Bildirimler">Notifications</h3>
         <div class="settings-section-content">
           <p class="muted small-copy" data-en="GhostChat can show Windows notifications for friend requests, calls, and messages while it is running." data-tr="GhostChat çalışırken arkadaşlık istekleri, aramalar ve mesajlar için Windows bildirimi gösterebilir.">GhostChat can show Windows notifications for friend requests, calls, and messages while it is running.</p>
           <label class="setting-row"><span data-en="Windows notifications" data-tr="Windows bildirimleri">Windows notifications</span><input id="desktopNotificationsEnabled" type="checkbox" checked></label>
           <div class="dialog-actions"><button id="testDesktopNotification" class="button secondary" type="button" data-en="Send test notification" data-tr="Test bildirimi gönder">Send test notification</button></div>
         </div>
-      </details>
-      <details class="settings-section">
-        <summary data-en="Voice and screen sharing" data-tr="Sesli sohbet ve ekran paylaşımı">Voice and screen sharing</summary>
+      </section>
+      <section class="settings-section">
+        <h3 class="settings-section-title" data-en="Desktop behavior" data-tr="Masaüstü davranışı">Desktop behavior</h3>
+        <div class="settings-section-content">
+          <p class="muted small-copy" data-en="Start GhostChat after you sign in to Windows. Closing the window keeps GhostChat in the system tray." data-tr="Windows oturumu açıldığında GhostChat başlasın. Pencereyi kapatınca GhostChat sistem tepsisinde çalışmaya devam eder.">Start GhostChat after you sign in to Windows. Closing the window keeps GhostChat in the system tray.</p>
+          <label class="setting-row"><span data-en="Start with Windows" data-tr="Windows ile başlat">Start with Windows</span><input id="startWithWindows" type="checkbox"></label>
+        </div>
+      </section>
+      <section class="settings-section">
+        <h3 class="settings-section-title" data-en="Voice and screen sharing" data-tr="Sesli sohbet ve ekran paylaşımı">Voice and screen sharing</h3>
         <div class="settings-section-content">
           <p class="muted small-copy" data-en="WebRTC sends live media directly between callers when possible. The default public STUN service and the person you call may see your network address. Relay-only mode needs a TURN server configured by the server owner. Screen sharing always uses the system picker so you choose what to share. Calls can still be joined muted if no microphone is available." data-tr="WebRTC mümkün olduğunda canlı sesi doğrudan arayanlar arasında iletir. Varsayılan STUN hizmeti ve aradığın kişi ağ adresini görebilir. Yalnızca aktarma modu için sunucu sahibinin TURN kurması gerekir. Paylaşacağın ekranı sistem seçicisinden seçersin. Mikrofon olmasa da sessiz katılabilirsin.">WebRTC sends live media directly between callers when possible. The default public STUN service and the person you call may see your network address. Relay-only mode needs a TURN server configured by the server owner. Screen sharing always uses the system picker so you choose what to share. Calls can still be joined muted if no microphone is available.</p>
           <label><span data-en="Microphone" data-tr="Mikrofon">Microphone</span><select id="voiceMicSelect"><option value="" data-en="System default" data-tr="Sistem varsayılanı">System default</option></select></label>
           <label><span data-en="Speaker" data-tr="Hoparlör">Speaker</span><select id="voiceSpeakerSelect"><option value="" data-en="System default" data-tr="Sistem varsayılanı">System default</option></select></label>
           <div class="dialog-actions"><button id="refreshAudioDevices" class="button secondary" type="button" data-en="Refresh audio devices" data-tr="Ses aygıtlarını yenile">Refresh audio devices</button></div>
+          <div class="voice-mic-test">
+            <div class="voice-mic-test-heading"><strong data-en="Microphone test" data-tr="Mikrofon testi">Microphone test</strong><span id="voiceMicLevelLabel">0%</span></div>
+            <div id="voiceMicLevelMeter" class="voice-mic-level-meter" role="meter" aria-label="Microphone input level" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="voiceMicLevelFill"></span></div>
+            <p id="voiceMicTestStatus" class="fine-print" aria-live="polite" data-en="Press test and speak into your microphone." data-tr="Testi başlatıp mikrofona konuş.">Press test and speak into your microphone.</p>
+            <button id="voiceMicTestButton" class="button secondary" type="button" aria-pressed="false" data-en="Test microphone" data-tr="Mikrofonu dene">Test microphone</button>
+          </div>
           <label class="setting-row"><span data-en="Echo cancellation" data-tr="Yankı engelleme">Echo cancellation</span><input id="voiceEchoCancellation" type="checkbox" checked></label>
           <label class="setting-row"><span data-en="Noise suppression" data-tr="Gürültü azaltma">Noise suppression</span><input id="voiceNoiseSuppression" type="checkbox" checked></label>
           <label class="setting-row"><span data-en="Automatic microphone gain" data-tr="Otomatik mikrofon seviyesi">Automatic microphone gain</span><input id="voiceAutoGain" type="checkbox" checked></label>
@@ -173,28 +285,48 @@
           <label class="setting-row"><span data-en="Relay-only (hide IP from peer)" data-tr="Yalnızca aktarma (IP'yi eşten gizle)">Relay-only (hide IP from peer)</span><input id="voiceRelayOnly" type="checkbox" disabled></label>
           <label><span data-en="Remote call volume" data-tr="Karşı tarafın sesi">Remote call volume</span><input id="voiceVolume" type="range" min="0" max="100" value="100"></label>
           <p id="voiceNetworkStatus" class="fine-print">Checking voice relay support…</p>
+          <p id="groupVoiceNetworkStatus" class="fine-print">Group voice status is being checked.</p>
           <div class="dialog-actions"><button id="saveSettings" class="button primary" type="button" data-en="Save settings" data-tr="Ayarları kaydet">Save settings</button></div>
         </div>
-      </details>
-      <details class="settings-section">
-        <summary data-en="Updates" data-tr="Güncellemeler">Updates</summary>
+      </section>
+      <section class="settings-section">
+        <h3 class="settings-section-title" data-en="Updates" data-tr="Güncellemeler">Updates</h3>
         <div class="settings-section-content">
           <p id="updateStatus" class="muted small-copy">Updates are checked automatically.</p>
           <p id="updateNotes" class="muted small-copy hidden"></p>
           <div class="dialog-actions update-actions"><button id="checkUpdates" class="button secondary" type="button" data-en="Check now" data-tr="Şimdi kontrol et">Check now</button><button id="installUpdate" class="button primary hidden" data-en="Install and restart" data-tr="Yükle ve yeniden başlat">Install and restart</button></div>
         </div>
-      </details>
-      <details class="settings-section">
-        <summary data-en="Privacy and data" data-tr="Gizlilik ve veriler">Privacy and data</summary>
+      </section>
+      <section class="settings-section">
+        <h3 class="settings-section-title" data-en="Privacy and data" data-tr="Gizlilik ve veriler">Privacy and data</h3>
         <div class="settings-section-content">
-          <p class="muted small-copy" data-en="Messages are stored on the selected server and are not end-to-end encrypted. The server operator can access message content. You can export your recovery key during account setup." data-tr="Mesajlar seçili sunucuda saklanır ve uçtan uca şifrelenmez. Sunucu yöneticisi mesajları görebilir. Kurtarma anahtarını hesap açarken dışa aktarabilirsin.">Messages are stored on the selected server and are not end-to-end encrypted. The server operator can access message content. You can export your recovery key during account setup.</p>
+          <p class="muted small-copy" data-en="Messages in chats without MLS encryption and older messages or attachments stay readable by the selected server. New text and files in verified MLS chats are encrypted on your devices. The server can still see participants and traffic size." data-tr="MLS şifrelemesi olmayan sohbetlerdeki mesajlar ve eski mesajlar ya da dosyalar seçili sunucu tarafından okunabilir. Doğrulanmış MLS sohbetlerinde yeni mesajlar ve dosyalar cihazlarında şifrelenir. Sunucu yine de katılımcıları ve veri miktarını görür.">Messages in chats without MLS encryption and older messages or attachments stay readable by the selected server. New text and files in verified MLS chats are encrypted on your devices. The server can still see participants and traffic size.</p>
+          <div id="recoverySettingsPanel" class="recovery-settings">
+            <h4 data-en="Recovery key" data-tr="Kurtarma anahtarı">Recovery key</h4>
+            <p id="settingsRecoveryStatus" class="muted small-copy" aria-live="polite"></p>
+            <button id="showSettingsRecoveryKey" class="button secondary hidden" type="button" data-en="Show recovery key" data-tr="Kurtarma anahtarını göster">Show recovery key</button>
+            <textarea id="settingsRecoveryValue" class="settings-recovery-value hidden" rows="2" readonly spellcheck="false" aria-label="Recovery key"></textarea>
+            <div id="settingsRecoveryTools" class="dialog-actions recovery-key-actions hidden">
+              <button id="copySettingsRecoveryKey" class="button secondary" type="button" data-en="Copy key" data-tr="Anahtarı kopyala">Copy key</button>
+              <button id="downloadSettingsRecoveryKey" class="button secondary" type="button" data-en="Save backup" data-tr="Yedek kaydet">Save backup</button>
+            </div>
+            <button id="generateRecoveryKey" class="button secondary" type="button" data-en="Generate replacement key" data-tr="Yeni kurtarma anahtarı oluştur">Generate replacement key</button>
+            <p class="fine-print" data-en="Creating a replacement immediately invalidates your previous recovery key. Keep the new key somewhere safe; anyone who has it can recover your account." data-tr="Yeni anahtar oluşturmak eski kurtarma anahtarını hemen geçersiz kılar. Yeni anahtarı güvenli yerde sakla; anahtara sahip olan herkes hesabını kurtarabilir.">Creating a replacement immediately invalidates your previous recovery key. Keep the new key somewhere safe; anyone who has it can recover your account.</p>
+          </div>
+          <div class="recovery-settings">
+            <h4 data-en="Signed-in sessions" data-tr="Açık oturumlar">Signed-in sessions</h4>
+            <p class="muted small-copy" data-en="Sign out every other GhostChat session. This device stays signed in." data-tr="Diğer tüm GhostChat oturumlarını kapat. Bu cihaz açık kalır.">Sign out every other GhostChat session. This device stays signed in.</p>
+            <button id="revokeOtherSessions" class="button secondary" type="button" data-en="Sign out other sessions" data-tr="Diğer oturumları kapat">Sign out other sessions</button>
+          </div>
           <button id="exportSettings" class="button secondary" type="button" data-en="Export preferences" data-tr="Tercihleri dışa aktar">Export preferences</button><button id="exportAccount" class="button secondary" type="button" data-en="Download account data" data-tr="Hesap verilerini indir">Download account data</button><button id="deleteAccount" class="button danger" type="button" data-en="Delete account and data" data-tr="Hesabı ve verileri sil">Delete account and data</button>
         </div>
-      </details>
+      </section>
     </div>
   </dialog>
 
+  <script src="vendor/livekit-client.umd.js"></script>
   <script src="voice-client.js"></script>
+  <script src="group-voice-client.js"></script>
   <script src="main.js"></script>
 </body>
 </html>

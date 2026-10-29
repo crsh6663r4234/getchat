@@ -1,4 +1,4 @@
-name: Publish GhostChat release
+name: Prepare GhostChat release draft
 
 on:
   push:
@@ -55,7 +55,7 @@ jobs:
         shell: pwsh
         run: cargo build --release --locked --package ghostchat-server
 
-      - name: Build, sign, and publish
+      - name: Build, sign, and create draft
         uses: tauri-apps/tauri-action@action-v1.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -65,8 +65,15 @@ jobs:
           projectPath: crates/desktop
           tagName: v__VERSION__
           releaseName: GhostChat v__VERSION__
-          releaseBody: "Sets the default GhostChat server to ghost-cassper.duckdns.org and adds a dedicated Change server action. Existing sessions are carried over from the previous VDS IP. No VDS update is required."
-          releaseDraft: false
+          releaseBody: |
+            ## GhostChat 4.0
+
+            This major update adds group conversations, replies, reactions, pins, unread status, invite links, profile photos, Windows notifications and tray controls, 5 GB file sharing, and voice/screen sharing through a separately configured LiveKit service.
+
+            Direct and group text can be opted into MLS encryption after participants verify their security codes. New attachments in verified encrypted chats are encrypted on the device. Earlier messages and files remain unencrypted. MLS device replacement and portable encrypted-state recovery are not supported yet; account recovery restores account access only. Group voice and screen sharing are encrypted in transit but are not end-to-end encrypted.
+
+            Review the security and deployment notes before using GhostChat for sensitive conversations or exposing a server to the internet.
+          releaseDraft: true
           prerelease: false
           args: --bundles msi
           updaterJsonPreferNsis: false

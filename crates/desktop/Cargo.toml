@@ -10,12 +10,34 @@ tauri-build = { version = "2.7.3", features = [] }
 
 [dependencies]
 ghostchat-server = { path = "../server" }
-tauri = { version = "2.12.4", features = ["wry"] }
+tauri = { version = "2.12.4", features = ["wry", "tray-icon"] }
 tauri-plugin-notification = "2"
-tauri-plugin-updater = "2.13.0"
+tauri-plugin-updater = { version = "2.13.0", default-features = false, features = ["native-tls", "system-proxy", "zip"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+rand.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+base64.workspace = true
+aes-gcm = "0.10.3"
+hmac = "0.12.1"
+openmls = "=0.9.2"
+openmls_basic_credential = "0.6.0"
+openmls_rust_crypto = "0.6.0"
+openmls_sqlx_storage = "0.3.0"
+openmls_traits = "0.6.0"
+sqlx.workspace = true
+tls_codec = { version = "0.5", features = ["derive", "serde", "mls"] }
+zeroize = "1.9.1"
+futures-util = "0.3.34"
+bytes = "1.12.1"
+reqwest = { workspace = true, features = ["stream"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.60.2", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.60.2", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_Storage_FileSystem", "Win32_UI_Controls_Dialogs", "Win32_UI_WindowsAndMessaging"] }
+winreg = "0.56.0"
+
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }

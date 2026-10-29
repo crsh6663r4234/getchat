@@ -1,0 +1,148 @@
+.composer {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 40px;
+  align-items: end;
+  gap: 7px;
+}
+
+#messageInput {
+  grid-column: 2;
+  grid-row: 1;
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 42px;
+  max-height: 180px;
+  resize: none;
+}
+
+.attach-file-button {
+  grid-column: 1;
+  grid-row: 1;
+  width: 38px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 23px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.attach-file-button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.attach-file-button:disabled {
+  opacity: .55;
+  cursor: progress;
+}
+
+.send-button {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.composer-hint {
+  grid-column: 2 / 4;
+  grid-row: 2;
+}
+
+.message-attachment {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  max-width: min(560px, 100%);
+  margin-top: 6px;
+}
+
+.message-image,
+.message-video {
+  display: block;
+  max-width: min(560px, 100%);
+  max-height: 380px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #08090c;
+  object-fit: contain;
+}
+
+.attachment-download {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 9px 12px;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface-2);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.attachment-download:hover {
+  border-color: var(--accent);
+}
+
+.attachment-download.unavailable {
+  color: var(--muted);
+}
+
+.attachment-filename {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.encrypted-attachment {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-2) 84%, transparent);
+}
+
+.encrypted-attachment .attachment-filename {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.attachment-size {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.encrypted-attachment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.encrypted-attachment-actions button {
+  cursor: pointer;
+}
+
+.encrypted-attachment-actions button:disabled {
+  cursor: progress;
+  opacity: .65;
+}
+
+@media (max-width: 680px) {
+  .composer {
+    grid-template-columns: 34px minmax(0, 1fr) 36px;
+    gap: 5px;
+  }
+
+  .attach-file-button {
+    width: 34px;
+    height: 38px;
+  }
+
+  .message-image,
+  .message-video {
+    max-height: 260px;
+  }
+}
