@@ -5,7 +5,7 @@ Product target: two people using GhostChat regularly, with groups available as a
 
 ## Evidence and limits
 
-This first pass is based on the current HTML, CSS, and UI event handlers. The installed GhostChat app was started for a visual baseline, but Windows returned no app window, so this audit does not claim a runtime screenshot review. Capture working 4.0 screenshots before recording visual before/after results. The current session's plugin discovery reports Figma as not installed; the local design work continues, while editable Figma screens and prototypes remain outstanding.
+The source audit covers the current HTML, CSS, and UI event handlers. Offline Edge screenshots of the real UI files now exist under `docs/design-review/`. Authenticated server behavior, the Tauri-native window, real audio devices, and a real screen-share stream are not represented by the offline fixture. Figma plugin discovery reports Figma as not installed in this session, so editable Figma screens and interactive prototypes remain outstanding.
 
 ## Route and state inventory
 
@@ -51,4 +51,17 @@ This first pass is based on the current HTML, CSS, and UI event handlers. The in
 - Reworked the app rail, conversation list, chat header, message area, composer, dialogs, settings cards, call stage, and compact sidebar behavior.
 - Added visible English/Turkish nav labels and localized call microphone/speaker pickers.
 - Added `aria-current` updates for page navigation and an accessible compact-window sidebar toggle.
-- `node --check` passes for `main.js` and `group-voice-client.js`; `git diff --check` passes. Visual comparison, full string audit, and screenshots remain pending.
+- `node --check` passes for `main.js` and `group-voice-client.js`; `git diff --check` passes. Full string audit and Tauri runtime screenshots remain pending.
+
+## Offline visual review — 2026-10-30
+
+The preview uses the production `index.html` and stylesheets with local sample content and network access disabled. Main-app preview content is a static two-person fixture; it does not authenticate or connect to the user's server.
+
+- `design-review/auth-wide.png` and `design-review/auth-typical.png` show the English account entry screen at wide and typical widths.
+- `design-review/auth-compact.png` and `design-review/auth-compact-tr.png` show compact English and Turkish account entry screens. The 390 px layout fits without horizontal clipping; the initial Turkish capture exposed an untranslated privacy notice, which is now localized.
+- `design-review/direct-message.png` and `design-review/direct-message-compact.png` show a two-person conversation at typical and compact widths, including both message identities and the compact conversation toggle.
+- `design-review/voice-call.png` shows the two participant cards, speaking state, missing-microphone state, input/output selection, share control, and share-refresh control.
+- `design-review/settings-wide.png` and `design-review/settings-compact.png` show the scrollable settings surface at two widths. The visual check found overlapping cards on wide layout; grid rows now size to their content, and columns collapse to one below 820 px.
+- Compact navigation now closes the sidebar after navigation and before opening Settings.
+
+The offline samples are visual evidence only. A real Tauri window still needs a layout pass for settings, recovery, dialogs, Turkish conversation text, actual call setup, and screen sharing. Do not use these images as evidence that the server, microphone, TURN, LiveKit, or screen-share transport works.
