@@ -834,8 +834,16 @@
     const friends = create("button", "button secondary", "View friends"); friends.onclick = () => setPage("friends");
     actions.append(find, friends); card.append(actions); $("#pageContent").append(card); renderVoiceControls();
   }
+  function closeMobileSidebar() {
+    $("#appView").classList.remove("sidebar-open");
+    const button = $("#sidebarToggleButton");
+    button.setAttribute("aria-expanded", "false");
+    button.setAttribute("aria-label", translate("Show conversations"));
+    button.title = translate("Show conversations");
+  }
   function setPage(page) {
     sendTyping(false);
+    closeMobileSidebar();
     state.page = page; state.active = page === "messages" ? state.active : null;
     if (page === "friends") state.searchTab = state.pending?.length ? "pending" : "all";
     $$(".rail-button[data-page]").forEach(button => {
@@ -2459,11 +2467,7 @@
   };
   $("#sidebarContent").addEventListener("click", event => {
     if (!event.target.closest(".list-row")) return;
-    $("#appView").classList.remove("sidebar-open");
-    const button = $("#sidebarToggleButton");
-    button.setAttribute("aria-expanded", "false");
-    button.setAttribute("aria-label", translate("Show conversations"));
-    button.title = translate("Show conversations");
+    closeMobileSidebar();
   });
   $("#sidebarAction").onclick = () => {
     if (state.page === "messages") $("#newConversationDialog").showModal();
@@ -2662,7 +2666,7 @@
       $("#cryptoDeviceStatus").textContent = translate("A local device identity is saved. Publish a fresh one-time key package when needed.");
     }
   }
-  $("#settingsButton").onclick = openSettings;
+  $("#settingsButton").onclick = () => { closeMobileSidebar(); openSettings(); };
   $("#serverSettings").onclick = () => {
     openSettings();
     $("#serverAddressInput").focus({ preventScroll: true });
