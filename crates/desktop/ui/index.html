@@ -32,16 +32,16 @@
       <h1 data-en="Talk freely." data-tr="Özgürce konuş.">Talk freely.</h1>
       <p class="muted intro" data-en="Make an account without an email or phone number. Keep your recovery key somewhere safe." data-tr="E-posta veya telefon olmadan hesap oluştur. Kurtarma anahtarını güvenli bir yerde sakla.">Make an account without an email or phone number. Keep your recovery key somewhere safe.</p>
       <div class="auth-tabs" role="tablist" aria-label="Account options" data-en-label="Account options" data-tr-label="Hesap seçenekleri">
-        <button class="auth-tab active" data-auth-tab="create" data-en="Create account" data-tr="Hesap oluştur">Create account</button>
-        <button class="auth-tab" data-auth-tab="recover" data-en="Recover" data-tr="Hesabı kurtar">Recover</button>
+        <button id="createAccountTab" class="auth-tab active" type="button" role="tab" aria-selected="true" aria-controls="createForm" tabindex="0" data-auth-tab="create" data-en="Create account" data-tr="Hesap oluştur">Create account</button>
+        <button id="recoverAccountTab" class="auth-tab" type="button" role="tab" aria-selected="false" aria-controls="recoverForm" tabindex="-1" data-auth-tab="recover" data-en="Recover" data-tr="Hesabı kurtar">Recover</button>
       </div>
-      <form id="createForm" class="auth-form">
+      <form id="createForm" class="auth-form" role="tabpanel" aria-labelledby="createAccountTab" tabindex="0" aria-hidden="false">
         <label><span data-en="Name" data-tr="Ad">Name</span><input name="display_name" maxlength="32" required placeholder="What should people call you?" data-en-placeholder="What should people call you?" data-tr-placeholder="Sana nasıl hitap edilsin?"></label>
         <label class="avatar-upload-row" for="signupAvatar"><span id="signupAvatarPreview" class="mini-avatar avatar-preview">G</span><span class="avatar-upload-copy"><strong data-en="Profile picture" data-tr="Profil fotoğrafı">Profile picture</strong><small data-en="Optional · choose a photo" data-tr="İsteğe bağlı · fotoğraf seç">Optional · choose a photo</small></span><span class="button secondary avatar-choose" data-en="Choose" data-tr="Seç">Choose</span><input id="signupAvatar" class="visually-hidden" type="file" accept="image/*"></label>
         <button class="button primary wide" type="submit"><span data-en="Create account" data-tr="Hesap oluştur">Create account</span> <span>→</span></button>
         <p class="fine-print" data-en="No email, phone number, or password. Your unique tag is generated automatically." data-tr="E-posta, telefon veya parola gerekmez. Sana özel etiket otomatik oluşturulur.">No email, phone number, or password. Your unique tag is generated automatically.</p>
       </form>
-      <form id="recoverForm" class="auth-form hidden">
+      <form id="recoverForm" class="auth-form hidden" role="tabpanel" aria-labelledby="recoverAccountTab" tabindex="0" aria-hidden="true" hidden>
         <label>Recovery key<textarea name="recovery_token" rows="3" spellcheck="false" required placeholder="Paste your saved recovery key" data-en-placeholder="Paste your saved recovery key" data-tr-placeholder="Kaydettiğin kurtarma anahtarını yapıştır"></textarea></label>
         <button class="button primary wide" type="submit">Recover account <span>→</span></button>
         <p class="fine-print" data-en="Your recovery key is the only way to regain access if you lose this device." data-tr="Bu cihazı kaybedersen hesabına erişmenin tek yolu kurtarma anahtarındır.">Your recovery key is the only way to regain access if you lose this device.</p>
@@ -89,12 +89,12 @@
       <header id="chatHeader" class="chat-header"><button id="sidebarToggleButton" class="icon-button sidebar-toggle" type="button" aria-label="Show conversations" aria-controls="sidebarContent" aria-expanded="false" data-en-title="Show conversations" data-tr-title="Sohbetleri göster">☰</button><div class="chat-heading"><div class="mini-avatar large-avatar" id="chatAvatar">G</div><div class="chat-heading-copy"><p id="chatKindLabel" class="chat-kind-label">DIRECT MESSAGE</p><h2 id="chatTitle">Your quiet corner</h2><p id="chatSubtitle" class="muted">Choose a friend or find someone new.</p><p id="cryptoConversationStatus" class="crypto-conversation-status hidden" aria-live="polite"></p><p id="typingIndicator" class="typing-indicator hidden" aria-live="polite"></p></div></div><div class="chat-tools"><div id="voiceTools" class="voice-tools hidden"><span id="voiceStatus" class="voice-status">Voice ready</span><button id="voiceCallButton" class="voice-start-button" title="Start voice call" aria-label="Start voice call"><span aria-hidden="true">☎</span><span>Call</span></button></div><span id="connectionState" class="connection-state"><i class="status-dot"></i>Connecting</span><button id="enableEncryptionButton" class="button secondary crypto-toggle hidden" type="button">Enable encryption</button><button id="manageGroupButton" class="icon-button hidden" title="Manage group" aria-label="Manage group" data-en-title="Manage group" data-tr-title="Grubu yönet">♙</button><button id="userSafetyButton" class="button secondary hidden" type="button" data-en="Safety" data-tr="Güvenlik">Safety</button><button id="searchInChat" class="icon-button" title="Search messages" aria-label="Search messages" data-en-title="Search messages" data-tr-title="Mesajlarda ara">⌕</button></div></header>
       <div id="pageContent" class="page-content"></div>
       <div id="messagePanel" class="message-panel hidden">
-        <section id="voiceStage" class="voice-stage hidden">
+        <section id="voiceStage" class="voice-stage hidden" aria-labelledby="voiceStageTitle">
           <div class="voice-stage-head">
-            <div class="voice-peer-details"><p class="voice-kicker" data-en="VOICE CALL" data-tr="SESLİ ARAMA">VOICE CALL</p><h3 data-en="Who’s here" data-tr="Görüşmedekiler">Who’s here</h3><p class="voice-status-line"><i id="voiceStageDot" class="status-dot connecting"></i><span id="voiceStageStatus" aria-live="polite">Waiting to connect…</span></p></div>
+            <div class="voice-peer-details"><p class="voice-kicker" data-en="VOICE CALL" data-tr="SESLİ ARAMA">VOICE CALL</p><h3 id="voiceStageTitle" data-en="Who’s here" data-tr="Görüşmedekiler">Who’s here</h3><p class="voice-status-line"><i id="voiceStageDot" class="status-dot connecting"></i><span id="voiceStageStatus" aria-live="polite">Waiting to connect…</span></p></div>
             <span class="voice-encryption-note">LIVE · AUDIO</span>
           </div>
-          <div class="voice-participants" aria-label="Call participants" data-en-label="Call participants" data-tr-label="Arama katılımcıları">
+          <div class="voice-participants" role="group" aria-label="Call participants" data-en-label="Call participants" data-tr-label="Arama katılımcıları">
             <button id="voicePeerCard" class="voice-participant-card peer-participant" type="button" aria-haspopup="menu" aria-expanded="false" title="Right-click to mute or unmute this caller" data-en-title="Right-click to mute or unmute this caller" data-tr-title="Arayanın sesini kısmak veya açmak için sağ tıkla">
               <span id="voicePeerAvatar" class="voice-peer-avatar voice-participant-avatar">G</span>
               <span class="voice-participant-copy"><strong id="voicePeerName">Your friend</strong><span class="voice-participant-speaking"><i class="voice-speaking-dot"></i><span id="voicePeerSpeaking">Listening</span></span></span>
@@ -153,16 +153,16 @@
     </section>
   </div>
 
-  <dialog id="newConversationDialog" class="dialog">
-    <form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="MESSAGES" data-tr="MESAJLAR">MESSAGES</p><h2 data-en="Start a conversation" data-tr="Sohbet başlat">Start a conversation</h2></div><button class="icon-button" aria-label="Close" data-en-title="Close" data-tr-title="Kapat">×</button></form>
+  <dialog id="newConversationDialog" class="dialog" aria-labelledby="newConversationTitle">
+    <form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="MESSAGES" data-tr="MESAJLAR">MESSAGES</p><h2 id="newConversationTitle" data-en="Start a conversation" data-tr="Sohbet başlat">Start a conversation</h2></div><button class="icon-button" aria-label="Close" data-en-title="Close" data-tr-title="Kapat">×</button></form>
     <div class="dialog-body">
       <p class="muted small-copy" data-en="Start a private chat or bring a few friends together." data-tr="Özel sohbet başlat ya da birkaç arkadaşını bir araya getir.">Start a private chat or bring a few friends together.</p>
       <div class="dialog-actions conversation-options"><button id="findPeopleAction" class="button secondary" type="button" data-en="Find people" data-tr="Kişi bul">Find people</button><button id="createGroupAction" class="button primary" type="button" data-en="Create group" data-tr="Grup oluştur">Create group</button><button id="joinGroupAction" class="button secondary" type="button" data-en="Join with invite code" data-tr="Davet koduyla katıl">Join with invite code</button></div>
     </div>
   </dialog>
 
-  <dialog id="groupDialog" class="dialog">
-    <form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="GROUP CHAT" data-tr="GRUP SOHBETİ">GROUP CHAT</p><h2 data-en="Create a group" data-tr="Grup oluştur">Create a group</h2></div><button class="icon-button" aria-label="Close" data-en-title="Close" data-tr-title="Kapat">×</button></form>
+  <dialog id="groupDialog" class="dialog" aria-labelledby="createGroupTitle">
+    <form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="GROUP CHAT" data-tr="GRUP SOHBETİ">GROUP CHAT</p><h2 id="createGroupTitle" data-en="Create a group" data-tr="Grup oluştur">Create a group</h2></div><button class="icon-button" aria-label="Close" data-en-title="Close" data-tr-title="Kapat">×</button></form>
     <form id="groupForm" class="dialog-body">
       <label><span data-en="Group name" data-tr="Grup adı">Group name</span><input id="groupNameInput" maxlength="50" required></label>
       <div><div class="section-label" data-en="CHOOSE 2 TO 15 FRIENDS" data-tr="2 İLE 15 ARKADAŞ SEÇ">CHOOSE 2 TO 15 FRIENDS</div><div id="groupFriendList" class="group-friend-list"></div></div>
@@ -170,7 +170,7 @@
       <div class="dialog-actions"><button id="submitGroup" class="button primary" type="submit" data-en="Create group" data-tr="Grup oluştur">Create group</button></div>
     </form>
   </dialog>
-  <dialog id="groupManageDialog" class="dialog group-manage-dialog">
+  <dialog id="groupManageDialog" class="dialog group-manage-dialog" aria-labelledby="manageGroupTitle">
     <form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="GROUP SETTINGS" data-tr="GRUP AYARLARI">GROUP SETTINGS</p><h2 id="manageGroupTitle" data-en="Manage group" data-tr="Grubu yönet">Manage group</h2></div><button class="icon-button" aria-label="Close" data-en-title="Close" data-tr-title="Kapat">×</button></form>
     <div class="dialog-body">
       <section id="groupNameEditor" class="group-manage-section hidden">
@@ -183,13 +183,13 @@
     </div>
   </dialog>
 
-  <dialog id="joinGroupDialog" class="dialog">
-    <form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="GROUP CHAT" data-tr="GRUP SOHBETİ">GROUP CHAT</p><h2 data-en="Join a group" data-tr="Gruba katıl">Join a group</h2></div><button class="icon-button" aria-label="Close" data-en-title="Close" data-tr-title="Kapat">×</button></form>
+  <dialog id="joinGroupDialog" class="dialog" aria-labelledby="joinGroupTitle">
+    <form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="GROUP CHAT" data-tr="GRUP SOHBETİ">GROUP CHAT</p><h2 id="joinGroupTitle" data-en="Join a group" data-tr="Gruba katıl">Join a group</h2></div><button class="icon-button" aria-label="Close" data-en-title="Close" data-tr-title="Kapat">×</button></form>
     <form id="joinGroupForm" class="dialog-body"><label><span data-en="Invite code" data-tr="Davet kodu">Invite code</span><input id="groupInviteCodeInput" maxlength="64" autocomplete="off" spellcheck="false" required></label><p class="fine-print" data-en="Only use invite codes from people you trust." data-tr="Yalnızca güvendiğin kişilerden gelen davet kodlarını kullan.">Only use invite codes from people you trust.</p><div class="dialog-actions"><button id="submitGroupInvite" class="button primary" type="submit" data-en="Join group" data-tr="Gruba katıl">Join group</button></div></form>
   </dialog>
 
-  <dialog id="userSafetyDialog" class="dialog">
-    <form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="DIRECT MESSAGE" data-tr="ÖZEL MESAJ">DIRECT MESSAGE</p><h2 data-en="Safety and reporting" data-tr="Güvenlik ve bildirim">Safety and reporting</h2></div><button class="icon-button" aria-label="Close" data-en-title="Close" data-tr-title="Kapat">×</button></form>
+  <dialog id="userSafetyDialog" class="dialog" aria-labelledby="userSafetyTitle">
+    <form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="DIRECT MESSAGE" data-tr="ÖZEL MESAJ">DIRECT MESSAGE</p><h2 id="userSafetyTitle" data-en="Safety and reporting" data-tr="Güvenlik ve bildirim">Safety and reporting</h2></div><button class="icon-button" aria-label="Close" data-en-title="Close" data-tr-title="Kapat">×</button></form>
     <div class="dialog-body">
       <p class="muted small-copy" data-en="Blocking removes the friendship and stops new direct messages and calls. Existing chat history stays available. Reports are sent to and stored by this server, and its operator can read them. Only the reason and details you enter are included; chat messages and attachments are never attached automatically. GhostChat has no moderation console or guaranteed response time." data-tr="Engellemek arkadaşlığı kaldırır ve yeni özel mesajları ile aramaları durdurur. Eski sohbet geçmişi görünür kalır. Bildirim bu sunucuya gönderilir ve kaydedilir; sunucu yöneticisi okuyabilir. Yalnızca seçtiğin neden ve yazdığın açıklama eklenir; mesajlar ve dosyalar otomatik eklenmez. GhostChat'te moderasyon paneli veya yanıt süresi garantisi yoktur.">Blocking removes the friendship and stops new direct messages and calls. Existing chat history stays available. Reports are sent to and stored by this server, and its operator can read them. Only the reason and details you enter are included; chat messages and attachments are never attached automatically. GhostChat has no moderation console or guaranteed response time.</p>
       <button id="safetyBlockButton" class="button danger" type="button" data-en="Block user" data-tr="Kullanıcıyı engelle">Block user</button>
@@ -202,8 +202,8 @@
     </div>
   </dialog>
 
-  <dialog id="settingsDialog" class="dialog">
-    <form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="PREFERENCES" data-tr="TERCİHLER">PREFERENCES</p><h2 data-en="Settings" data-tr="Ayarlar">Settings</h2></div><button class="icon-button" aria-label="Close" data-en-title="Close" data-tr-title="Kapat">×</button></form>
+  <dialog id="settingsDialog" class="dialog" aria-labelledby="settingsTitle">
+    <form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="PREFERENCES" data-tr="TERCİHLER">PREFERENCES</p><h2 id="settingsTitle" data-en="Settings" data-tr="Ayarlar">Settings</h2></div><button class="icon-button" aria-label="Close" data-en-title="Close" data-tr-title="Kapat">×</button></form>
     <div class="dialog-body">
       <section class="settings-section">
         <h3 class="settings-section-title" data-en="Profile" data-tr="Profil">Profile</h3>

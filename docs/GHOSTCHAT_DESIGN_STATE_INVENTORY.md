@@ -46,6 +46,9 @@ This is a source-level inventory of the current Tauri UI. “Mapped in source”
 - Friend navigation announces the pending-request count in the selected language.
 - Call participant mute guidance is localized.
 - Language switching updates title-based and label-based accessible names through applyLanguage().
+- Account creation and recovery use an ARIA tab pattern with roving keyboard focus (Left/Right, Home, End), correctly announced selection, and hidden inactive panels.
+- Each native dialog is named by its visible heading. The voice stage is named by its heading, and call participants are exposed as a labeled group.
+- `node --check` passes for the main UI scripts; `cargo check -p ghostchat-desktop --locked` passes. This confirms syntax and compilation, not the native keyboard or media flows.
 - Offline Edge screenshots reviewed in the prior pass cover compact English/Turkish account entry, typical/wide English account entry, compact/typical English DM, typical English call, and compact/wide English settings.
 
 ## Prioritized unresolved verification

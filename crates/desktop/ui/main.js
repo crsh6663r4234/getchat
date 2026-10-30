@@ -2447,12 +2447,35 @@
       await clearPendingRecovery(); await enterApp();
     }
   }
-  function setAuthTab(tab) {
-    $$(".auth-tab").forEach(button => button.classList.toggle("active", button.dataset.authTab === tab));
-    $("#createForm").classList.toggle("hidden", tab !== "create"); $("#recoverForm").classList.toggle("hidden", tab !== "recover");
+  function setAuthTab(tab, moveFocus = false) {
+    const buttons = $$(".auth-tab");
+    const selected = buttons.find(button => button.dataset.authTab === tab) || buttons[0];
+    if (!selected) return;
+    const activeTab = selected.dataset.authTab;
+    for (const button of buttons) {
+      const active = button === selected;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-selected", String(active));
+      button.tabIndex = active ? 0 : -1;
+    }
+    for (const [name, panel] of [["create", $("#createForm")], ["recover", $("#recoverForm")]]) {
+      const active = name === activeTab;
+      panel.hidden = !active;
+      panel.classList.toggle("hidden", !active);
+      panel.setAttribute("aria-hidden", String(!active));
+    }
+    if (moveFocus) selected.focus({ preventScroll: true });
   }
 
   $$(".auth-tab").forEach(button => button.addEventListener("click", () => setAuthTab(button.dataset.authTab)));
+  $(".auth-tabs").addEventListener("keydown", event => {
+    const tabs = $$(".auth-tab");
+    const index = tabs.indexOf(document.activeElement);
+    if (index < 0 || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const nextIndex = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+    setAuthTab(tabs[nextIndex].dataset.authTab, true);
+  });
   $("#signupAvatar").addEventListener("change", event => { void handleAvatarFile(event.currentTarget, "#signupAvatarPreview", setSignupAvatar); });
   $("#profileAvatarInput").addEventListener("change", event => { void handleAvatarFile(event.currentTarget, "#profileAvatarPreview", value => { profileAvatarData = value; }); });
   $("#createForm").addEventListener("submit", async event => {
