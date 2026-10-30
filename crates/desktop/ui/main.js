@@ -128,12 +128,20 @@
     "Safety": "Güvenlik", "Safety and reporting": "Güvenlik ve bildirim", "Blocking removes the friendship and stops new direct messages and calls. Existing chat history stays available. Reports are sent to and stored by this server, and its operator can read them. Only the reason and details you enter are included; chat messages and attachments are never attached automatically. GhostChat has no moderation console or guaranteed response time.": "Engellemek arkadaşlığı kaldırır ve yeni özel mesajları ile aramaları durdurur. Eski sohbet geçmişi görünür kalır. Bildirim bu sunucuya gönderilir ve kaydedilir; sunucu yöneticisi okuyabilir. Yalnızca seçtiğin neden ve yazdığın açıklama eklenir; mesajlar ve dosyalar otomatik eklenmez. GhostChat'te moderasyon paneli veya yanıt süresi garantisi yoktur.", "Block user": "Kullanıcıyı engelle", "Unblock user": "Engeli kaldır", "Report this user": "Bu kullanıcıyı bildir", "Reason": "Neden", "Choose a reason": "Bir neden seç", "Harassment": "Taciz", "Spam or scams": "Spam veya dolandırıcılık", "Threats": "Tehdit", "Other": "Diğer", "Details (optional)": "Açıklama (isteğe bağlı)", "Send report": "Bildirimi gönder", "You blocked this user. Existing chat history is still available.": "Bu kullanıcıyı engelledin. Eski sohbet geçmişi görünür kalır.", "You unblocked this user. Send a new friend request to start a new direct chat.": "Bu kullanıcının engelini kaldırdın. Yeni özel sohbet için tekrar arkadaşlık isteği gönder.", "Report sent. No chat messages were attached.": "Bildirim gönderildi. Sohbet mesajları eklenmedi."
   });
   Object.assign(trText, { "Copy app link": "Uygulama bağlantısını kopyala", "Invite link copied.": "Davet bağlantısı kopyalandı.", "Show conversations": "Sohbetleri göster", "Hide conversations": "Sohbetleri gizle" });
+  Object.assign(trText, {
+    "Account options": "Hesap seçenekleri", "Main navigation": "Ana gezinme", "Call participants": "Arama katılımcıları",
+    "Your profile": "Profilin", "Log out": "Çıkış yap", "Close": "Kapat", "Send message": "Mesajı gönder",
+    "Write a message": "Mesaj yaz", "Microphone input level": "Mikrofon giriş seviyesi",
+    "Friends, one pending request": "Arkadaşlar, 1 bekleyen istek", "Friends, {count} pending requests": "Arkadaşlar, {count} bekleyen istek",
+    "Muted for you.": "Sesi senin için kapalı.", "Right-click to mute or unmute.": "Sesini kısmak veya açmak için sağ tıkla."
+  });
   const tr = () => (localStorage.getItem("ghostchat.language") || "en") === "tr";
   function translate(value) { return tr() ? (trText[value] || value) : value; }
   function applyLanguage() {
     const language = tr() ? "tr" : "en";
     document.documentElement.lang = language;
     $$("[data-en][data-tr]").forEach(node => { node.textContent = node.dataset[language]; });
+    $$("[data-en-label][data-tr-label]").forEach(node => node.setAttribute("aria-label", node.getAttribute(`data-${language}-label`)));
     $$("[data-en-title][data-tr-title]").forEach(node => { node.title = node.getAttribute(`data-${language}-title`); node.setAttribute("aria-label", node.title); });
     $$("[data-en-placeholder][data-tr-placeholder]").forEach(node => { node.placeholder = node.getAttribute(`data-${language}-placeholder`); });
     const sidebarToggle = $("#sidebarToggleButton");
@@ -191,7 +199,7 @@
       card.type = "button";
       card.className = `voice-participant-card group-voice-participant${participant.local ? " local-participant" : ""}${participant.speaking ? " is-speaking" : ""}`;
       card.setAttribute("aria-pressed", String(!!participant.mutedForYou));
-      card.setAttribute("aria-label", `${participant.name}${participant.mutedForYou ? ". Muted for you." : ". Right-click to mute or unmute."}`);
+      card.setAttribute("aria-label", `${participant.name}. ${translate(participant.mutedForYou ? "Muted for you." : "Right-click to mute or unmute.")}`);
       card.title = participant.local ? participant.name : translate("Right-click to mute or unmute this caller");
       const avatar = create("span");
       avatar.className = "voice-peer-avatar voice-participant-avatar";
@@ -585,7 +593,12 @@
     const count = state.pending?.length || 0;
     badge.classList.toggle("hidden", count === 0);
     badge.textContent = count > 9 ? "9+" : String(count);
-    $("#friendsNavButton")?.setAttribute("aria-label", count ? `Friends, ${count} pending request${count === 1 ? "" : "s"}` : "Friends");
+    const requestLabel = count === 1
+      ? translate("Friends, one pending request")
+      : count > 1
+        ? translate("Friends, {count} pending requests").replace("{count}", String(count))
+        : translate("Friends");
+    $("#friendsNavButton")?.setAttribute("aria-label", requestLabel);
   }
   async function checkForUpdates(quiet = false) {
     const statusNode = $("#updateStatus");
@@ -853,7 +866,10 @@
       else button.removeAttribute("aria-current");
     });
     const titles = { messages: "Messages", friends: "Friends", search: "Find people", searchMessages: "Search messages" };
-    $("#sidebarTitle").textContent = translate(titles[page]); $("#sidebarAction").title = translate(page === "messages" ? "Start a conversation" : "Find people");
+    $("#sidebarTitle").textContent = translate(titles[page]);
+    const sidebarActionLabel = translate(page === "messages" ? "Start a conversation" : "Find people");
+    $("#sidebarAction").title = sidebarActionLabel;
+    $("#sidebarAction").setAttribute("aria-label", sidebarActionLabel);
     if (page !== "messages") { $("#messagePanel").classList.add("hidden"); $("#pageContent").classList.remove("hidden"); renderPage(); }
     else if (state.active) openConversation(state.active.id, false);
     else showWelcome();
@@ -2267,6 +2283,7 @@
     const callActionLabel = state.active?.kind === "group" ? translate("Join voice") : translate("Call");
     $("#voiceCallButton").querySelector("span:last-child").textContent = callActionLabel;
     $("#voiceCallButton").title = groupNotReady ? translate("Group voice is not configured on this server. Configure LiveKit in the server environment.") : state.active?.kind === "group" ? translate("Join group voice") : translate("Start voice call");
+    $("#voiceCallButton").setAttribute("aria-label", callActionLabel);
     const labels = { idle: groupMode ? (state.groupVoiceAvailable === false ? "Group voice not configured" : "Group voice ready") : "Voice ready", incoming: "Incoming call", calling: "Calling…", connecting: "Connecting…", connected: groupMode ? "Group voice connected" : "In voice", reconnecting: "Reconnecting…" };
     $("#voiceStatus").textContent = translate(labels[voice.status] || "Voice");
     const voiceConversationId = groupMode ? groupVoice.conversationId : directVoice.conversationId;
