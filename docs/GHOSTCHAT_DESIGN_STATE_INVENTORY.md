@@ -53,7 +53,7 @@ This is a source-level inventory of the current Tauri UI. “Mapped in source”
 
 ## Prioritized unresolved verification
 
-1. **P0 — Windows runtime:** open the built Tauri app and capture baseline/final screens. Confirm compact sidebar, modal focus, keyboard navigation, close-to-tray, Windows notification permission, update gate, and Turkish text in actual WebView2.
+1. **P0 — Windows runtime:** the local Tauri launch was attempted. Windows denied the optional development deep-link registration, so that step is now non-fatal; the restricted workspace then denied opening the app-data SQLite file (code 14). There is no native screenshot or real account/device exercise from this session. In a normal desktop run, confirm compact sidebar, modal focus, keyboard navigation, close-to-tray, notifications, update gate, and Turkish text in WebView2.
 2. **P0 — two-device media:** exercise call accept/decline, no-microphone muted join, device switching, TURN fallback, screen-share picker/refresh/stop, and ended tracks with two real clients. Static screenshots cannot validate this.
 3. **P1 — remaining visuals:** capture the friends, people search, local message search, recovery screen, and all six dialogs at compact/typical/wide as applicable, in both languages; compare text wrapping and scroll behavior.
 4. **P1 — Figma:** create the editable source, token library, and linked interaction prototype. Figma execution tools are unavailable in this session, so no Figma file is claimed.

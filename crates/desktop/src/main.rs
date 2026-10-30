@@ -597,8 +597,16 @@ fn main() {
         })
         .setup(|app| {
             app.manage(PendingGroupInvites::default());
-            #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
+            #[cfg(target_os = "linux")]
             app.deep_link().register_all()?;
+            // Windows installers register the protocol handler themselves. In a
+            // development build this is only a convenience; restricted Windows
+            // environments may deny the per-user registry write, which must not
+            // prevent the desktop app from starting.
+            #[cfg(all(debug_assertions, windows))]
+            if let Err(error) = app.deep_link().register_all() {
+                eprintln!("GhostChat could not register its development invite link: {error}");
+            }
             let pending_group_invites = app.state::<PendingGroupInvites>().0.clone();
             if let Some(urls) = app.deep_link().get_current()? {
                 queue_group_invite_urls(
@@ -654,9 +662,9 @@ fn main() {
                 .join("attachments");
             let path = database_path.to_string_lossy().to_string();
             let (api, crypto_db) = tauri::async_runtime::block_on(async move {
-                let db = ghostchat_server::open_database(&path)
-                    .await
-                    .map_err(|error| error.to_string())?;
+                let db = ghostchat_server::open_database(&path).await.map_err(|error| {
+                    format!("Could not open GhostChat's local database at {path}: {error}")
+                })?;
                 let crypto_db = db.clone();
                 let state =
                     ghostchat_server::build_state_with_attachment_dir(db, attachment_dir).await;
