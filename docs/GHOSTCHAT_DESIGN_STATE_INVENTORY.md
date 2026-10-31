@@ -56,7 +56,7 @@ This is a source-level inventory of the current Tauri UI. “Mapped in source”
 1. **P0 — Windows runtime:** the local Tauri launch was attempted. Windows denied the optional development deep-link registration, so that step is now non-fatal; the restricted workspace then denied opening the app-data SQLite file (code 14). There is no native screenshot or real account/device exercise from this session. In a normal desktop run, confirm compact sidebar, modal focus, keyboard navigation, close-to-tray, notifications, update gate, and Turkish text in WebView2.
 2. **P0 — two-device media:** exercise call accept/decline, no-microphone muted join, device switching, TURN fallback, screen-share picker/refresh/stop, and ended tracks with two real clients. Static screenshots cannot validate this.
 3. **P1 — remaining visuals:** capture the friends, people search, local message search, recovery screen, and all six dialogs at compact/typical/wide as applicable, in both languages; compare text wrapping and scroll behavior.
-4. **P1 — Figma:** create the editable source, token library, and linked interaction prototype. Figma execution tools are unavailable in this session, so no Figma file is claimed.
+4. **P1 — Figma:** [editable source now exists](https://www.figma.com/design/2rAq5vrWpVJIKgGqJhiBiP) with 24 color variables, 10 metric variables, 6 text styles, 12 button variants, 16 conversation/call screens and 46 navigation links. Three representative compositions were read back and visually reviewed: all text uses Inter and no complete-UI images are present. This is an initial core-flow design, not complete coverage or verified parity. Add the remaining account/settings/dialog/error flows, fill missing call controls, and compare against the runtime after bundling the declared font.
 5. **P2 — broad accessibility review:** verify visible focus, keyboard-only dialog flows, contrast, and reduced motion on the running app.
 
 ## Visual evidence
@@ -67,3 +67,18 @@ This is a source-level inventory of the current Tauri UI. “Mapped in source”
 - settings-compact.png, settings-wide.png
 
 Every image above is a local/offline visual review artifact, not proof that the server, audio, permissions, notifications, encryption, updates, or screen-sharing transport works.
+
+## Interactive source preview — 2026-10-31
+
+The new preview runs production HTML/CSS/handlers with synthetic account, API and call-state adapters. It prevents real media capture and external fetches. Six new captures cover 860×560, 1280×820 and 1600×1000 with English and Turkish represented at each size. See `design-review/README.md` for exact scenario coverage and limitations.
+
+Fixed and exercised in that preview:
+
+- Page headers follow Friends/Search navigation instead of retaining an unrelated conversation title.
+- A call dock preserves return-to-call, microphone and hangup controls on another page. Clicking these handlers changed the synthetic call state as expected.
+- Closed native dialogs now use `display:none`; document height returned from 1612px to the intended 820px and hidden dialog controls disappeared from the visible accessibility tree.
+- The minimum-height call panel keeps mute/hangup and the composer within the viewport; participant/device content can scroll independently.
+- Settings use one scrollable column. At 1280px width the profile section is 632px wide instead of a half-width card beside an empty column; closing the dialog was exercised.
+- Call device notices, relay status and incoming friend-request text are localized. Some update-status messages still need localization verification.
+
+These checks use simulated calls and do not verify native permissions, actual audio/screen transport, notifications or tray behavior.

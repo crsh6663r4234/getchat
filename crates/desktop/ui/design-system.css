@@ -253,6 +253,54 @@ select:focus-visible,
   background: var(--bg);
 }
 
+.active-call-dock {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid color-mix(in srgb, var(--good) 35%, var(--line));
+  background: color-mix(in srgb, var(--surface) 94%, var(--good) 6%);
+}
+
+.active-call-info {
+  display: grid;
+  flex: 1 1 130px;
+  min-width: 0;
+  gap: 3px;
+}
+
+.active-call-info strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.active-call-info span {
+  color: var(--good);
+  font-size: 11px;
+}
+
+.active-call-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.active-call-actions .button {
+  min-height: 36px;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+@media (max-width: 680px) {
+  .active-call-dock { padding: 10px 14px; }
+  .active-call-actions { width: 100%; }
+  .active-call-actions .button { flex: 1 1 auto; }
+}
+
 .chat-header {
   min-height: 78px;
   height: auto;
@@ -333,11 +381,29 @@ select:focus-visible,
   background: var(--surface-3);
 }
 
+.button.danger {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--line));
+  background: color-mix(in srgb, var(--danger) 14%, var(--surface));
+  color: var(--danger);
+}
+
+.button.danger:hover {
+  background: color-mix(in srgb, var(--danger) 23%, var(--surface));
+}
+
 .page-content {
   min-height: 0;
   padding: clamp(18px, 3vw, 34px);
   scrollbar-color: #41495a transparent;
   scrollbar-width: thin;
+}
+
+.page-content:has(.content-page) {
+  justify-content: flex-start;
+}
+
+.content-page {
+  margin-block: 0;
 }
 
 .welcome-card {
@@ -414,6 +480,7 @@ select:focus-visible,
 }
 
 .composer {
+  flex-shrink: 0;
   align-items: flex-end;
   gap: 10px;
   margin: 0 clamp(16px, 4vw, 68px) 18px;
@@ -452,6 +519,10 @@ select:focus-visible,
 .send-button:hover {
   background: #c5b8ff;
   transform: translateY(-1px);
+}
+
+.dialog:not([open]) {
+  display: none;
 }
 
 .dialog[open] {
@@ -505,12 +576,16 @@ select:focus-visible,
 
 #settingsDialog .dialog-body {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   grid-auto-rows: max-content;
   align-content: start;
   align-items: start;
   gap: 14px;
   padding: 18px;
+}
+
+#settingsDialog .settings-section:nth-child(n) {
+  grid-column: 1;
 }
 
 #settingsDialog .settings-section {
@@ -639,6 +714,12 @@ select:focus-visible,
 }
 
 .voice-stage {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: min(54dvh, 540px);
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 18px;
   background: linear-gradient(150deg, #1d2430, #171b24 72%);
@@ -647,6 +728,23 @@ select:focus-visible,
 
 .light .voice-stage {
   background: linear-gradient(150deg, #fff, #f6f5fb 72%);
+}
+
+.voice-stage-scroll {
+  min-height: 0;
+  overflow: auto;
+  scrollbar-color: #41495a transparent;
+  scrollbar-width: thin;
+}
+
+.voice-stage-body {
+  flex: 0 0 auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.voice-stage-scroll .voice-device-row {
+  margin: 0 20px 12px;
 }
 
 .voice-stage-head,

@@ -5,7 +5,7 @@
 ## Start gate
 
 - The GhostChat 4.0 release candidate is complete and its remaining external validation limits are clearly recorded.
-- Use Figma as the design source of truth when its connector is available. The current session's plugin check reports Figma as not installed, despite the earlier connection attempt; keep the local audit and implementation moving while recording the missing editable Figma deliverable.
+- Figma is connected. The editable working file is [GhostChat 4.0](https://www.figma.com/design/2rAq5vrWpVJIKgGqJhiBiP). Source tokens, reusable components, 16 initial conversation/call screens and 46 prototype links now exist. Account/settings/state coverage and source parity remain unfinished; see `design-review/README.md` and the saved node ledgers.
 - Start from the current shipped/release-candidate app, not old screenshots or assumptions. Capture a new baseline before changing screens.
 
 ## Outcome

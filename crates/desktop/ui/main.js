@@ -135,6 +135,25 @@
     "Friends, one pending request": "Arkadaşlar, 1 bekleyen istek", "Friends, {count} pending requests": "Arkadaşlar, {count} bekleyen istek",
     "Muted for you.": "Sesi senin için kapalı.", "Right-click to mute or unmute.": "Sesini kısmak veya açmak için sağ tıkla."
   });
+  Object.assign(trText, {
+    "Current call": "Devam eden arama", "Return to call": "Aramaya dön", "Sharing screen": "Ekran paylaşılıyor", "Requests": "İstekler",
+    "Try to connect a microphone; if none is available you can keep listening muted": "Mikrofonu bağlamayı dene; mikrofon yoksa sessiz dinlemeye devam edebilirsin",
+    "Turn microphone on": "Mikrofonu aç", "Mute microphone": "Mikrofonu kapat",
+    "Join the call when you are ready. If no microphone is available, you can still listen muted.": "Hazır olduğunda aramaya katıl. Mikrofonun yoksa sessiz katılıp dinleyebilirsin.",
+    "No microphone found. You joined muted and can still listen.": "Mikrofon bulunamadı. Sessiz katıldın; görüşmeyi dinleyebilirsin.",
+    "Push to talk is on. Hold Space to speak; your microphone stays muted otherwise.": "Bas-konuş açık. Konuşmak için Boşluk tuşunu basılı tut; diğer zamanlarda mikrofonun kapalı kalır.",
+    "Your microphone is off. You can still hear the call.": "Mikrofonun kapalı. Görüşmeyi dinlemeye devam edebilirsin.",
+    "Your microphone is on. Use the controls above to switch devices or mute.": "Mikrofonun açık. Yukarıdan aygıtları değiştirebilir veya mikrofonunu kapatabilirsin.",
+    "Choose your microphone and speaker, or join muted and listen.": "Mikrofonunu ve hoparlörünü seç veya sessiz katılıp dinle.",
+    "Checking voice relay support…": "Ses aktarma desteği kontrol ediliyor…",
+    "Group voice SFU is configured. Group media is relayed and not end-to-end encrypted.": "Grup sesi yapılandırılmış. Grup görüşmeleri aktarma sunucusundan geçer ve uçtan uca şifreli değildir.",
+    "TURN relay is configured. Relay-only keeps your address from the other caller; the relay still handles encrypted media traffic.": "TURN aktarma sunucusu yapılandırılmış. Yalnızca aktarma modu adresini karşı taraftan gizler; şifreli ses ve görüntü aktarma sunucusundan geçer.",
+    "TURN relay is not configured. Direct calls can reveal your network address to the other caller and may fail on restrictive networks.": "TURN aktarma sunucusu yapılandırılmamış. Doğrudan aramalarda karşı taraf ağ adresini görebilir; kısıtlı ağlarda bağlantı kurulamayabilir.",
+    "This server is outdated for voice and screen sharing. Restart it with the latest GhostChat server build.": "Bu sunucu ses ve ekran paylaşımı için eski. Güncel GhostChat sunucusuyla yeniden başlatılmalı.",
+    "Voice relay settings are unavailable. The selected server may need the latest GhostChat server build.": "Ses aktarma ayarlarına ulaşılamıyor. Seçili sunucunun güncellenmesi gerekebilir.",
+    "Updates are checked automatically.": "Güncellemeler otomatik kontrol edilir.",
+    "New friend request": "Yeni arkadaşlık isteği", "{name} sent you a friend request.": "{name} sana arkadaşlık isteği gönderdi."
+  });
   const tr = () => (localStorage.getItem("ghostchat.language") || "en") === "tr";
   function translate(value) { return tr() ? (trText[value] || value) : value; }
   function applyLanguage() {
@@ -495,29 +514,29 @@
   async function checkVoiceRelaySupport() {
     const status = $("#voiceNetworkStatus");
     const relay = $("#voiceRelayOnly");
-    status.textContent = "Checking voice relay support…";
+    status.textContent = translate("Checking voice relay support…");
     try {
       const config = await request("/v1/voice/ice");
       state.groupVoiceAvailable = config.group_voice_available === true;
       const groupStatus = $("#groupVoiceNetworkStatus");
       if (groupStatus) groupStatus.textContent = state.groupVoiceAvailable
-        ? "Group voice SFU is configured. Group media is relayed and not end-to-end encrypted."
+        ? translate("Group voice SFU is configured. Group media is relayed and not end-to-end encrypted.")
         : translate("Group voice is not configured on this server. Configure LiveKit in the server environment.");
       renderVoiceControls();
       const enabled = !!config.turn_available;
       relay.disabled = !enabled;
-      status.textContent = enabled
+      status.textContent = translate(enabled
         ? "TURN relay is configured. Relay-only keeps your address from the other caller; the relay still handles encrypted media traffic."
-        : "TURN relay is not configured. Direct calls can reveal your network address to the other caller and may fail on restrictive networks.";
+        : "TURN relay is not configured. Direct calls can reveal your network address to the other caller and may fail on restrictive networks.");
     } catch (error) {
       state.groupVoiceAvailable = false;
       const groupStatus = $("#groupVoiceNetworkStatus");
       if (groupStatus) groupStatus.textContent = translate(error.status === 404 ? "Group voice is not configured on this server. Configure LiveKit in the server environment." : "Group voice status could not be checked.");
       renderVoiceControls();
       relay.disabled = true;
-      status.textContent = error.status === 404
+      status.textContent = translate(error.status === 404
         ? "This server is outdated for voice and screen sharing. Restart it with the latest GhostChat server build."
-        : "Voice relay settings are unavailable. The selected server may need the latest GhostChat server build.";
+        : "Voice relay settings are unavailable. The selected server may need the latest GhostChat server build.");
     }
   }
 
@@ -835,9 +854,26 @@
     await processPendingGroupInvites();
     renderSidebar(); showWelcome();
   }
+  function renderRouteHeader() {
+    if (state.page === "messages" && state.active) return;
+    const routes = {
+      messages: ["Your quiet corner", "Choose a friend or find someone new."],
+      friends: ["Friends", "Manage requests and start a private conversation."],
+      search: ["Find people", "Search for a username or user ID. Users are not listed publicly."],
+      searchMessages: ["Search messages", "Search in your messages"]
+    };
+    const [title, subtitle] = routes[state.page] || routes.messages;
+    $("#chatKindLabel").textContent = "GHOSTCHAT";
+    $("#chatTitle").textContent = translate(title);
+    $("#chatSubtitle").textContent = translate(subtitle);
+    setAvatar($("#chatAvatar"), "G");
+    $("#cryptoConversationStatus").classList.add("hidden");
+    $("#enableEncryptionButton").classList.add("hidden");
+    $("#typingIndicator").classList.add("hidden");
+  }
   function showWelcome() {
     if (state.page !== "messages" || state.active) return;
-    $("#chatTitle").textContent = translate("Your quiet corner"); $("#chatSubtitle").textContent = translate("Choose a friend or find someone new.");
+    renderRouteHeader();
     setAvatar($("#chatAvatar"), "G"); $("#messagePanel").classList.add("hidden"); $("#pageContent").classList.remove("hidden");
     $("#pageContent").innerHTML = "";
     const card = create("div", "welcome-card");
@@ -922,6 +958,7 @@
     root.append(create("div", "empty-list", "Search by username or user ID. GhostChat does not publish a public directory."));
   }
   function renderPage() {
+    renderRouteHeader();
     const root = $("#pageContent"); root.replaceChildren(); root.classList.remove("hidden");
     const page = create("div", "content-page");
     if (state.page === "search") {
@@ -934,7 +971,7 @@
     } else if (state.page === "friends") {
       page.append(create("h2", "", "Friends"), create("p", "muted", "Manage requests and start a private conversation."));
       const tabs = create("div", "tab-row");
-      for (const [key, label] of [["all", "All friends"], ["pending", `Requests${(state.pending || []).length ? ` · ${(state.pending || []).length}` : ""}`]]) { const button = create("button", state.searchTab === key ? "active" : "", label); button.onclick = () => { state.searchTab = key; renderPage(); }; tabs.append(button); }
+      for (const [key, label] of [["all", translate("All friends")], ["pending", `${translate("Requests")}${(state.pending || []).length ? ` · ${(state.pending || []).length}` : ""}`]]) { const button = create("button", state.searchTab === key ? "active" : "", label); button.onclick = () => { state.searchTab = key; renderPage(); }; tabs.append(button); }
       page.append(tabs);
       const list = create("div", "friend-results"); page.append(list);
       if (state.searchTab === "pending") {
@@ -946,7 +983,7 @@
       }
     } else if (state.page === "searchMessages") {
       page.append(create("h2", "", "Search messages"), create("p", "muted", "Searches the 50 latest messages in each conversation on this device; your search phrase stays local."));
-      const form = create("form", "search-form"); const input = create("input"); input.placeholder = translate("Search in your messages"); input.minLength = 2; const go = create("button", "button primary", "Search"); go.type = "submit"; form.append(input, go); page.append(form); const results = create("div", "search-results"); page.append(results);
+      const form = create("form", "search-form"); const input = create("input"); input.placeholder = translate("Search in your messages"); input.setAttribute("aria-label", translate("Search in your messages")); input.minLength = 2; const go = create("button", "button primary", "Search"); go.type = "submit"; form.append(input, go); page.append(form); const results = create("div", "search-results"); page.append(results);
       form.onsubmit = async event => {
         event.preventDefault(); const query = input.value.trim().toLocaleLowerCase(); if (query.length < 2) return;
         go.disabled = true; results.replaceChildren(create("div", "empty-list", translate("Searching locally…")));
@@ -996,8 +1033,9 @@
       if (notifyNew && newRequests.length) {
         if (state.page === "friends") state.searchTab = "pending";
         for (const item of newRequests) {
-          toast(`${item.display_name} sent you a friend request.`);
-          void sendDesktopNotification("New friend request", `${item.display_name} sent you a friend request.`);
+          const message = translate("{name} sent you a friend request.").replace("{name}", item.display_name);
+          toast(message);
+          void sendDesktopNotification(translate("New friend request"), message);
         }
       }
     } catch (error) { console.warn(error); }
@@ -1741,6 +1779,10 @@
   async function openConversation(id, refresh = true) {
     sendTyping(false);
     setReplyTarget(null);
+    closeMobileSidebar();
+    $("#sidebarTitle").textContent = translate("Messages");
+    $("#sidebarAction").title = translate("Start a conversation");
+    $("#sidebarAction").setAttribute("aria-label", translate("Start a conversation"));
     state.page = "messages"; $("#messagePanel").classList.remove("hidden"); $("#pageContent").classList.add("hidden");
     if (refresh) {
       $$(".rail-button[data-page]").forEach(button => {
@@ -2314,7 +2356,7 @@
     $("#voiceStageMicButton").setAttribute("aria-pressed", String(voice.micMuted));
     $("#voiceStageMicIcon").textContent = voice.micMuted ? "🎙" : "🎤";
     $("#voiceStageMicLabel").textContent = translate(!voice.micAvailable ? "Try microphone" : pushToTalk ? (voice.micManuallyMuted ? "Mic off" : (voice.pushToTalkPressed ? "Speaking" : "Hold Space")) : (voice.micMuted ? "Turn mic on" : "Mute mic"));
-    $("#voiceStageMicButton").title = !voice.micAvailable ? "Try to connect a microphone; if none is available you can keep listening muted" : (voice.micMuted ? "Turn microphone on" : "Mute microphone");
+    $("#voiceStageMicButton").title = translate(!voice.micAvailable ? "Try to connect a microphone; if none is available you can keep listening muted" : (voice.micMuted ? "Turn microphone on" : "Mute microphone"));
     $("#voiceOutputButton").classList.toggle("hidden", !activeCall);
     $("#voiceOutputButton").classList.toggle("is-muted", voice.speakerMuted);
     $("#voiceOutputButton").setAttribute("aria-pressed", String(voice.speakerMuted));
@@ -2331,7 +2373,7 @@
     $("#voiceStageDecline").classList.toggle("hidden", groupMode || voice.status !== "incoming");
     $("#voiceHangupButton").querySelector("span:last-child").textContent = translate(groupMode ? "Leave call" : "End call");
     $("#voiceHangupButton").classList.toggle("hidden", !activeCall);
-    $("#voiceDeviceNotice").textContent = groupMode && activeCall
+    $("#voiceDeviceNotice").textContent = translate(groupMode && activeCall
       ? translate(!voice.micAvailable ? "Group voice is relayed by a LiveKit SFU and is not end-to-end encrypted. No microphone was found; you joined muted." : "Group voice is relayed by a LiveKit SFU and is not end-to-end encrypted. Your microphone is off.")
       : voice.status === "incoming"
       ? "Join the call when you are ready. If no microphone is available, you can still listen muted."
@@ -2343,7 +2385,7 @@
             ? "Your microphone is off. You can still hear the call."
             : activeCall
               ? "Your microphone is on. Use the controls above to switch devices or mute."
-              : "Choose your microphone and speaker, or join muted and listen.";
+              : "Choose your microphone and speaker, or join muted and listen.");
     $(".voice-encryption-note").textContent = groupMode ? translate("RELAYED · NOT END-TO-END ENCRYPTED") : "LIVE · AUDIO";
     const hasRemoteVideo = !!voice.remoteVideoStream?.getVideoTracks().some(track => track.readyState === "live" && !track.muted);
     $("#remoteScreenPanel").classList.toggle("hidden", groupMode || !hasRemoteVideo);
@@ -2351,7 +2393,19 @@
     $("#groupVoiceMedia").classList.toggle("hidden", !groupMode || !$("#groupVoiceMedia .group-screen-tile"));
     $("#screenShareLayout").classList.toggle("has-remote", hasRemoteVideo);
     $("#screenShareLayout").classList.toggle("is-group", groupMode);
-    $("#voiceStage").classList.toggle("hidden", voice.status === "idle");
+    const showingCallConversation = state.page === "messages" && state.active?.id === voiceConversationId;
+    $("#voiceStage").classList.toggle("hidden", voice.status === "idle" || !showingCallConversation);
+    const dock = $("#activeCallDock");
+    dock.classList.toggle("hidden", voice.status === "idle" || showingCallConversation);
+    dock.dataset.conversationId = voiceConversationId || "";
+    $("#activeCallName").textContent = peer;
+    setAvatar($("#activeCallAvatar"), peer, conversation?.avatar_data);
+    $("#activeCallStatus").textContent = `${translate(labels[voice.status] || "Voice call")}${voice.screenSharing ? ` · ${translate("Sharing screen")}` : ""}`;
+    $("#returnToCall").disabled = !voiceConversationId;
+    $("#activeCallMic").classList.toggle("hidden", !activeCall);
+    $("#activeCallMic").textContent = $("#voiceStageMicLabel").textContent;
+    $("#activeCallMic").setAttribute("aria-pressed", String(voice.micMuted));
+    $("#activeCallEnd").textContent = translate(voice.status === "incoming" ? "Decline" : groupMode ? "Leave call" : "End call");
     if (voice.status === "idle") {
       closeVoiceParticipantMenu();
       if (!groupMode) {
@@ -2407,8 +2461,6 @@
         const convo = state.conversations.find(item => item.id === conversationId);
         if (convo) {
           void openConversation(conversationId);
-          $("#sidebarTitle").textContent = "Messages";
-          $("#sidebarAction").title = "Start a conversation";
           $("#pageContent").classList.add("hidden");
           renderSidebar();
         }
@@ -2924,13 +2976,25 @@
     void voiceClient.accept().catch(error => toast(error.message, true)).finally(() => { $("#voiceStageAccept").disabled = false; renderVoiceControls(); });
   };
   $("#voiceStageDecline").onclick = () => voiceClient.decline();
-  $("#voiceHangupButton").onclick = () => {
-    if (groupVoiceUiState.status !== "idle") void groupVoiceClient.leave();
+  function endCurrentCall() {
+    if (groupVoiceUiState.status !== "idle") void groupVoiceClient.leave().catch(error => toast(error.message, true));
+    else if (voiceClient.getState().status === "incoming") voiceClient.decline();
     else voiceClient.hangup();
-  };
-  $("#voiceStageMicButton").onclick = () => {
+  }
+  function toggleCallMicrophone() {
     const action = groupVoiceUiState.status !== "idle" ? groupVoiceClient.toggleMicrophone() : voiceClient.toggleMicrophone();
     void action.catch(error => toast(error.message, true));
+  }
+  $("#voiceHangupButton").onclick = endCurrentCall;
+  $("#activeCallEnd").onclick = endCurrentCall;
+  $("#voiceStageMicButton").onclick = toggleCallMicrophone;
+  $("#activeCallMic").onclick = toggleCallMicrophone;
+  $("#returnToCall").onclick = async () => {
+    const conversationId = $("#activeCallDock").dataset.conversationId;
+    if (!conversationId) return;
+    await openConversation(conversationId);
+    const focusTarget = voiceClient.getState().status === "incoming" ? $("#voiceStageAccept") : $("#voiceStageMicButton");
+    if (!focusTarget.closest(".hidden")) focusTarget.focus({ preventScroll: true });
   };
   $("#voiceOutputButton").onclick = () => {
     localStorage.setItem("ghostchat.voice.speakerMuted", String(!voiceSettings().speakerMuted));

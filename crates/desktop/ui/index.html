@@ -87,9 +87,19 @@
 
     <section class="chat-area">
       <header id="chatHeader" class="chat-header"><button id="sidebarToggleButton" class="icon-button sidebar-toggle" type="button" aria-label="Show conversations" aria-controls="sidebarContent" aria-expanded="false" data-en-title="Show conversations" data-tr-title="Sohbetleri göster">☰</button><div class="chat-heading"><div class="mini-avatar large-avatar" id="chatAvatar">G</div><div class="chat-heading-copy"><p id="chatKindLabel" class="chat-kind-label">DIRECT MESSAGE</p><h2 id="chatTitle">Your quiet corner</h2><p id="chatSubtitle" class="muted">Choose a friend or find someone new.</p><p id="cryptoConversationStatus" class="crypto-conversation-status hidden" aria-live="polite"></p><p id="typingIndicator" class="typing-indicator hidden" aria-live="polite"></p></div></div><div class="chat-tools"><div id="voiceTools" class="voice-tools hidden"><span id="voiceStatus" class="voice-status">Voice ready</span><button id="voiceCallButton" class="voice-start-button" title="Start voice call" aria-label="Start voice call"><span aria-hidden="true">☎</span><span>Call</span></button></div><span id="connectionState" class="connection-state"><i class="status-dot"></i>Connecting</span><button id="enableEncryptionButton" class="button secondary crypto-toggle hidden" type="button">Enable encryption</button><button id="manageGroupButton" class="icon-button hidden" title="Manage group" aria-label="Manage group" data-en-title="Manage group" data-tr-title="Grubu yönet">♙</button><button id="userSafetyButton" class="button secondary hidden" type="button" data-en="Safety" data-tr="Güvenlik">Safety</button><button id="searchInChat" class="icon-button" title="Search messages" aria-label="Search messages" data-en-title="Search messages" data-tr-title="Mesajlarda ara">⌕</button></div></header>
+      <aside id="activeCallDock" class="active-call-dock hidden" aria-label="Current call" data-en-label="Current call" data-tr-label="Devam eden arama">
+        <span id="activeCallAvatar" class="mini-avatar" aria-hidden="true">G</span>
+        <div class="active-call-info"><strong id="activeCallName"></strong><span id="activeCallStatus" aria-live="polite"></span></div>
+        <div class="active-call-actions">
+          <button id="returnToCall" class="button secondary" type="button" data-en="Return to call" data-tr="Aramaya dön">Return to call</button>
+          <button id="activeCallMic" class="button secondary" type="button" aria-pressed="true"></button>
+          <button id="activeCallEnd" class="button danger" type="button"></button>
+        </div>
+      </aside>
       <div id="pageContent" class="page-content"></div>
       <div id="messagePanel" class="message-panel hidden">
         <section id="voiceStage" class="voice-stage hidden" aria-labelledby="voiceStageTitle">
+          <div class="voice-stage-scroll">
           <div class="voice-stage-head">
             <div class="voice-peer-details"><p class="voice-kicker" data-en="VOICE CALL" data-tr="SESLİ ARAMA">VOICE CALL</p><h3 id="voiceStageTitle" data-en="Who’s here" data-tr="Görüşmedekiler">Who’s here</h3><p class="voice-status-line"><i id="voiceStageDot" class="status-dot connecting"></i><span id="voiceStageStatus" aria-live="polite">Waiting to connect…</span></p></div>
             <span class="voice-encryption-note">LIVE · AUDIO</span>
@@ -122,12 +132,13 @@
               <video id="localScreen" class="local-screen" autoplay playsinline muted></video>
             </div>
           </div>
-          <div class="voice-stage-body">
             <div id="voiceDeviceRow" class="voice-device-row hidden">
               <label class="voice-device-picker"><span data-en="Microphone" data-tr="Mikrofon">Microphone</span><select id="voiceCallMicSelect"><option value="" data-en="System default" data-tr="Sistem varsayılanı">System default</option></select></label>
               <label class="voice-device-picker"><span data-en="Speaker" data-tr="Hoparlör">Speaker</span><select id="voiceCallSpeakerSelect"><option value="" data-en="System default" data-tr="Sistem varsayılanı">System default</option></select></label>
               <button id="voiceRefreshDevices" class="voice-refresh-button" type="button" title="Refresh audio devices" aria-label="Refresh audio devices" data-en-title="Refresh audio devices" data-tr-title="Ses aygıtlarını yenile">↻</button>
             </div>
+          </div>
+          <div class="voice-stage-body">
             <div class="voice-stage-controls">
               <div class="voice-control-group">
                 <button id="voiceStageMicButton" class="voice-control-button" type="button" aria-pressed="true"><span id="voiceStageMicIcon" class="voice-control-icon" aria-hidden="true">🎙</span><span id="voiceStageMicLabel">Turn mic on</span></button>
