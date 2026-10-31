@@ -3,15 +3,15 @@
   "url": "https://www.figma.com/design/2rAq5vrWpVJIKgGqJhiBiP",
   "sessionId": "b13c9ca7-b86a-4f70-b972-374447ddf1fe",
   "scope": "GhostChat editable desktop screens, source tokens and reusable components, bilingual interaction prototype",
-  "status": "foundations and first core-flow prototype built; full design goal incomplete",
+  "status": "foundations, core call prototype, and first editable account/settings/state screens built; full design goal incomplete",
   "pages": { "foundations": "0:1", "conversations": "3:118", "accountAndStates": "3:119" },
-  "ledgers": ["figma-foundation-ids.json", "figma-conversation-ids.json"],
-  "evidence": { "screens": 16, "links": 46, "instances": 292, "reviewedFrames": ["4:1380", "4:2060", "4:2501"], "reviewedFontFamilies": ["Inter"], "reviewedImageNodes": 0 },
+  "ledgers": ["figma-foundation-ids.json", "figma-conversation-ids.json", "figma-account-state-ids.json"],
+  "evidence": { "screens": 24, "links": 49, "instances": 303, "reviewedFrames": ["4:1380", "4:2060", "4:2501", "7:46"], "reviewedFontFamilies": ["Inter"], "reviewedImageNodes": 0 },
   "discovery": {
     "codeConnect": "No mapping files found in this repository.",
     "wholeView": "No direct-message chat-panel composite found in subscribed libraries.",
     "referenceButton": "Simple Design System Button cc8b558dc7d9684011b6b99ce8e6509399bc836b has Primary/Default/Medium and other variants, but is remote and uses another product's foundations. GhostChat needs editable source-matched colors, call states, and radius tokens; create its local source components.",
     "font": "Source CSS declares Inter, Segoe UI, system-ui. Figma exposes Inter. Browser currently uses system fallback; bundle Inter before claiming visual parity."
   },
-  "pending": ["account/settings/all dialog and error-state screens", "speaker output and share-refresh controls in core prototype", "remaining prototype journeys", "font bundled in app and source/design parity", "full accessibility and native runtime review", "optional useful Higgsfield brand exploration"]
+  "pending": ["remaining group, attachment, destructive and permission dialogs", "speaker output and share-refresh controls in core prototype", "remaining prototype journeys", "full accessibility and native runtime review", "optional useful Higgsfield brand exploration"]
 }

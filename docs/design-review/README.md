@@ -4,9 +4,9 @@
 
 [GhostChat 4.0 — Two-person desktop](https://www.figma.com/design/2rAq5vrWpVJIKgGqJhiBiP)
 
-The first design pass contains source-derived dark/light color collections (one mode per collection for the Starter plan), spacing/radius variables, Inter text styles, buttons with default/hover/focus/disabled variants, avatar/status/field components, and 16 composed conversation/call screens. The English and Turkish core flows have 46 navigation links. `figma-state.json` and the two ID ledgers preserve exact nodes, properties and links for targeted updates without recreating content.
+The editable source now contains source-derived dark/light color collections (one mode per collection for the Starter plan), spacing/radius variables, Inter text styles, buttons with default/hover/focus/disabled variants, avatar/status/field components, 16 conversation/call screens, and eight account/settings/safety/state screens. The English and Turkish prototype now has 49 navigation links. The three ID ledgers preserve exact nodes, properties and links for targeted updates without recreating content.
 
-The three visually reviewed compositions (`dm-en`, `call-tr`, `muted-tr-compact`) contain editable text, frames and component instances, with no image-filled nodes. Readback confirms Inter. The Figma file is an initial core-flow prototype: it is **not** a final claim of screen parity, full state coverage or production readiness. The account/state page is deliberately reserved and currently empty. The source declares Inter but presently renders a system fallback on this machine; bundle the font before claiming a font match.
+The visually reviewed compositions (`dm-en`, `call-tr`, `muted-tr-compact`, and `settings-profile-en`) contain editable text, frames and component instances, with no image-filled nodes. Readback confirms Inter. The account/state page now includes create/recover, required-update/retry, settings profile/voice, safety report, and welcome states. The Figma file is an initial core-flow prototype: it is **not** a final claim of screen parity, full state coverage or production readiness. The app now bundles the official Inter variable font for source/design typography parity.
 
 ## Local interactive review
 

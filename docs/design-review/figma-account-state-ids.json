@@ -1,0 +1,23 @@
+{
+  "page": "3:119",
+  "screens": {
+    "authCreateEn": "7:5",
+    "authRecoverTr": "7:19",
+    "startupUpdateRequiredEn": "7:30",
+    "startupUpdateErrorTr": "7:38",
+    "settingsProfileEn": "7:46",
+    "settingsVoiceTr": "7:65",
+    "safetyReportEn": "7:81",
+    "emptyWelcomeTr": "7:95"
+  },
+  "links": [
+    { "from": "7:5", "to": "7:19" },
+    { "from": "7:19", "to": "7:46" },
+    { "from": "7:38", "to": "7:30" }
+  ],
+  "reviewed": {
+    "frame": "7:46",
+    "image": "figma-settings-profile.png",
+    "result": "Profile identity row fill was corrected after visual review; all screen content remains editable Figma text, frames and local component instances."
+  }
+}

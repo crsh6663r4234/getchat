@@ -997,3 +997,4 @@ select:focus-visible,
     transition-duration: .01ms !important;
   }
 }
+@font-face{font-family:Inter;src:url("fonts/InterVariable.woff2") format("woff2");font-weight:100 900;font-style:normal;font-display:swap}

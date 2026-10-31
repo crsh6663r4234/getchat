@@ -42,8 +42,8 @@
         <p class="fine-print" data-en="No email, phone number, or password. Your unique tag is generated automatically." data-tr="E-posta, telefon veya parola gerekmez. Sana özel etiket otomatik oluşturulur.">No email, phone number, or password. Your unique tag is generated automatically.</p>
       </form>
       <form id="recoverForm" class="auth-form hidden" role="tabpanel" aria-labelledby="recoverAccountTab" tabindex="0" aria-hidden="true" hidden>
-        <label>Recovery key<textarea name="recovery_token" rows="3" spellcheck="false" required placeholder="Paste your saved recovery key" data-en-placeholder="Paste your saved recovery key" data-tr-placeholder="Kaydettiğin kurtarma anahtarını yapıştır"></textarea></label>
-        <button class="button primary wide" type="submit">Recover account <span>→</span></button>
+        <label data-en="Recovery key" data-tr="Kurtarma anahtarı">Recovery key<textarea name="recovery_token" rows="3" spellcheck="false" required placeholder="Paste your saved recovery key" data-en-placeholder="Paste your saved recovery key" data-tr-placeholder="Kaydettiğin kurtarma anahtarını yapıştır"></textarea></label>
+        <button class="button primary wide" type="submit" data-en="Recover account →" data-tr="Hesabı kurtar →">Recover account →</button>
         <p class="fine-print" data-en="Your recovery key is the only way to regain access if you lose this device." data-tr="Bu cihazı kaybedersen hesabına erişmenin tek yolu kurtarma anahtarındır.">Your recovery key is the only way to regain access if you lose this device.</p>
       </form>
       <div class="server-note"><span class="status-dot"></span> <span id="serverModeLabel">Server</span> <span id="serverLabel">starting…</span><button id="serverSettings" class="text-button" type="button" data-en="Change server" data-tr="Sunucuyu değiştir">Change server</button></div>
@@ -303,7 +303,7 @@
       <section class="settings-section">
         <h3 class="settings-section-title" data-en="Updates" data-tr="Güncellemeler">Updates</h3>
         <div class="settings-section-content">
-          <p id="updateStatus" class="muted small-copy">Updates are checked automatically.</p>
+          <p id="updateStatus" class="muted small-copy" data-en="Updates are checked automatically." data-tr="Güncellemeler otomatik kontrol edilir.">Updates are checked automatically.</p>
           <p id="updateNotes" class="muted small-copy hidden"></p>
           <div class="dialog-actions update-actions"><button id="checkUpdates" class="button secondary" type="button" data-en="Check now" data-tr="Şimdi kontrol et">Check now</button><button id="installUpdate" class="button primary hidden" data-en="Install and restart" data-tr="Yükle ve yeniden başlat">Install and restart</button></div>
         </div>
