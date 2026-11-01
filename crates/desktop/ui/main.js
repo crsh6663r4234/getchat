@@ -6,7 +6,7 @@
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
   const invoke = window.__TAURI__?.core?.invoke;
-  const state = { localBase: "", base: "", token: "", user: null, pendingRecovery: "", recoveryKey: "", pendingGroupInviteCode: null, page: "messages", conversations: [], friends: [], pending: [], blockedUserIds: new Set(), attachmentObserver: null, attachmentObjectUrls: [], seenFriendRequestIds: new Set(), active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null, cryptoDevice: null, cryptoEnabled: new Set(), cryptoLocked: new Set(), cryptoSetupComplete: new Set(), cryptoCanManage: new Set(), cryptoPeerFingerprints: new Map(), cryptoSyncing: new Map(), cryptoMessageDecoding: new Map(), cryptoMemberIds: new Map(), cryptoMembershipPending: new Set(), cryptoMembershipOperations: new Map(), replyingTo: null, lastReadSequence: new Map(), typingUsers: new Map(), typingTimers: new Map(), typingActive: false, typingStopTimer: null, typingSentAt: 0, groupInviteCodes: new Map(), groupVoiceAvailable: null };
+  const state = { localBase: "", base: "", token: "", user: null, presence: new Map(), presenceMode: "online", pendingRecovery: "", recoveryKey: "", pendingGroupInviteCode: null, page: "messages", conversations: [], friends: [], pending: [], blockedUserIds: new Set(), attachmentObserver: null, attachmentObjectUrls: [], seenFriendRequestIds: new Set(), active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null, cryptoDevice: null, cryptoEnabled: new Set(), cryptoLocked: new Set(), cryptoSetupComplete: new Set(), cryptoCanManage: new Set(), cryptoPeerFingerprints: new Map(), cryptoSyncing: new Map(), cryptoMessageDecoding: new Map(), cryptoMemberIds: new Map(), cryptoMembershipPending: new Set(), cryptoMembershipOperations: new Map(), replyingTo: null, lastReadSequence: new Map(), typingUsers: new Map(), typingTimers: new Map(), typingActive: false, typingStopTimer: null, typingSentAt: 0, groupInviteCodes: new Map(), groupVoiceAvailable: null };
   function resetCryptoViewState() {
     state.cryptoEnabled.clear(); state.cryptoLocked.clear(); state.cryptoSetupComplete.clear(); state.cryptoCanManage.clear(); state.cryptoPeerFingerprints.clear(); state.cryptoMembershipPending.clear();
     state.cryptoSyncing.clear(); state.cryptoMessageDecoding.clear(); state.cryptoMemberIds.clear(); state.cryptoMembershipOperations.clear();
@@ -221,6 +221,33 @@
   function peerMuteKey(peerId = voiceUiState.peerId) {
     return `ghostchat.voice.peerMuted.${state.base || "local"}.${peerId || ""}`;
   }
+  function peerVolumeKey(peerId = voiceUiState.peerId) {
+    return `ghostchat.voice.peerVolume.${state.base || "local"}.${peerId || ""}`;
+  }
+  function peerVolume(peerId = voiceUiState.peerId) {
+    return Math.max(0, Math.min(100, Number(localStorage.getItem(peerVolumeKey(peerId)) || "100")));
+  }
+  function presenceFor(userId) {
+    const mode = state.presence.get(userId) || "online";
+    return userId !== state.user?.id && mode === "invisible" ? "offline" : mode;
+  }
+  function presenceLabel(userId) {
+    return translate(({ online: "Online", invisible: "Invisible", dnd: "Do not disturb", offline: "Offline" })[presenceFor(userId)] || "Offline");
+  }
+  function addPresenceDot(node, userId) {
+    if (!node || !userId) return;
+    node.querySelector?.(".presence-dot")?.remove();
+    const dot = document.createElement("i"); dot.className = `presence-dot ${presenceFor(userId)}`; dot.title = presenceLabel(userId); dot.setAttribute("aria-label", dot.title); node.append(dot);
+  }
+  function showProfilePreview(user) {
+    if (!user) return;
+    $("#profilePreviewName").textContent = user.display_name || "Ghost";
+    $("#profilePreviewTag").textContent = `@${user.username || "ghost"}`;
+    $("#profilePreviewPresence").textContent = presenceLabel(user.id);
+    $("#profilePreviewPresence").className = `presence-copy ${presenceFor(user.id)}`;
+    setAvatar($("#profilePreviewAvatar"), user.display_name, user.avatar_data);
+    $("#profilePreviewDialog").showModal();
+  }
 
   function groupPeerMuteKey(conversationId, accountId) {
     return `ghostchat.voice.groupMuted.${state.base || "local"}.${conversationId || ""}.${accountId || ""}`;
@@ -286,6 +313,9 @@
     }
     const action = $("#voiceParticipantMuteAction");
     if (action) action.textContent = translate(muted ? "Unmute their audio" : "Mute their audio");
+    const volume = peerVolume();
+    $("#voiceParticipantVolume").value = String(volume);
+    $("#voiceParticipantVolumeValue").textContent = `${volume}%`;
   }
 
   function closeVoiceParticipantMenu({ restoreFocus = false } = {}) {
@@ -606,7 +636,7 @@
     const audio = $("#remoteAudio");
     if (!audio) return;
     const settings = voiceSettings();
-    audio.volume = Math.max(0, Math.min(100, settings.volume)) / 100;
+    audio.volume = (Math.max(0, Math.min(100, settings.volume)) / 100) * (peerVolume() / 100);
     audio.muted = settings.speakerMuted || isPeerAudioMuted();
     if (typeof audio.setSinkId === "function") {
       try { await audio.setSinkId(settings.speakerId); }
@@ -959,6 +989,8 @@
     $("#accountTag").textContent = `@${state.user.username}`;
     setAvatar($("#accountAvatar"), state.user.display_name, state.user.avatar_data);
     setAvatar($("#profileButton"), state.user.display_name, state.user.avatar_data);
+    addPresenceDot($("#accountAvatar"), state.user.id);
+    addPresenceDot($("#profileButton"), state.user.id);
     $("#profileTagLabel").textContent = `@${state.user.username}`;
   }
   async function enterApp() {
@@ -966,7 +998,7 @@
     catch { await clearToken(); state.user = null; show("authView"); return; }
     resetCryptoViewState();
     show("appView"); updateIdentity(); setTheme(); seasonalIdentity(); setPage("messages");
-    await refreshBlockedUsers(); await refreshFriends(); await refreshConversations(); connectSocket(); void checkVoiceRelaySupport();
+    await refreshPresence(); await refreshBlockedUsers(); await refreshFriends(); await refreshConversations(); connectSocket(); void checkVoiceRelaySupport();
     await processPendingGroupInvites();
     renderSidebar(); showWelcome();
   }
@@ -1063,7 +1095,7 @@
       const label = create("div", "section-label", "CONVERSATIONS"); root.append(label);
       for (const convo of state.conversations) {
         const row = create("button", `list-row${state.active?.id === convo.id ? " active" : ""}`); row.onclick = () => openConversation(convo.id);
-        const avatar = create("div", "mini-avatar"); setAvatar(avatar, convo.display_name, convo.avatar_data); row.append(avatar);
+        const avatar = create("div", "mini-avatar"); setAvatar(avatar, convo.display_name, convo.avatar_data); if (convo.kind === "direct") addPresenceDot(avatar, convo.peer_id); row.append(avatar);
         const preview = convo.last_message?.startsWith("e2e1:")
           ? translate("Encrypted conversation")
           : convo.last_message?.startsWith("file:")
@@ -1077,10 +1109,10 @@
     }
     if (state.page === "friends") {
       const requestsLabel = create("div", "section-label", "REQUESTS"); root.append(requestsLabel);
-      for (const request of state.pending || []) { const row = create("button", "list-row"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, request.display_name, request.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", request.display_name), create("span", "", `@${request.username}`)); row.append(copy); root.append(row); }
+      for (const request of state.pending || []) { const row = create("button", "list-row"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, request.display_name, request.avatar_data); addPresenceDot(avatar, request.user_id); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", request.display_name), create("span", "", `@${request.username}`)); row.append(copy); root.append(row); }
       if (!(state.pending || []).length) root.append(create("div", "empty-list", "No pending requests."));
       root.append(create("div", "section-label", "YOUR FRIENDS"));
-      for (const friend of state.friends) { const row = create("button", "list-row"); row.onclick = () => startConversation(friend.id); const avatar = create("div", "mini-avatar"); setAvatar(avatar, friend.display_name, friend.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", friend.display_name), create("span", "", `@${friend.username}`)); row.append(copy); root.append(row); }
+      for (const friend of state.friends) { const row = create("button", "list-row"); row.onclick = () => startConversation(friend.id); const avatar = create("div", "mini-avatar"); setAvatar(avatar, friend.display_name, friend.avatar_data); addPresenceDot(avatar, friend.id); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", friend.display_name), create("span", "", `@${friend.username} · ${presenceLabel(friend.id)}`)); row.append(copy); root.append(row); }
       if (!state.friends.length) root.append(create("div", "empty-list", "Friends you add will show up here."));
       return;
     }
@@ -1170,6 +1202,27 @@
     } catch (error) { console.warn(error); }
     updateFriendRequestBadge();
     renderSidebar(); if (state.page === "friends") renderPage();
+  }
+  async function refreshPresence() {
+    try {
+      const rows = await request("/v1/me/presence");
+      state.presence = new Map(rows.map(row => [row.user_id, row.mode]));
+      state.presenceMode = state.presence.get(state.user?.id) || "online";
+      updateIdentity();
+    } catch (error) { console.warn("Could not refresh presence", error); }
+  }
+  async function setPresence(mode) {
+    const previous = state.presenceMode;
+    try {
+      const result = await request("/v1/me/presence", { method: "PUT", body: JSON.stringify({ mode }) });
+      state.presenceMode = result.mode; state.presence.set(result.user_id, result.mode);
+      updateIdentity(); renderSidebar();
+      if (state.active?.kind === "direct") await openConversation(state.active.id, false);
+      toast(translate(({ online: "You are online.", invisible: "You are invisible.", dnd: "Do not disturb is on." })[result.mode]));
+    } catch (error) {
+      $("#presenceMode").value = previous;
+      toast(error.message || "Could not update activity.", true);
+    }
   }
   async function refreshConversations() {
     try { state.conversations = await request("/v1/conversations"); state.cryptoMemberIds.clear(); } catch (error) { console.warn(error); }
@@ -1930,8 +1983,10 @@
     $("#chatTitle").textContent = state.active.display_name;
     $("#chatSubtitle").textContent = state.active.kind === "group"
       ? `${state.active.member_count} ${translate("members")} · ${state.active.member_names || translate("GROUP MEMBERS")}`
-      : `@${state.active.username}`;
+      : `@${state.active.username} · ${presenceLabel(state.active.peer_id)}`;
     setAvatar($("#chatAvatar"), state.active.display_name, state.active.avatar_data);
+    if (state.active.kind === "direct") addPresenceDot($("#chatAvatar"), state.active.peer_id);
+    $("#chatAvatar").onclick = () => state.active?.kind === "direct" && showProfilePreview({ id: state.active.peer_id, display_name: state.active.display_name, username: state.active.username, avatar_data: state.active.avatar_data });
     renderSafetyControls();
     renderTypingIndicator();
     renderVoiceControls();
@@ -2425,7 +2480,7 @@
     socket.addEventListener("message", event => {
       if (socket !== state.socket) return;
       let data; try { data = JSON.parse(event.data); } catch { return; }
-      if (data.type === "ready") { state.reconnect = 1200; setConnection(true); void refreshFriends(); refreshConversations(); if (state.active) loadMessages(false); }
+      if (data.type === "ready") { state.reconnect = 1200; setConnection(true); void refreshPresence(); void refreshFriends(); refreshConversations(); if (state.active) loadMessages(false); }
       else if (data.type === "session_revoked") { voiceClient?.hangup(); void groupVoiceClient?.leave(); state.token = ""; state.user = null; state.blockedUserIds.clear(); state.cryptoDevice = null; state.active = null; resetCryptoViewState(); if (state.socket) state.socket.close(); void (async () => { try { await invoke("credential_delete", { serverKey: await serverKey(activeBase()) }); } catch {} })(); show("authView"); toast("This session was revoked. Recover your account to sign in again.", true); }
       else if (data.type === "crypto_event" && data.event?.conversation_id) {
         const conversationId = data.event.conversation_id;
@@ -2495,6 +2550,12 @@
       else if (data.type === "profile_updated") {
         void refreshFriends({ notifyNew: false });
         void refreshConversations().then(() => { if (state.active) void openConversation(state.active.id, false); });
+      }
+      else if (data.type === "presence_updated" && data.user_id) {
+        state.presence.set(data.user_id, data.mode || "online");
+        if (data.user_id === state.user?.id) state.presenceMode = data.mode || "online";
+        updateIdentity(); renderSidebar();
+        if (state.active?.kind === "direct" && state.active.peer_id === data.user_id) void openConversation(state.active.id, false);
       }
       else if (data.type === "friend_request_accepted") {
         void refreshFriends();
@@ -2949,6 +3010,7 @@
     $("#serverAddressInput").value = state.base;
     $("#profileNameInput").value = state.user?.display_name || "";
     $("#profileUsernameInput").value = state.user?.username || "";
+    $("#presenceMode").value = state.presenceMode || "online";
     profileAvatarData = state.user?.avatar_data || null;
     setAvatar($("#profileAvatarPreview"), state.user?.display_name, profileAvatarData);
     $("#languageSelect").value = tr() ? "tr" : "en";
@@ -2979,6 +3041,7 @@
   $("#profileButton").onclick = openSettings;
   for (const selector of ["#languageSelect", "#authLanguageSelect"]) $(selector).onchange = event => { localStorage.setItem("ghostchat.language", event.target.value); applyLanguage(); renderSidebar(); if (["friends", "search", "searchMessages"].includes(state.page)) renderPage(); else if (!state.active) showWelcome(); renderVoiceControls(); };
   for (const selector of ["#themeSelect", "#textSize", "#motionSelect"]) $(selector).onchange = () => applyAppearance({ persist: true });
+  $("#presenceMode").onchange = event => { void setPresence(event.target.value); };
   $("#themeWallpaperInput").onchange = async event => {
     const file = event.target.files?.[0]; if (!file) return;
     try {
@@ -3150,6 +3213,15 @@
   $("#refreshAudioDevices").onclick = refreshAudioDevices;
   $("#voiceRefreshDevices").onclick = () => void refreshAudioDevices();
   $("#voiceMicTestButton").onclick = () => void toggleMicrophoneTest();
+  for (const selector of ["#voiceEchoCancellation", "#voiceNoiseSuppression", "#voiceAutoGain"]) {
+    $(selector).onchange = async () => {
+      persistVoiceSettings();
+      const updates = await Promise.allSettled([voiceClient?.applyAudioSettings?.(), groupVoiceClient?.applyAudioSettings?.()]);
+      const failed = updates.find(result => result.status === "rejected");
+      if (failed) toast(failed.reason?.message || "Could not apply the audio processing change.", true);
+      else toast(translate("Audio processing applied."));
+    };
+  }
   $("#voicePeerCard").addEventListener("contextmenu", openVoiceParticipantMenu);
   $("#voicePeerCard").addEventListener("keydown", event => {
     if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) openVoiceParticipantMenu(event);
@@ -3161,6 +3233,17 @@
     renderPeerMuteState();
     void applyPlaybackSettings();
     syncVoiceSpeakingDetection(voiceUiState);
+  };
+  $("#voiceParticipantVolume").oninput = event => {
+    const value = Math.max(0, Math.min(100, Number(event.target.value) || 0));
+    localStorage.setItem(peerVolumeKey(), String(value));
+    $("#voiceParticipantVolumeValue").textContent = `${value}%`;
+    void applyPlaybackSettings();
+  };
+  $("#voiceParticipantProfileAction").onclick = () => {
+    const peer = state.conversations.find(item => item.peer_id === voiceUiState.peerId) || state.active;
+    closeVoiceParticipantMenu();
+    if (peer) showProfilePreview({ id: voiceUiState.peerId, display_name: peer.display_name, username: peer.username, avatar_data: peer.avatar_data });
   };
   document.addEventListener("pointerdown", event => {
     if (!$("#voiceParticipantMenu").contains(event.target) && !$("#voicePeerCard").contains(event.target)) closeVoiceParticipantMenu();

@@ -1168,6 +1168,10 @@ body[data-theme="sakura"] { --ink-1: #20131d; --ink-2: #2b1928; --ink-3: #432541
 body[data-theme="aurora"] { --ink-1: #091822; --ink-2: #0d2630; --ink-3: #123a42; --line: #77f0dc2b; --lilac: #70dff2; --lilac-soft: #c0f7ff; --mint: #86efae; background: #071219; }
 body[data-theme="tide"] { --ink-1: #061b29; --ink-2: #092737; --ink-3: #104052; --line: #78d5ff2d; --lilac: #64d5ff; --lilac-soft: #bef2ff; --mint: #7ae8c3; background: #05131f; }
 body.has-custom-wallpaper { background-image: linear-gradient(rgba(7, 10, 16, var(--wallpaper-shade, .58)), rgba(7, 10, 16, var(--wallpaper-shade, .58))), var(--custom-wallpaper) !important; background-position: center; background-size: cover; background-attachment: fixed; }
+body.has-custom-wallpaper #settingsDialog { background: #10141df7; backdrop-filter: blur(24px) saturate(1.1); }
+body.has-custom-wallpaper #settingsDialog .settings-section { background: #111724ed; border-color: #ffffff1c; }
+body.has-custom-wallpaper #settingsDialog .button { background-color: #1c2433; border-color: #ffffff2b; }
+body.has-custom-wallpaper #settingsDialog .button.primary { background: var(--lilac); color: #171324; border-color: transparent; }
 body[data-theme="sakura"] .app-shell, body[data-theme="aurora"] .app-shell, body[data-theme="tide"] .app-shell { position: relative; isolation: isolate; overflow: hidden; }
 body[data-theme="sakura"] .app-shell::before, body[data-theme="aurora"] .app-shell::before, body[data-theme="tide"] .app-shell::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: .62; background-repeat: repeat; background-size: 260px 260px, 380px 380px, auto; }
 body[data-theme="sakura"] .app-shell::before { background-image: radial-gradient(ellipse at 24px 36px, #ffd8e888 0 3px, transparent 4px), radial-gradient(ellipse at 175px 142px, #ff9fc899 0 4px, transparent 5px), radial-gradient(circle at 50% 0%, #ff89ba1c, transparent 43%); animation: gc-sakura-drift 14s linear infinite; }
@@ -1184,6 +1188,27 @@ body[data-theme="tide"] .app-shell::before { background-image: radial-gradient(e
 .theme-wallpaper-upload small { color: #9ca7bb; font-size: 10px; line-height: 1.35; }
 .theme-wallpaper-actions { align-items: center; justify-content: space-between; gap: 10px; }
 .theme-wallpaper-actions .fine-print { margin: 0; color: #9ca7bb; font-size: 10px; text-align: right; }
+
+/* Activity indicators and a compact profile preview. */
+.mini-avatar, .large-avatar, .profile-avatar { position: relative; }
+.presence-dot { position: absolute; right: -2px; bottom: -2px; z-index: 3; width: 11px; height: 11px; border: 2px solid var(--ink-1); border-radius: 999px; background: #66dfb0; box-shadow: 0 0 10px #66dfb077; }
+.presence-dot.invisible, .presence-dot.offline { background: #7d8595; box-shadow: none; }
+.presence-dot.dnd { background: #ef6270; box-shadow: 0 0 10px #ef627066; }
+.profile-avatar:has(.presence-dot)::after, .account-bar .mini-avatar:has(.presence-dot)::after { display: none; }
+.presence-copy { display: inline-flex; align-items: center; gap: 6px; color: #99a4b6; font-size: 12px; }
+.presence-copy::before { content: ""; width: 8px; height: 8px; border-radius: 999px; background: #66dfb0; }
+.presence-copy.invisible::before, .presence-copy.offline::before { background: #7d8595; }
+.presence-copy.dnd::before { background: #ef6270; }
+.profile-preview-dialog { width: min(360px, calc(100vw - 28px)); padding: 0; overflow: hidden; border-color: #ffffff18; border-radius: 22px; background: #111722; color: var(--text); box-shadow: 0 24px 80px #000a; }
+.profile-preview-body { display: grid; justify-items: center; gap: 9px; padding: 28px 24px 32px; background: radial-gradient(circle at 50% 0%, #a995ff1e, transparent 54%); }
+.profile-preview-avatar { display: grid; place-items: center; width: 132px; height: 132px; overflow: hidden; border: 3px solid #ffffff1c; border-radius: 34px; background: linear-gradient(145deg, var(--lilac), #7460d2); color: #171324; font-size: 34px; font-weight: 800; box-shadow: 0 14px 38px #0005; }
+.profile-preview-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.profile-preview-body > strong { color: #b4bdd0; font-size: 13px; font-weight: 600; }
+.voice-participant-menu { display: grid; gap: 6px; min-width: 210px; padding: 9px; }
+.voice-participant-menu button { text-align: left; }
+.voice-participant-volume { display: grid; grid-template-columns: 1fr auto; gap: 6px 10px; padding: 7px 5px 5px; color: #b9c1d0; font-size: 11px; }
+.voice-participant-volume input { grid-column: 1 / -1; width: 100%; accent-color: var(--lilac); }
+.voice-participant-volume output { color: var(--lilac-soft); font-variant-numeric: tabular-nums; }
 
 /* 4.0.12 voice stage: one focused call surface instead of stacked settings cards. */
 .voice-stage {

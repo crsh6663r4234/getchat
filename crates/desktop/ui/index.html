@@ -119,8 +119,11 @@
           </div>
           <div id="voiceParticipantMenu" class="voice-participant-menu hidden" role="menu">
             <button id="voiceParticipantMuteAction" type="button" role="menuitem">Mute their audio</button>
+            <label class="voice-participant-volume"><span data-en="Their volume" data-tr="Ses seviyesi">Their volume</span><output id="voiceParticipantVolumeValue">100%</output><input id="voiceParticipantVolume" type="range" min="0" max="200" value="100"></label>
+            <button id="voiceParticipantProfileAction" type="button" role="menuitem" data-en="View profile" data-tr="Profili görüntüle">View profile</button>
             <p data-en="Only changes what you hear." data-tr="Yalnızca senin duyduğun sesi etkiler.">Only changes what you hear.</p>
           </div>
+          <dialog id="profilePreviewDialog" class="dialog profile-preview-dialog" aria-labelledby="profilePreviewName"><form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="PROFILE" data-tr="PROFİL">PROFILE</p><h2 id="profilePreviewName">Ghost</h2></div><button class="icon-button" aria-label="Close" data-en-title="Close" data-tr-title="Kapat">×</button></form><div class="profile-preview-body"><span id="profilePreviewAvatar" class="profile-preview-avatar">G</span><strong id="profilePreviewTag">@ghost</strong><span id="profilePreviewPresence" class="presence-copy"></span></div></dialog>
           <div id="screenShareLayout" class="screen-share-layout">
             <div id="groupVoiceMedia" class="group-voice-media hidden"></div>
             <div id="remoteScreenPanel" class="screen-share-panel remote-screen-panel hidden">
@@ -222,6 +225,7 @@
           <label><span data-en="Display name" data-tr="Görünen ad">Display name</span><input id="profileNameInput" maxlength="32"></label>
           <label><span data-en="Username" data-tr="Kullanıcı adı">Username</span><input id="profileUsernameInput" maxlength="24" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="username"><small class="optional" data-en="3–24 letters, numbers, or underscores. Your tag changes when you save." data-tr="3–24 harf, rakam veya alt çizgi. Kaydedince etiketin değişir.">3–24 letters, numbers, or underscores. Your tag changes when you save.</small></label>
           <label class="avatar-upload-row profile-photo-row" for="profileAvatarInput"><span id="profileAvatarPreview" class="mini-avatar avatar-preview">G</span><span class="avatar-upload-copy"><strong data-en="Profile picture" data-tr="Profil fotoğrafı">Profile picture</strong><small data-en="JPG/PNG or animated GIF/WebP · animations max 80 KB" data-tr="JPG/PNG veya hareketli GIF/WebP · animasyonlar en fazla 80 KB">JPG/PNG or animated GIF/WebP · animations max 80 KB</small></span><span class="button secondary avatar-choose" data-en="Choose" data-tr="Seç">Choose</span><input id="profileAvatarInput" class="visually-hidden" type="file" accept="image/jpeg,image/png,image/gif,image/webp"></label>
+          <label class="setting-row"><span data-en="Activity" data-tr="Aktiflik">Activity</span><select id="presenceMode"><option value="online" data-en="Online" data-tr="Aktif">Online</option><option value="invisible" data-en="Invisible" data-tr="Görünmez">Invisible</option><option value="dnd" data-en="Do not disturb" data-tr="Rahatsız etme">Do not disturb</option></select></label>
           <div class="dialog-actions"><button id="removeProfileAvatar" class="button secondary" type="button" data-en="Remove photo" data-tr="Fotoğrafı kaldır">Remove photo</button><button id="saveProfile" class="button primary" type="button" data-en="Save profile" data-tr="Profili kaydet">Save profile</button></div>
           <p class="fine-print"><span data-en="Your random tag" data-tr="Rastgele etiketin">Your random tag</span> <strong id="profileTagLabel">@username</strong></p>
         </div>

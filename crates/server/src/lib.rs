@@ -245,6 +245,7 @@ pub fn router(state: AppState) -> Router {
             axum::http::Method::GET,
             axum::http::Method::POST,
             axum::http::Method::PATCH,
+            axum::http::Method::PUT,
             axum::http::Method::DELETE,
             axum::http::Method::OPTIONS,
         ])
@@ -266,6 +267,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/me/sessions/others", delete(revoke_other_sessions))
         .route("/v1/me", get(me))
         .route("/v1/me/profile", patch(update_profile))
+        .route("/v1/me/presence", get(list_presence).put(update_presence))
         .route("/v1/me/recovery-key", post(rotate_recovery_key))
         .route(
             "/v1/me/crypto/devices",
@@ -780,6 +782,65 @@ async fn me(
     headers: HeaderMap,
 ) -> Result<Json<PublicUser>, ApiError> {
     Ok(Json(authenticate(&headers, &state).await?))
+}
+
+#[derive(Serialize, FromRow)]
+struct PresenceRow {
+    user_id: String,
+    mode: String,
+}
+
+#[derive(Deserialize)]
+struct UpdatePresence {
+    mode: String,
+}
+
+async fn list_presence(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<PresenceRow>>, ApiError> {
+    let user = authenticate(&headers, &state).await?;
+    let rows = sqlx::query_as::<_, PresenceRow>(
+        "SELECT u.id AS user_id, COALESCE(p.mode, 'online') AS mode FROM users u LEFT JOIN user_presence p ON p.user_id=u.id WHERE u.id=? OR EXISTS(SELECT 1 FROM friendships f WHERE (f.user_low=? AND f.user_high=u.id) OR (f.user_high=? AND f.user_low=u.id))",
+    )
+    .bind(&user.id)
+    .bind(&user.id)
+    .bind(&user.id)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| ApiError::internal())?;
+    Ok(Json(rows))
+}
+
+async fn update_presence(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<UpdatePresence>,
+) -> Result<Json<PresenceRow>, ApiError> {
+    let user = authenticate(&headers, &state).await?;
+    let mode = request.mode.trim().to_ascii_lowercase();
+    if !matches!(mode.as_str(), "online" | "invisible" | "dnd") {
+        return Err(ApiError::bad("Presence must be online, invisible, or dnd."));
+    }
+    sqlx::query("INSERT INTO user_presence(user_id,mode,updated_at) VALUES(?,?,strftime('%Y-%m-%dT%H:%M:%fZ','now')) ON CONFLICT(user_id) DO UPDATE SET mode=excluded.mode,updated_at=excluded.updated_at")
+        .bind(&user.id)
+        .bind(&mode)
+        .execute(&state.db)
+        .await
+        .map_err(|_| ApiError::internal())?;
+    let mut recipients = sqlx::query_scalar::<_, String>("SELECT CASE WHEN user_low=? THEN user_high ELSE user_low END FROM friendships WHERE user_low=? OR user_high=?")
+        .bind(&user.id)
+        .bind(&user.id)
+        .bind(&user.id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|_| ApiError::internal())?;
+    recipients.push(user.id.clone());
+    let _ = state.events.send(ServerEvent {
+        recipients,
+        event: serde_json::json!({"type":"presence_updated","user_id":user.id,"mode":mode}),
+    });
+    Ok(Json(PresenceRow { user_id: user.id, mode }))
 }
 
 #[derive(Deserialize)]
