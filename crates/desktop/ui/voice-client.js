@@ -233,7 +233,11 @@
         } else if (track.kind === "video") {
           activeCall.remoteVideoStream ||= new MediaStream();
           if (!activeCall.remoteVideoStream.getTracks().some(item => item.id === track.id)) activeCall.remoteVideoStream.addTrack(track);
-          track.onended = notify;
+          track.onended = () => {
+            activeCall.remoteVideoStream?.removeTrack(track);
+            if (!activeCall.remoteVideoStream?.getVideoTracks().some(item => item.readyState === "live" && !item.muted)) activeCall.remoteVideoStream = null;
+            notify();
+          };
           track.onmute = notify;
           track.onunmute = notify;
         }

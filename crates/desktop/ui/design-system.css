@@ -1162,14 +1162,87 @@ body.reduced-motion *, body.reduced-motion *::before, body.reduced-motion *::aft
 /* Visual themes remain local preferences and never affect message content. */
 body[data-theme="midnight"] { --ink-1: #0b1020; --ink-2: #101936; --ink-3: #17254b; --line: #7aa2ff26; --lilac: #78a9ff; --lilac-soft: #b9d0ff; --mint: #69e6c1; background: radial-gradient(circle at 78% 0%, #244b9838, transparent 34%), #080d1c; }
 body[data-theme="forest"] { --ink-1: #0d1b16; --ink-2: #12261e; --ink-3: #1c382c; --line: #8dd8a329; --lilac: #8ed7a1; --lilac-soft: #c0f0c8; --mint: #75e2b4; background: radial-gradient(circle at 12% 0%, #2c8d5c31, transparent 35%), #09130f; }
+body[data-theme="ember"] { --ink-1: #21120f; --ink-2: #2c1813; --ink-3: #44251b; --line: #f59b6d30; --lilac: #fa9d6a; --lilac-soft: #ffd1b8; --mint: #e7cb80; background: radial-gradient(circle at 82% 0%, #ed6f3738, transparent 36%), #160c0a; }
+body[data-theme="glacier"] { --ink-1: #0b1720; --ink-2: #10232d; --ink-3: #193842; --line: #9feaff30; --lilac: #8bdff2; --lilac-soft: #c8f5ff; --mint: #93e5c1; background: radial-gradient(circle at 74% 0%, #5abde336, transparent 38%), #081218; }
 body[data-theme="sakura"] { --ink-1: #20131d; --ink-2: #2b1928; --ink-3: #432541; --line: #ffbddb32; --lilac: #ff9dc7; --lilac-soft: #ffd1e4; --mint: #9ee6cf; background: radial-gradient(circle at 70% 0%, #e779ae38, transparent 38%), #160d15; }
 body[data-theme="aurora"] { --ink-1: #091822; --ink-2: #0d2630; --ink-3: #123a42; --line: #77f0dc2b; --lilac: #70dff2; --lilac-soft: #c0f7ff; --mint: #86efae; background: #071219; }
-body[data-theme="sakura"] .app-shell, body[data-theme="aurora"] .app-shell { position: relative; isolation: isolate; overflow: hidden; }
-body[data-theme="sakura"] .app-shell::before, body[data-theme="aurora"] .app-shell::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: .62; background-repeat: repeat; background-size: 260px 260px, 380px 380px, auto; }
+body[data-theme="tide"] { --ink-1: #061b29; --ink-2: #092737; --ink-3: #104052; --line: #78d5ff2d; --lilac: #64d5ff; --lilac-soft: #bef2ff; --mint: #7ae8c3; background: #05131f; }
+body.has-custom-wallpaper { background-image: linear-gradient(rgba(7, 10, 16, var(--wallpaper-shade, .58)), rgba(7, 10, 16, var(--wallpaper-shade, .58))), var(--custom-wallpaper) !important; background-position: center; background-size: cover; background-attachment: fixed; }
+body[data-theme="sakura"] .app-shell, body[data-theme="aurora"] .app-shell, body[data-theme="tide"] .app-shell { position: relative; isolation: isolate; overflow: hidden; }
+body[data-theme="sakura"] .app-shell::before, body[data-theme="aurora"] .app-shell::before, body[data-theme="tide"] .app-shell::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: .62; background-repeat: repeat; background-size: 260px 260px, 380px 380px, auto; }
 body[data-theme="sakura"] .app-shell::before { background-image: radial-gradient(ellipse at 24px 36px, #ffd8e888 0 3px, transparent 4px), radial-gradient(ellipse at 175px 142px, #ff9fc899 0 4px, transparent 5px), radial-gradient(circle at 50% 0%, #ff89ba1c, transparent 43%); animation: gc-sakura-drift 14s linear infinite; }
 body[data-theme="aurora"] .app-shell::before { background-image: radial-gradient(ellipse at 25% 0%, #7cf7d436, transparent 42%), radial-gradient(ellipse at 77% 0%, #7ab9ff3b, transparent 47%), linear-gradient(110deg, transparent 22%, #ae8cff18 45%, transparent 68%); background-size: 120% 140%, 130% 150%, 180% 100%; animation: gc-aurora-shift 13s ease-in-out infinite alternate; }
+body[data-theme="tide"] .app-shell::before { background-image: radial-gradient(ellipse at 12% 100%, #3ed9f13d, transparent 45%), radial-gradient(ellipse at 75% 100%, #3479ee38, transparent 48%), repeating-linear-gradient(112deg, transparent 0 42px, #baf5ff0c 44px 47px, transparent 49px 92px); background-size: 130% 120%, 120% 120%, 170% 170%; animation: gc-tide-flow 11s ease-in-out infinite alternate; }
 @keyframes gc-sakura-drift { from { background-position: 0 -70px, 80px -160px, center; } to { background-position: -120px 520px, 190px 620px, center; } }
 @keyframes gc-aurora-shift { from { background-position: 0 0, 100% 0, 0 0; filter: hue-rotate(0deg); } to { background-position: 40% 22%, 54% 18%, 100% 0; filter: hue-rotate(18deg); } }
+@keyframes gc-tide-flow { from { background-position: 0 0, 100% 0, 0 0; transform: scale(1); } to { background-position: 38% 14%, 54% 18%, 110% 30%; transform: scale(1.04); } }
+
+/* Personal wallpaper is intentionally local: it never leaves this device or the selected server. */
+.theme-wallpaper-upload { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 58px; padding: 11px 0; border-bottom: 1px solid #ffffff0d; cursor: pointer; }
+.theme-wallpaper-upload > span:first-child { display: grid; gap: 3px; min-width: 0; }
+.theme-wallpaper-upload strong { font-size: 12px; }
+.theme-wallpaper-upload small { color: #9ca7bb; font-size: 10px; line-height: 1.35; }
+.theme-wallpaper-actions { align-items: center; justify-content: space-between; gap: 10px; }
+.theme-wallpaper-actions .fine-print { margin: 0; color: #9ca7bb; font-size: 10px; text-align: right; }
+
+/* 4.0.12 voice stage: one focused call surface instead of stacked settings cards. */
+.voice-stage {
+  max-height: min(46dvh, 360px);
+  min-height: 210px;
+  margin: 14px clamp(22px, 5vw, 82px) 10px;
+  border-color: #ffffff12;
+  border-radius: 22px;
+  background: linear-gradient(145deg, #151827f2 0%, #10151ee8 70%, #102126e8 100%);
+  box-shadow: 0 20px 58px #0006, inset 0 1px #ffffff09;
+  resize: vertical;
+}
+.voice-stage.has-screen-share { max-height: min(70dvh, 640px); }
+.voice-stage-scroll { scrollbar-color: #7f87a655 transparent; }
+.voice-stage-head { min-height: 76px; padding: 18px 22px 12px; align-items: flex-start; }
+.voice-peer-details { display: grid; gap: 3px; }
+.voice-kicker { margin: 0; color: var(--lilac); font-size: 9px; font-weight: 800; letter-spacing: .14em; }
+.voice-stage-head h3 { margin: 0; font-size: 18px; letter-spacing: -.035em; }
+.voice-status-line { margin: 1px 0 0; color: #99a3b8; font-size: 11px; }
+.voice-encryption-note { margin-top: 3px; padding: 6px 9px; border: 1px solid #ffffff11; border-radius: 999px; background: #ffffff06; color: #aeb5c8; font-size: 9px; font-weight: 750; letter-spacing: .07em; }
+.voice-participants { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 0 20px 14px; }
+.voice-participant-card { min-height: 68px; padding: 10px 12px; border-color: #ffffff10; border-radius: 15px; background: linear-gradient(135deg, #ffffff0a, #ffffff04); box-shadow: none; }
+.voice-participant-card:hover { border-color: #b9abff42; background: #a995ff10; }
+.voice-participant-card.local-participant { background: linear-gradient(135deg, #a995ff1a, #ffffff04); }
+.voice-participant-avatar { width: 42px; height: 42px; border-radius: 14px; box-shadow: 0 0 0 2px #ffffff0a; }
+.voice-participant-copy { gap: 3px; }
+.voice-participant-copy strong { font-size: 12px; }
+.voice-participant-speaking { color: #939db1; font-size: 10px; }
+.voice-speaking-dot { width: 6px; height: 6px; box-shadow: none; }
+.voice-stage-scroll .voice-device-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 38px; gap: 9px; margin: 0 20px 14px; padding: 11px; border: 1px solid #ffffff0d; border-radius: 15px; background: #070a1029; }
+.voice-device-picker { gap: 5px; }
+.voice-device-picker > span { color: #8e98aa; font-size: 9px; font-weight: 800; letter-spacing: .08em; }
+.voice-device-picker select { min-height: 37px; border-color: #ffffff13; border-radius: 10px; background: #ffffff08; font-size: 11px; }
+.voice-refresh-button { align-self: end; min-height: 37px; border-color: #ffffff13; border-radius: 10px; background: #ffffff08; color: var(--lilac-soft); }
+.voice-stage-body { padding: 12px 20px 16px; border-top-color: #ffffff0d; background: #06090e22; }
+.voice-stage-controls { align-items: center; }
+.voice-control-group { gap: 8px; }
+.voice-control-button { display: inline-flex; min-height: 42px; padding: 7px 11px; gap: 7px; border-color: #ffffff12; border-radius: 12px; background: #ffffff08; font-size: 10px; }
+.voice-control-button:hover { border-color: #b8abff55; background: #a995ff16; }
+.voice-control-icon { width: 24px; height: 24px; border-radius: 8px; background: #ffffff0d; font-size: 13px; }
+.voice-end-button { min-width: 116px; justify-content: center; border-color: #df717d55; background: linear-gradient(135deg, #be5664, #96414d); color: #fff; box-shadow: 0 8px 20px #9a3f4a2e; }
+.voice-end-button:hover { background: linear-gradient(135deg, #cf6270, #a54754); }
+.voice-device-notice { margin: 10px 2px 0; color: #8893a7; font-size: 10px; }
+.voice-stage .screen-share-layout { margin: 0 20px 12px; }
+.voice-stage .group-voice-participants { grid-column: 1 / -1; }
+@media (max-width: 700px) {
+  .voice-stage { max-height: min(52dvh, 410px); margin: 10px 12px 8px; border-radius: 18px; resize: none; }
+  .voice-stage.has-screen-share { max-height: min(70dvh, 640px); }
+  .voice-stage-head { min-height: 68px; padding: 15px 14px 10px; }
+  .voice-stage-head h3 { font-size: 16px; }
+  .voice-participants { grid-template-columns: 1fr; padding: 0 13px 12px; }
+  .voice-stage-scroll .voice-device-row { grid-template-columns: 1fr; margin: 0 13px 12px; }
+  .voice-refresh-button { align-self: stretch; }
+  .voice-stage-body { padding: 10px 13px 13px; }
+  .voice-stage-controls { align-items: stretch; flex-direction: column; }
+  .voice-control-group { width: 100%; }
+  .voice-control-button { flex: 1; justify-content: center; }
+  .voice-call-actions .voice-end-button { width: 100%; }
+}
 
 /* Keep the conversation header focused on the person, not a row of warnings. */
 .crypto-conversation-status { display: none !important; }

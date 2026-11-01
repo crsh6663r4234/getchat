@@ -850,9 +850,25 @@
     }
     throw new Error(translate("That photo is too detailed. Choose a smaller image."));
   }
+  function readImageData(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error(translate("Could not read that image.")));
+      reader.onload = () => resolve(String(reader.result || ""));
+      reader.readAsDataURL(file);
+    });
+  }
+  async function prepareAvatar(file) {
+    const animated = file?.type === "image/gif" || file?.type === "image/webp";
+    if (animated) {
+      if (file.size > 80_000) throw new Error(translate("Animated profile pictures must be 80 KB or smaller."));
+      return readImageData(file);
+    }
+    return compressAvatar(file);
+  }
   async function handleAvatarFile(input, preview, save) {
     const file = input.files?.[0]; if (!file) return;
-    try { const image = await compressAvatar(file); save(image); setAvatar($(preview), state.user?.display_name || $("#createForm [name=display_name]")?.value || "G", image); }
+    try { const image = await prepareAvatar(file); save(image); setAvatar($(preview), state.user?.display_name || $("#createForm [name=display_name]")?.value || "G", image); }
     catch (error) { toast(error.message || translate("Could not use that photo."), true); }
     finally { input.value = ""; }
   }
@@ -865,6 +881,11 @@
     document.body.classList.toggle("light", theme === "light");
     document.body.classList.toggle("reduced-motion", motion === "reduced");
     document.documentElement.style.fontSize = `${size}px`;
+    const wallpaper = localStorage.getItem("ghostchat.wallpaper") || "";
+    const shade = Number(localStorage.getItem("ghostchat.wallpaperShade") || "58");
+    document.body.classList.toggle("has-custom-wallpaper", !!wallpaper);
+    document.body.style.setProperty("--custom-wallpaper", wallpaper ? `url(\"${wallpaper}\")` : "none");
+    document.body.style.setProperty("--wallpaper-shade", `${Math.min(88, Math.max(20, shade)) / 100}`);
     if (persist) {
       localStorage.setItem("ghostchat.theme", theme);
       localStorage.setItem("ghostchat.textSize", size);
@@ -876,7 +897,23 @@
     $("#themeSelect").value = localStorage.getItem("ghostchat.theme") || "dark";
     $("#textSize").value = localStorage.getItem("ghostchat.textSize") || "15";
     $("#motionSelect").value = localStorage.getItem("ghostchat.motion") || "full";
+    $("#themeWallpaperShade").value = localStorage.getItem("ghostchat.wallpaperShade") || "58";
+    updateWallpaperStatus();
     applyAppearance();
+  }
+  function updateWallpaperStatus() {
+    const status = $("#themeWallpaperStatus"); if (!status) return;
+    const wallpaper = localStorage.getItem("ghostchat.wallpaper") || "";
+    status.textContent = wallpaper ? translate("Custom wallpaper is active on this device.") : translate("No custom wallpaper selected.");
+  }
+  async function prepareWallpaper(file) {
+    if (!file || !file.type.startsWith("image/")) throw new Error(translate("Choose an image file."));
+    if ((file.type === "image/gif" || file.type === "image/webp") && file.size <= 650_000) return readImageData(file);
+    const bitmap = await createImageBitmap(file); const maxWidth = 1440; const scale = Math.min(1, maxWidth / bitmap.width);
+    const canvas = document.createElement("canvas"); canvas.width = Math.max(1, Math.round(bitmap.width * scale)); canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    canvas.getContext("2d", { alpha: false }).drawImage(bitmap, 0, 0, canvas.width, canvas.height); bitmap.close();
+    for (const quality of [0.82, 0.72, 0.62, 0.52]) { const data = canvas.toDataURL("image/jpeg", quality); if (data.length <= 900_000) return data; }
+    throw new Error(translate("That wallpaper is too detailed. Choose a smaller photo."));
   }
   function seasonalIdentity() {
     const now = new Date(); const month = now.getMonth() + 1; const day = now.getDate();
@@ -2559,13 +2596,15 @@
               : "Choose your microphone and speaker, or join muted and listen.");
     $(".voice-encryption-note").textContent = groupMode ? translate("RELAYED · NOT END-TO-END ENCRYPTED") : "LIVE · AUDIO";
     const hasRemoteVideo = !!voice.remoteVideoStream?.getVideoTracks().some(track => track.readyState === "live" && !track.muted);
+    const hasLocalVideo = !!voice.localScreenStream?.getVideoTracks().some(track => track.readyState === "live" && !track.muted);
     $("#remoteScreenPanel").classList.toggle("hidden", groupMode || !hasRemoteVideo);
-    $("#localScreenPanel").classList.toggle("hidden", groupMode || !voice.screenSharing);
+    $("#localScreenPanel").classList.toggle("hidden", groupMode || !voice.screenSharing || !hasLocalVideo);
     $("#groupVoiceMedia").classList.toggle("hidden", !groupMode || !$("#groupVoiceMedia .group-screen-tile"));
     $("#screenShareLayout").classList.toggle("has-remote", hasRemoteVideo);
     $("#screenShareLayout").classList.toggle("is-group", groupMode);
     const showingCallConversation = state.page === "messages" && state.active?.id === voiceConversationId;
     $("#voiceStage").classList.toggle("hidden", voice.status === "idle" || !showingCallConversation);
+    $("#voiceStage").classList.toggle("has-screen-share", !groupMode && (hasRemoteVideo || hasLocalVideo));
     const dock = $("#activeCallDock");
     dock.classList.toggle("hidden", voice.status === "idle" || showingCallConversation);
     dock.dataset.conversationId = voiceConversationId || "";
@@ -2599,13 +2638,15 @@
       audio.srcObject = voice.remoteAudioStream;
       if (voice.remoteAudioStream) void audio.play().then(() => $("#enableCallAudio").classList.add("hidden")).catch(() => $("#enableCallAudio").classList.remove("hidden"));
     }
-    if (video.srcObject !== voice.remoteVideoStream) {
-      video.srcObject = voice.remoteVideoStream;
-      if (voice.remoteVideoStream) void video.play().catch(() => {});
+    const remoteScreenStream = voice.remoteVideoStream?.getVideoTracks().some(track => track.readyState === "live" && !track.muted) ? voice.remoteVideoStream : null;
+    const localScreenStream = voice.localScreenStream?.getVideoTracks().some(track => track.readyState === "live" && !track.muted) ? voice.localScreenStream : null;
+    if (video.srcObject !== remoteScreenStream) {
+      video.srcObject = remoteScreenStream;
+      if (remoteScreenStream) void video.play().catch(() => {});
     }
-    if (localVideo.srcObject !== voice.localScreenStream) {
-      localVideo.srcObject = voice.localScreenStream;
-      if (voice.localScreenStream) void localVideo.play().catch(() => {});
+    if (localVideo.srcObject !== localScreenStream) {
+      localVideo.srcObject = localScreenStream;
+      if (localScreenStream) void localVideo.play().catch(() => {});
     }
     void applyPlaybackSettings();
   }
@@ -2938,6 +2979,25 @@
   $("#profileButton").onclick = openSettings;
   for (const selector of ["#languageSelect", "#authLanguageSelect"]) $(selector).onchange = event => { localStorage.setItem("ghostchat.language", event.target.value); applyLanguage(); renderSidebar(); if (["friends", "search", "searchMessages"].includes(state.page)) renderPage(); else if (!state.active) showWelcome(); renderVoiceControls(); };
   for (const selector of ["#themeSelect", "#textSize", "#motionSelect"]) $(selector).onchange = () => applyAppearance({ persist: true });
+  $("#themeWallpaperInput").onchange = async event => {
+    const file = event.target.files?.[0]; if (!file) return;
+    try {
+      const wallpaper = await prepareWallpaper(file);
+      localStorage.setItem("ghostchat.wallpaper", wallpaper);
+      applyAppearance(); updateWallpaperStatus();
+      toast(translate("Custom wallpaper applied on this device."));
+    } catch (error) { toast(error.message || translate("Could not use that wallpaper."), true); }
+    finally { event.target.value = ""; }
+  };
+  $("#themeWallpaperShade").oninput = event => {
+    localStorage.setItem("ghostchat.wallpaperShade", event.target.value);
+    applyAppearance();
+  };
+  $("#clearThemeWallpaper").onclick = () => {
+    localStorage.removeItem("ghostchat.wallpaper");
+    applyAppearance(); updateWallpaperStatus();
+    toast(translate("Custom wallpaper removed."));
+  };
   $("#removeProfileAvatar").onclick = () => { profileAvatarData = null; setAvatar($("#profileAvatarPreview"), state.user?.display_name); };
   $("#showSettingsRecoveryKey").onclick = event => {
     const value = $("#settingsRecoveryValue");
@@ -3243,7 +3303,7 @@
     $("#settingsDialog").close(); toast(!audioFailure && (directVoiceActive || groupVoiceActive) ? "Voice processing settings applied." : "Settings saved.");
   };
   $("#exportSettings").onclick = () => {
-    const data = { exportedAt: new Date().toISOString(), server: state.base || "local", theme: localStorage.getItem("ghostchat.theme") || "dark", textSize: localStorage.getItem("ghostchat.textSize") || "15", motion: localStorage.getItem("ghostchat.motion") || "full", language: localStorage.getItem("ghostchat.language") || "en" };
+    const data = { exportedAt: new Date().toISOString(), server: state.base || "local", theme: localStorage.getItem("ghostchat.theme") || "dark", textSize: localStorage.getItem("ghostchat.textSize") || "15", motion: localStorage.getItem("ghostchat.motion") || "full", wallpaperShade: localStorage.getItem("ghostchat.wallpaperShade") || "58", hasCustomWallpaper: !!localStorage.getItem("ghostchat.wallpaper"), language: localStorage.getItem("ghostchat.language") || "en" };
     downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }), "ghostchat-preferences.json");
     toast(translate("Preferences exported."));
   };

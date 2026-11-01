@@ -791,21 +791,43 @@ struct UpdateProfile {
 
 fn validate_avatar(value: Option<String>) -> Result<Option<String>, ApiError> {
     let Some(value) = value else { return Ok(None) };
-    if value.len() > 48_000 || !value.starts_with("data:image/jpeg;base64,") {
-        return Err(ApiError::bad("Profile photo must be a small JPEG image."));
+    let (encoded, kind) = if let Some(encoded) = value.strip_prefix("data:image/jpeg;base64,") {
+        (encoded, "jpeg")
+    } else if let Some(encoded) = value.strip_prefix("data:image/gif;base64,") {
+        (encoded, "gif")
+    } else if let Some(encoded) = value.strip_prefix("data:image/webp;base64,") {
+        (encoded, "webp")
+    } else {
+        return Err(ApiError::bad(
+            "Profile photo must be a JPEG, GIF, or WebP image.",
+        ));
+    };
+    if value.len() > 120_000 {
+        return Err(ApiError::bad("Profile photo must be under 80 KB."));
     }
-    let encoded = value
-        .strip_prefix("data:image/jpeg;base64,")
-        .ok_or_else(|| ApiError::bad("Profile photo must be a small JPEG image."))?;
     let bytes = STANDARD
         .decode(encoded)
         .map_err(|_| ApiError::bad("Profile photo is not valid."))?;
-    if bytes.len() > 32_000
-        || !bytes.starts_with(&[0xff, 0xd8, 0xff])
-        || !bytes.ends_with(&[0xff, 0xd9])
-    {
+    let valid = match kind {
+        "jpeg" => {
+            bytes.len() <= 32_000
+                && bytes.starts_with(&[0xff, 0xd8, 0xff])
+                && bytes.ends_with(&[0xff, 0xd9])
+        }
+        "gif" => {
+            bytes.len() <= 80_000 && (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"))
+        }
+        "webp" => {
+            bytes.len() <= 80_000
+                && bytes.len() >= 12
+                && &bytes[0..4] == b"RIFF"
+                && &bytes[8..12] == b"WEBP"
+        }
+        _ => false,
+    };
+    if !valid {
         return Err(ApiError::bad(
-            "Profile photo must be a valid JPEG under 32 KB.",
+            "Profile photo is invalid or exceeds the 80 KB limit.",
         ));
     }
     Ok(Some(value))
