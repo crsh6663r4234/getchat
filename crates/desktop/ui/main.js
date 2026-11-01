@@ -129,6 +129,7 @@
     "Safety": "Güvenlik", "Safety and reporting": "Güvenlik ve bildirim", "Blocking removes the friendship and stops new direct messages and calls. Existing chat history stays available. Reports are sent to and stored by this server, and its operator can read them. Only the reason and details you enter are included; chat messages and attachments are never attached automatically. GhostChat has no moderation console or guaranteed response time.": "Engellemek arkadaşlığı kaldırır ve yeni özel mesajları ile aramaları durdurur. Eski sohbet geçmişi görünür kalır. Bildirim bu sunucuya gönderilir ve kaydedilir; sunucu yöneticisi okuyabilir. Yalnızca seçtiğin neden ve yazdığın açıklama eklenir; mesajlar ve dosyalar otomatik eklenmez. GhostChat'te moderasyon paneli veya yanıt süresi garantisi yoktur.", "Block user": "Kullanıcıyı engelle", "Unblock user": "Engeli kaldır", "Report this user": "Bu kullanıcıyı bildir", "Reason": "Neden", "Choose a reason": "Bir neden seç", "Harassment": "Taciz", "Spam or scams": "Spam veya dolandırıcılık", "Threats": "Tehdit", "Other": "Diğer", "Details (optional)": "Açıklama (isteğe bağlı)", "Send report": "Bildirimi gönder", "You blocked this user. Existing chat history is still available.": "Bu kullanıcıyı engelledin. Eski sohbet geçmişi görünür kalır.", "You unblocked this user. Send a new friend request to start a new direct chat.": "Bu kullanıcının engelini kaldırdın. Yeni özel sohbet için tekrar arkadaşlık isteği gönder.", "Report sent. No chat messages were attached.": "Bildirim gönderildi. Sohbet mesajları eklenmedi."
   });
   Object.assign(trText, { "Copy app link": "Uygulama bağlantısını kopyala", "Invite link copied.": "Davet bağlantısı kopyalandı.", "Show conversations": "Sohbetleri göster", "Hide conversations": "Sohbetleri gizle" });
+  Object.assign(trText, { "Motion": "Hareketler", "Full": "Tam", "Reduced": "Azaltılmış" });
   Object.assign(trText, {
     "Account options": "Hesap seçenekleri", "Main navigation": "Ana gezinme", "Call participants": "Arama katılımcıları",
     "Your profile": "Profilin", "Log out": "Çıkış yap", "Close": "Kapat", "Send message": "Mesajı gönder",
@@ -855,6 +856,8 @@
     document.body.classList.toggle("light", theme === "light"); $("#themeSelect").value = theme;
     const size = localStorage.getItem("ghostchat.textSize") || "15";
     document.documentElement.style.fontSize = `${size}px`; $("#textSize").value = size;
+    const motion = localStorage.getItem("ghostchat.motion") || "full";
+    document.body.classList.toggle("reduced-motion", motion === "reduced"); $("#motionSelect").value = motion;
   }
   function updateIdentity() {
     $("#accountName").textContent = state.user.display_name;
@@ -3077,11 +3080,12 @@
     catch (error) { console.warn("Could not update the Windows startup setting", error); toast(tr() ? "Windows başlangıç ayarı kaydedilemedi." : "Could not update the Windows startup setting.", true); return; }
     const theme = $("#themeSelect").value; localStorage.setItem("ghostchat.theme", theme); document.body.classList.toggle("light", theme === "light");
     localStorage.setItem("ghostchat.textSize", $("#textSize").value); document.documentElement.style.fontSize = `${$("#textSize").value}px`;
+    const motion = $("#motionSelect").value; localStorage.setItem("ghostchat.motion", motion); document.body.classList.toggle("reduced-motion", motion === "reduced");
     applyLanguage();
     persistVoiceSettings(); await applyPlaybackSettings();
     $("#settingsDialog").close(); toast("Settings saved.");
   };
-  $("#exportSettings").onclick = () => { const data = { server: state.base || "local", theme: localStorage.getItem("ghostchat.theme") || "dark", textSize: localStorage.getItem("ghostchat.textSize") || "15" }; const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })); const link = create("a"); link.href = url; link.download = "ghostchat-preferences.json"; link.click(); URL.revokeObjectURL(url); };
+  $("#exportSettings").onclick = () => { const data = { server: state.base || "local", theme: localStorage.getItem("ghostchat.theme") || "dark", textSize: localStorage.getItem("ghostchat.textSize") || "15", motion: localStorage.getItem("ghostchat.motion") || "full" }; const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })); const link = create("a"); link.href = url; link.download = "ghostchat-preferences.json"; link.click(); URL.revokeObjectURL(url); };
   $("#exportAccount").onclick = async () => { try { const data = await request("/v1/data/export"); const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })); const link = create("a"); link.href = url; link.download = "ghostchat-account-export.json"; link.click(); URL.revokeObjectURL(url); toast("Account data exported."); } catch (error) { toast(error.message, true); } };
   $("#revokeOtherSessions").onclick = async event => {
     if (!confirm(translate("Sign out every other GhostChat session? This device will stay signed in."))) return;
