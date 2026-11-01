@@ -2030,11 +2030,11 @@ async fn conversation_row(
          CASE WHEN c.kind='group' THEN c.title ELSE (SELECT u.display_name FROM conversation_members b JOIN users u ON u.id=b.user_id WHERE b.conversation_id=c.id AND b.user_id<>? LIMIT 1) END AS display_name,\
          CASE WHEN c.kind='group' THEN NULL ELSE (SELECT u.avatar_data FROM conversation_members b JOIN users u ON u.id=b.user_id WHERE b.conversation_id=c.id AND b.user_id<>? LIMIT 1) END AS avatar_data,\
          (SELECT count(*) FROM conversation_members cm WHERE cm.conversation_id=c.id) AS member_count,\
-         (SELECT group_concat(display_name, ', ') FROM (SELECT u.display_name FROM conversation_members cm JOIN users u ON u.id=cm.user_id WHERE cm.conversation_id=c.id AND cm.user_id<>? ORDER BY u.display_name COLLATE NOCASE)) AS member_names,\
+         (SELECT group_concat(u.display_name, ', ') FROM conversation_members cm JOIN users u ON u.id=cm.user_id WHERE cm.conversation_id=c.id AND cm.user_id<>?) AS member_names,\
          (SELECT content FROM messages m WHERE m.conversation_id=c.id ORDER BY m.rowid DESC LIMIT 1) AS last_message,\
          (SELECT created_at FROM messages m WHERE m.conversation_id=c.id ORDER BY m.rowid DESC LIMIT 1) AS last_at,\
          (SELECT count(*) FROM messages m WHERE m.conversation_id=c.id AND m.sender_id<>? AND m.rowid>COALESCE((SELECT cr.last_read_sequence FROM conversation_reads cr WHERE cr.conversation_id=c.id AND cr.user_id=?),0)) AS unread_count,\
-         CASE WHEN c.kind='direct' THEN (SELECT max(cr.last_read_sequence) FROM conversation_reads cr JOIN conversation_members cm ON cm.conversation_id=cr.conversation_id AND cm.user_id=cr.user_id WHERE cr.conversation_id=c.id AND cm.user_id<>?) ELSE NULL END AS peer_read_sequence\
+         CASE WHEN c.kind='direct' THEN (SELECT max(cr.last_read_sequence) FROM conversation_reads cr JOIN conversation_members cm ON cm.conversation_id=cr.conversation_id AND cm.user_id=cr.user_id WHERE cr.conversation_id=c.id AND cm.user_id<>?) ELSE NULL END AS peer_read_sequence \
          FROM conversations c WHERE c.id=? AND EXISTS(SELECT 1 FROM conversation_members cm WHERE cm.conversation_id=c.id AND cm.user_id=?)",
     )
     .bind(user_id)
@@ -2049,7 +2049,10 @@ async fn conversation_row(
     .bind(user_id)
     .fetch_optional(db)
     .await
-    .map_err(|_| ApiError::internal())?
+    .map_err(|error| {
+        tracing::error!(%error, conversation_id = id, "could not load conversation summary");
+        ApiError::internal()
+    })?
     .ok_or_else(ApiError::not_found)
 }
 
@@ -5439,5 +5442,41 @@ mod tests {
             ordered("a-user", "z-user"),
             ("a-user".into(), "z-user".into())
         );
+    }
+
+    #[tokio::test]
+    async fn direct_conversation_row_loads_after_creation() {
+        let path = std::env::temp_dir().join(format!("ghostchat-conversation-{}.sqlite", Uuid::new_v4()));
+        let path_string = path.to_string_lossy().into_owned();
+        let db = open_database(&path_string).await.unwrap();
+
+        for (id, username, display_name) in [("a", "alice", "Alice"), ("b", "bob", "Bob")] {
+            sqlx::query("INSERT INTO users(id,username,display_name,recovery_lookup,recovery_verifier) VALUES(?,?,?,?,?)")
+                .bind(id)
+                .bind(username)
+                .bind(display_name)
+                .bind(format!("lookup-{id}"))
+                .bind("verifier")
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO conversations(id) VALUES('direct-1')")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO conversation_members(conversation_id,user_id) VALUES('direct-1','a'),('direct-1','b')")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let row = conversation_row(&db, "direct-1", "a").await.unwrap();
+        assert_eq!(row.id, "direct-1");
+        assert_eq!(row.peer_id, "b");
+        assert_eq!(row.display_name, "Bob");
+        assert_eq!(row.member_names.as_deref(), Some("Bob"));
+
+        db.close().await;
+        let _ = std::fs::remove_file(path);
     }
 }
