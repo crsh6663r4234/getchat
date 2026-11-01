@@ -1912,6 +1912,51 @@
     const date = new Date(value); if (Number.isNaN(date.getTime())) return "";
     return new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(date);
   }
+  function appendMessageText(node, content) {
+    const urlPattern = /https?:\/\/[^\s<>"']+/gi;
+    let cursor = 0;
+    for (const match of content.matchAll(urlPattern)) {
+      const start = match.index ?? 0;
+      if (start > cursor) node.append(document.createTextNode(content.slice(cursor, start)));
+      const rawUrl = match[0];
+      const punctuation = rawUrl.match(/[.,!?;:]+$/)?.[0] || "";
+      const candidate = rawUrl.slice(0, rawUrl.length - punctuation.length);
+      try {
+        const parsed = new URL(candidate);
+        if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new Error("Unsupported link protocol");
+        const link = create("button", "message-link", candidate);
+        link.type = "button";
+        link.title = candidate;
+        link.setAttribute("aria-label", `${translate("Open link")}: ${candidate}`);
+        link.onclick = () => openExternalLink(parsed.href);
+        node.append(link);
+      } catch {
+        node.append(document.createTextNode(candidate));
+      }
+      if (punctuation) node.append(document.createTextNode(punctuation));
+      cursor = start + rawUrl.length;
+    }
+    if (cursor < content.length) node.append(document.createTextNode(content.slice(cursor)));
+  }
+  function openExternalLink(url) {
+    let parsed;
+    try {
+      parsed = new URL(url);
+      if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new Error("Unsupported link protocol");
+    } catch {
+      toast(translate("This link is invalid."), true);
+      return;
+    }
+    if (!confirm(`${translate("Open external link?")}\n${parsed.href}`)) return;
+    const anchor = document.createElement("a");
+    anchor.href = parsed.href;
+    anchor.target = "_blank";
+    anchor.rel = "noopener noreferrer";
+    anchor.style.display = "none";
+    document.body.append(anchor);
+    anchor.click();
+    anchor.remove();
+  }
   function encryptedAttachmentManifest(content) {
     if (typeof content !== "string" || !content.startsWith(ENCRYPTED_ATTACHMENT_MARKER)) return null;
     try {
@@ -1957,7 +2002,11 @@
         attachment.dataset.attachmentId = message.content.slice("file:".length);
         state.attachmentObserver.observe(attachment);
       } else void renderAttachment(attachment, message.content.slice("file:".length), row);
-    } else if (message.content) main.append(create("div", "message-body", message.content));
+    } else if (message.content) {
+      const body = create("div", "message-body");
+      appendMessageText(body, message.content);
+      main.append(body);
+    }
     if (!message.encrypted) {
       const reactions = create("div", "message-reactions"); reactions.setAttribute("aria-label", translate("Message reactions")); main.append(reactions);
       const quickReactions = create("div", "quick-reactions"); reactions.append(quickReactions);
@@ -2125,7 +2174,26 @@
       const url = new URL(attachment.url, base).toString();
       const filename = attachment.filename || "Shared file";
       if (attachment.content_type?.startsWith("image/")) {
-        const image = create("img", "message-image"); image.src = url; image.alt = filename; image.loading = "lazy"; container.append(image);
+        container.classList.add("image-attachment");
+        const loading = create("span", "attachment-loading", translate("Loading image…")); container.append(loading);
+        let previewUrl = url;
+        try {
+          const downloadUrl = new URL(`/v1/attachments/${encodeURIComponent(attachmentId)}`, activeBase());
+          const response = await fetch(downloadUrl, { headers: { Authorization: `Bearer ${state.token}` } });
+          if (!response.ok) throw new Error("Image download failed");
+          const blob = await response.blob();
+          previewUrl = URL.createObjectURL(blob);
+          state.attachmentObjectUrls.push(previewUrl);
+        } catch (error) { console.warn("Using attachment preview link", error); }
+        if (!container.isConnected || !messageRow?.isConnected) return;
+        const image = create("img", "message-image"); image.alt = filename; image.loading = "lazy";
+        image.onload = () => loading.remove();
+        image.onerror = () => {
+          loading.remove(); image.remove();
+          const fallback = create("a", "attachment-download", `⇩  ${filename}`); fallback.href = url; fallback.download = filename; container.prepend(fallback);
+        };
+        image.src = previewUrl;
+        container.append(image);
         container.append(create("span", "attachment-filename", filename));
       } else if (attachment.content_type?.startsWith("video/")) {
         const video = create("video", "message-video"); video.src = url; video.controls = true; video.preload = "metadata"; container.append(video);

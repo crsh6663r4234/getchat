@@ -1110,6 +1110,9 @@ body {
 .message.peer-message .message-main { align-items: flex-start; }
 .message-body { max-width: min(100%, 680px); border: 1px solid #ffffff0c; border-radius: 7px 16px 16px 16px; background: #ffffff08; }
 .own-message .message-body { border-color: #b8a8ff2d; background: linear-gradient(135deg, #a995ff2b, #8d78e31c); border-radius: 16px 7px 16px 16px; }
+.message-link { display: inline; padding: 0; border: 0; border-bottom: 1px solid #b8a8ff8c; background: transparent; color: #d0c7ff; font: inherit; line-height: inherit; text-align: left; overflow-wrap: anywhere; }
+.message-link:hover { color: #f0edff; border-bottom-color: currentColor; }
+.message-link:focus-visible { border-radius: 3px; }
 .message.own-message .message-meta { justify-content: flex-end; }
 .message.own-message .message-reactions { justify-content: flex-end; }
 .message-reactions { width: fit-content; min-height: 0; margin-top: 4px; gap: 5px; }
