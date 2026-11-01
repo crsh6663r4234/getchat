@@ -1159,6 +1159,26 @@ button, .list-row, .message, .voice-control-button, .rail-button { transition: t
 button:not(:disabled):active { transform: translateY(1px) scale(.985); }
 body.reduced-motion *, body.reduced-motion *::before, body.reduced-motion *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 
+/* Visual themes remain local preferences and never affect message content. */
+body[data-theme="midnight"] { --ink-1: #0b1020; --ink-2: #101936; --ink-3: #17254b; --line: #7aa2ff26; --lilac: #78a9ff; --lilac-soft: #b9d0ff; --mint: #69e6c1; background: radial-gradient(circle at 78% 0%, #244b9838, transparent 34%), #080d1c; }
+body[data-theme="forest"] { --ink-1: #0d1b16; --ink-2: #12261e; --ink-3: #1c382c; --line: #8dd8a329; --lilac: #8ed7a1; --lilac-soft: #c0f0c8; --mint: #75e2b4; background: radial-gradient(circle at 12% 0%, #2c8d5c31, transparent 35%), #09130f; }
+body[data-theme="sakura"] { --ink-1: #20131d; --ink-2: #2b1928; --ink-3: #432541; --line: #ffbddb32; --lilac: #ff9dc7; --lilac-soft: #ffd1e4; --mint: #9ee6cf; background: radial-gradient(circle at 70% 0%, #e779ae38, transparent 38%), #160d15; }
+body[data-theme="aurora"] { --ink-1: #091822; --ink-2: #0d2630; --ink-3: #123a42; --line: #77f0dc2b; --lilac: #70dff2; --lilac-soft: #c0f7ff; --mint: #86efae; background: #071219; }
+body[data-theme="sakura"] .app-shell, body[data-theme="aurora"] .app-shell { position: relative; isolation: isolate; overflow: hidden; }
+body[data-theme="sakura"] .app-shell::before, body[data-theme="aurora"] .app-shell::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; opacity: .62; background-repeat: repeat; background-size: 260px 260px, 380px 380px, auto; }
+body[data-theme="sakura"] .app-shell::before { background-image: radial-gradient(ellipse at 24px 36px, #ffd8e888 0 3px, transparent 4px), radial-gradient(ellipse at 175px 142px, #ff9fc899 0 4px, transparent 5px), radial-gradient(circle at 50% 0%, #ff89ba1c, transparent 43%); animation: gc-sakura-drift 14s linear infinite; }
+body[data-theme="aurora"] .app-shell::before { background-image: radial-gradient(ellipse at 25% 0%, #7cf7d436, transparent 42%), radial-gradient(ellipse at 77% 0%, #7ab9ff3b, transparent 47%), linear-gradient(110deg, transparent 22%, #ae8cff18 45%, transparent 68%); background-size: 120% 140%, 130% 150%, 180% 100%; animation: gc-aurora-shift 13s ease-in-out infinite alternate; }
+@keyframes gc-sakura-drift { from { background-position: 0 -70px, 80px -160px, center; } to { background-position: -120px 520px, 190px 620px, center; } }
+@keyframes gc-aurora-shift { from { background-position: 0 0, 100% 0, 0 0; filter: hue-rotate(0deg); } to { background-position: 40% 22%, 54% 18%, 100% 0; filter: hue-rotate(18deg); } }
+
+/* Keep the conversation header focused on the person, not a row of warnings. */
+.crypto-conversation-status { display: none !important; }
+.chat-tools { gap: 9px; }
+.crypto-toggle { width: 38px; min-width: 38px; height: 38px; padding: 0; overflow: hidden; font-size: 0; }
+.crypto-toggle::before { content: "⌑"; color: var(--lilac-soft); font-size: 18px; line-height: 1; }
+.search-results { display: grid; gap: 10px; }
+.search-results .result-card { min-height: 68px; border-radius: 16px; background: #ffffff08; }
+
 @media (max-width: 760px) {
   .app-shell { grid-template-columns: 58px minmax(0, 1fr); }
   .sidebar { display: none; }

@@ -19,7 +19,7 @@
   };
   Object.assign(trText, {
     "is downloading": "indiriliyor",
-    "Choose a friend or find someone new.": "Bir arkadaş seç ya da yeni birini bul.", "Connected": "Bağlandı", "Reconnecting": "Yeniden bağlanıyor", "Voice ready": "Ses hazır", "Incoming call": "Gelen arama", "Calling…": "Aranıyor…", "Connecting…": "Bağlanıyor…", "In voice": "Sesli görüşmede", "Reconnecting…": "Yeniden bağlanıyor…", "Voice": "Ses", "Voice call": "Sesli arama", "Try microphone": "Mikrofonu dene", "Mic off": "Mikrofon kapalı", "Speaking": "Konuşuyor", "Hold Space": "Boşluk tuşunu basılı tut", "Turn mic on": "Mikrofonu aç", "Mute mic": "Mikrofonu kapat", "Sound off": "Ses kapalı", "Sound on": "Ses açık", "Starting…": "Başlatılıyor…", "Stop sharing": "Paylaşımı durdur", "Share screen": "Ekranı paylaş", "No microphone detected. Calls can still be joined muted so you can listen.": "Mikrofon bulunamadı. Yine de sessiz katılıp dinleyebilirsin.", "Microphone access is unavailable. You can stay muted or allow access and try again.": "Mikrofon erişimi yok. Sessiz kalabilir veya izin verip tekrar deneyebilirsin.", "No microphone found. You can still join calls muted.": "Mikrofon bulunamadı. Aramalara sessiz katılabilirsin.", "Audio devices refreshed.": "Ses aygıtları yenilendi.", "Checking voice relay support…": "Ses aktarım desteği kontrol ediliyor…", "Server address": "Sunucu adresi", "Selected server": "Seçili sunucu", "Local server": "Yerel sunucu", "Search @username or user ID": "@etiket veya kullanıcı kimliği ara", "Search people": "Kişi ara", "Search in your messages": "Mesajlarında ara", "Search for a username or user ID. Users are not listed publicly.": "Kullanıcı etiketiyle veya kimliğiyle ara. Kullanıcılar herkese açık listelenmez.", "Searches the 50 latest messages in each conversation on this device; your search phrase stays local.": "Bu cihazda her sohbetin son 50 mesajını arar; arama ifaden cihazında kalır.", "Searching locally…": "Yerel olarak aranıyor…", "Search could not load your messages.": "Mesajların yüklenemedi.", "No users found. Check the spelling and try again.": "Kullanıcı bulunamadı. Yazımı kontrol edip tekrar dene.", "Searching…": "Aranıyor…", "You are logged out.": "Oturum kapatıldı.", "Call audio is still blocked by Windows or the audio device.": "Arama sesi Windows veya ses aygıtı tarafından engelleniyor."
+    "Choose a friend or find someone new.": "Bir arkadaş seç ya da yeni birini bul.", "Connected": "Bağlandı", "Reconnecting": "Yeniden bağlanıyor", "Voice ready": "Ses hazır", "Incoming call": "Gelen arama", "Calling…": "Aranıyor…", "Connecting…": "Bağlanıyor…", "In voice": "Sesli görüşmede", "Reconnecting…": "Yeniden bağlanıyor…", "Voice": "Ses", "Voice call": "Sesli arama", "Try microphone": "Mikrofonu dene", "Mic off": "Mikrofon kapalı", "Speaking": "Konuşuyor", "Hold Space": "Boşluk tuşunu basılı tut", "Turn mic on": "Mikrofonu aç", "Mute mic": "Mikrofonu kapat", "Sound off": "Ses kapalı", "Sound on": "Ses açık", "Starting…": "Başlatılıyor…", "Stop sharing": "Paylaşımı durdur", "Share screen": "Ekranı paylaş", "No microphone detected. Calls can still be joined muted so you can listen.": "Mikrofon bulunamadı. Yine de sessiz katılıp dinleyebilirsin.", "Microphone access is unavailable. You can stay muted or allow access and try again.": "Mikrofon erişimi yok. Sessiz kalabilir veya izin verip tekrar deneyebilirsin.", "No microphone found. You can still join calls muted.": "Mikrofon bulunamadı. Aramalara sessiz katılabilirsin.", "Audio devices refreshed.": "Ses aygıtları yenilendi.", "Checking voice relay support…": "Ses aktarım desteği kontrol ediliyor…", "Server address": "Sunucu adresi", "Selected server": "Seçili sunucu", "Local server": "Yerel sunucu", "Search @username or user ID": "@etiket veya kullanıcı kimliği ara", "Search people": "Kişi ara", "Search in your messages": "Mesajlarında ara", "Search for a username or user ID. Users are not listed publicly.": "Kullanıcı etiketiyle veya kimliğiyle ara. Kullanıcılar herkese açık listelenmez.", "Searches the 50 latest messages in each conversation on this device; your search phrase stays local.": "Bu cihazda her sohbetin son 50 mesajını arar; arama ifaden cihazında kalır.", "Searching locally…": "Yerel olarak aranıyor…", "Search could not load your messages.": "Mesajların yüklenemedi.", "No users found. Check the spelling and try again.": "Kullanıcı bulunamadı. Yazımı kontrol edip tekrar dene.", "Searching…": "Aranıyor…", "You are logged out.": "Oturum kapatıldı.", "Preferences exported.": "Tercihler dışa aktarıldı.", "Account data exported.": "Hesap verileri indirildi.", "Call audio is still blocked by Windows or the audio device.": "Arama sesi Windows veya ses aygıtı tarafından engelleniyor."
   });
   Object.assign(trText, {
     "Username": "Kullanıcı adı", "3–24 letters, numbers, or underscores. Your tag changes when you save.": "3–24 harf, rakam veya alt çizgi. Kaydedince etiketin değişir.", "That username is already in use.": "Bu kullanıcı adı zaten kullanılıyor.", "Username must be 3 to 24 letters, numbers, or underscores.": "Kullanıcı adı 3–24 harf, rakam veya alt çizgi içermeli.", "Display name must be 2 to 32 characters.": "Görünen ad 2–32 karakter olmalı.", "Recovery key": "Kurtarma anahtarı", "Show recovery key": "Kurtarma anahtarını göster", "Hide recovery key": "Kurtarma anahtarını gizle", "Copy key": "Anahtarı kopyala", "Save backup": "Yedek kaydet", "Generate replacement key": "Yeni kurtarma anahtarı oluştur", "Creating a replacement immediately invalidates your previous recovery key. Keep the new key somewhere safe; anyone who has it can recover your account.": "Yeni anahtar oluşturmak eski kurtarma anahtarını hemen geçersiz kılar. Yeni anahtarı güvenli yerde sakla; anahtara sahip olan herkes hesabını kurtarabilir.", "Recovery key saved securely on this device.": "Kurtarma anahtarı bu cihazda güvenli biçimde saklanıyor.", "This device has no saved key. Creating a replacement will disable your old key.": "Bu cihazda kayıtlı anahtar yok. Yeni anahtar oluşturmak eski anahtarını devre dışı bırakır.", "Recovery key copied.": "Kurtarma anahtarı kopyalandı.", "Create a replacement recovery key? Your old key will stop working immediately.": "Yeni kurtarma anahtarı oluşturulsun mu? Eski anahtarın hemen geçersiz olacak.", "A new recovery key is ready. Save a backup somewhere safe.": "Yeni kurtarma anahtarın hazır. Güvenli bir yere yedekle.", "Windows could not save this key. Save the displayed backup before closing Settings.": "Windows bu anahtarı kaydedemedi. Ayarları kapatmadan önce görünen anahtarı yedekle.", "Windows could not store a secure copy. Copy or save the key before continuing.": "Windows anahtarın güvenli bir kopyasını saklayamadı. Devam etmeden önce anahtarı kopyala veya kaydet.", "Recovery key changes are temporarily limited. Please try again later.": "Kurtarma anahtarı değişiklikleri geçici olarak sınırlandı. Daha sonra tekrar dene."
@@ -857,14 +857,33 @@
     finally { input.value = ""; }
   }
   function setSignupAvatar(value) { signupAvatarData = value; }
+  function applyAppearance({ persist = false } = {}) {
+    const theme = $("#themeSelect").value || localStorage.getItem("ghostchat.theme") || "dark";
+    const size = $("#textSize").value || localStorage.getItem("ghostchat.textSize") || "15";
+    const motion = $("#motionSelect").value || localStorage.getItem("ghostchat.motion") || "full";
+    document.body.dataset.theme = theme;
+    document.body.classList.toggle("light", theme === "light");
+    document.body.classList.toggle("reduced-motion", motion === "reduced");
+    document.documentElement.style.fontSize = `${size}px`;
+    if (persist) {
+      localStorage.setItem("ghostchat.theme", theme);
+      localStorage.setItem("ghostchat.textSize", size);
+      localStorage.setItem("ghostchat.motion", motion);
+    }
+  }
   function setTheme() {
     applyLanguage();
-    const theme = localStorage.getItem("ghostchat.theme") || "dark";
-    document.body.classList.toggle("light", theme === "light"); $("#themeSelect").value = theme;
-    const size = localStorage.getItem("ghostchat.textSize") || "15";
-    document.documentElement.style.fontSize = `${size}px`; $("#textSize").value = size;
-    const motion = localStorage.getItem("ghostchat.motion") || "full";
-    document.body.classList.toggle("reduced-motion", motion === "reduced"); $("#motionSelect").value = motion;
+    $("#themeSelect").value = localStorage.getItem("ghostchat.theme") || "dark";
+    $("#textSize").value = localStorage.getItem("ghostchat.textSize") || "15";
+    $("#motionSelect").value = localStorage.getItem("ghostchat.motion") || "full";
+    applyAppearance();
+  }
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url; link.download = filename; link.style.display = "none";
+    document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
   }
   function updateIdentity() {
     $("#accountName").textContent = state.user.display_name;
@@ -1338,11 +1357,13 @@
     if (!encryptable) return;
     if (!localGroup) {
       button.textContent = translate(serverLocked ? (canManageCrypto && !setupComplete ? "Continue encryption setup" : "Encrypted") : "Enable encryption"); button.disabled = serverLocked && (!canManageCrypto || setupComplete);
+      button.title = button.textContent; button.setAttribute("aria-label", button.textContent);
       status.textContent = serverLocked ? translate("This conversation is locked for MLS encryption. Prepare this device in Settings to read new messages; ask the person who started setup for help if it still fails.") : "";
       status.classList.toggle("warning", serverLocked); return;
     }
     const trusted = cryptoIdentityTrusted(conversation.id);
     button.textContent = translate(trusted ? "Encrypted" : "Verify identity"); button.disabled = trusted;
+    button.title = button.textContent; button.setAttribute("aria-label", button.textContent);
     status.textContent = trusted
       ? translate(conversation.kind === "group"
         ? "This encrypted group uses MLS for text messages. Existing messages and previous files are not encrypted; new attachments use MLS-wrapped file keys. Membership changes require verified MLS updates."
@@ -2884,6 +2905,7 @@
   };
   $("#profileButton").onclick = openSettings;
   for (const selector of ["#languageSelect", "#authLanguageSelect"]) $(selector).onchange = event => { localStorage.setItem("ghostchat.language", event.target.value); applyLanguage(); renderSidebar(); if (["friends", "search", "searchMessages"].includes(state.page)) renderPage(); else if (!state.active) showWelcome(); renderVoiceControls(); };
+  for (const selector of ["#themeSelect", "#textSize", "#motionSelect"]) $(selector).onchange = () => applyAppearance({ persist: true });
   $("#removeProfileAvatar").onclick = () => { profileAvatarData = null; setAvatar($("#profileAvatarPreview"), state.user?.display_name); };
   $("#showSettingsRecoveryKey").onclick = event => {
     const value = $("#settingsRecoveryValue");
@@ -3173,11 +3195,9 @@
     finally { button.disabled = false; }
   };
   $("#saveSettings").onclick = async () => {
+    applyAppearance({ persist: true });
     try { await invoke("set_start_at_login", { enabled: $("#startWithWindows").checked }); }
-    catch (error) { console.warn("Could not update the Windows startup setting", error); toast(tr() ? "Windows başlangıç ayarı kaydedilemedi." : "Could not update the Windows startup setting.", true); return; }
-    const theme = $("#themeSelect").value; localStorage.setItem("ghostchat.theme", theme); document.body.classList.toggle("light", theme === "light");
-    localStorage.setItem("ghostchat.textSize", $("#textSize").value); document.documentElement.style.fontSize = `${$("#textSize").value}px`;
-    const motion = $("#motionSelect").value; localStorage.setItem("ghostchat.motion", motion); document.body.classList.toggle("reduced-motion", motion === "reduced");
+    catch (error) { console.warn("Could not update the Windows startup setting", error); toast(tr() ? "Windows başlangıç ayarı kaydedilemedi; diğer ayarlar kaydedildi." : "Windows startup could not be changed; other settings were saved.", true); }
     applyLanguage();
     persistVoiceSettings(); await applyPlaybackSettings();
     const audioUpdates = await Promise.allSettled([
@@ -3190,8 +3210,12 @@
     const groupVoiceActive = ["connecting", "connected", "reconnecting"].includes(groupVoiceUiState.status);
     $("#settingsDialog").close(); toast(!audioFailure && (directVoiceActive || groupVoiceActive) ? "Voice processing settings applied." : "Settings saved.");
   };
-  $("#exportSettings").onclick = () => { const data = { server: state.base || "local", theme: localStorage.getItem("ghostchat.theme") || "dark", textSize: localStorage.getItem("ghostchat.textSize") || "15", motion: localStorage.getItem("ghostchat.motion") || "full" }; const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })); const link = create("a"); link.href = url; link.download = "ghostchat-preferences.json"; link.click(); URL.revokeObjectURL(url); };
-  $("#exportAccount").onclick = async () => { try { const data = await request("/v1/data/export"); const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })); const link = create("a"); link.href = url; link.download = "ghostchat-account-export.json"; link.click(); URL.revokeObjectURL(url); toast("Account data exported."); } catch (error) { toast(error.message, true); } };
+  $("#exportSettings").onclick = () => {
+    const data = { exportedAt: new Date().toISOString(), server: state.base || "local", theme: localStorage.getItem("ghostchat.theme") || "dark", textSize: localStorage.getItem("ghostchat.textSize") || "15", motion: localStorage.getItem("ghostchat.motion") || "full", language: localStorage.getItem("ghostchat.language") || "en" };
+    downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }), "ghostchat-preferences.json");
+    toast(translate("Preferences exported."));
+  };
+  $("#exportAccount").onclick = async () => { try { const data = await request("/v1/data/export"); downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }), "ghostchat-account-export.json"); toast(translate("Account data exported.")); } catch (error) { toast(error.message, true); } };
   $("#revokeOtherSessions").onclick = async event => {
     if (!confirm(translate("Sign out every other GhostChat session? This device will stay signed in."))) return;
     const button = event.currentTarget;
