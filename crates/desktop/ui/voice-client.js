@@ -176,6 +176,21 @@
       return activeCall.videoTransceiver || activeCall.pc?.getTransceivers().find(item => item.receiver?.track?.kind === "video") || null;
     }
 
+    // replaceTrack(null) is not reported consistently by every WebView2
+    // build. This explicit cleanup also prevents a final frozen frame from
+    // staying visible when the other caller stops sharing.
+    function clearRemoteScreen(activeCall) {
+      const stream = activeCall?.remoteVideoStream;
+      if (!stream) return;
+      for (const track of stream.getVideoTracks()) {
+        track.onended = null;
+        track.onmute = null;
+        try { stream.removeTrack(track); } catch {}
+      }
+      activeCall.remoteVideoStream = null;
+      notify();
+    }
+
     async function tuneScreenSender(sender) {
       if (!sender?.getParameters || !sender?.setParameters) return;
       try {
@@ -322,12 +337,8 @@
         } else if (track.kind === "video") {
           activeCall.remoteVideoStream ||= new MediaStream();
           if (!activeCall.remoteVideoStream.getTracks().some(item => item.id === track.id)) activeCall.remoteVideoStream.addTrack(track);
-          track.onended = () => {
-            activeCall.remoteVideoStream?.removeTrack(track);
-            if (!activeCall.remoteVideoStream?.getVideoTracks().some(item => item.readyState === "live" && !item.muted)) activeCall.remoteVideoStream = null;
-            notify();
-          };
-          track.onmute = notify;
+          track.onended = () => clearRemoteScreen(activeCall);
+          track.onmute = () => { if (track.muted) clearRemoteScreen(activeCall); else notify(); };
           track.onunmute = notify;
         }
         track.onended ||= notify;
@@ -530,7 +541,9 @@
       }
       if (!call || call.conversationId !== conversationId || call.peerId !== peerId) return;
       try {
-        if (event.kind === "answer" && event.payload?.type === "answer") {
+        if (event.kind === "screen_stopped") {
+          clearRemoteScreen(call);
+        } else if (event.kind === "answer" && event.payload?.type === "answer") {
           await applyDescription(call, event.payload);
         } else if (event.kind === "offer" && event.payload?.type === "offer") {
           await applyDescription(call, event.payload);
@@ -559,6 +572,7 @@
           track.onended = null;
           track.stop();
         }
+        send(call.conversationId, call.peerId, "screen_stopped", null);
         notify();
         return;
       }

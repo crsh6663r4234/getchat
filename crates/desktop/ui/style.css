@@ -67,3 +67,16 @@ body.light{--bg:#f5f6fa;--surface:#fff;--surface-2:#f1f2f6;--surface-3:#e8eaf0;-
 .crypto-toggle{padding:7px 10px;font-size:11px;white-space:nowrap}.crypto-conversation-status{max-width:580px;margin:3px 0 0;color:var(--good);font-size:10px;line-height:1.35}.crypto-conversation-status.warning{color:#e4b56f}.message-encrypted-badge{color:var(--good);font-size:9px;font-weight:700}
 .crypto-device-manager{display:grid;gap:8px}.crypto-device-list{display:grid;gap:7px;max-height:220px;overflow:auto}.crypto-device-row{display:flex;align-items:center;gap:9px;min-width:0;padding:9px;border:1px solid var(--line);border-radius:9px;background:var(--bg)}.crypto-device-row>.list-copy{display:grid;flex:1;min-width:0;gap:4px}.crypto-device-row>.list-copy span{white-space:normal;overflow-wrap:anywhere;line-height:1.4}.crypto-device-revoke{flex:0 0 auto;padding:7px 9px!important;font-size:10px!important}.light .crypto-device-row{background:#f7f7fa;border-color:#e3e0ec}
 .crypto-recovery-warning{padding:10px 11px;border:1px solid #765a34;border-radius:9px;background:#332b20;color:#f0ce91;text-align:left}.light .crypto-recovery-warning{border-color:#e2c995;background:#fff8e9;color:#74551d}
+
+/* Compact call view: controls stay close to the conversation instead of
+   taking over half of the chat when there is no screen being shared. */
+.voice-stage{margin:8px clamp(14px,3vw,42px);border-radius:13px;background:var(--surface);box-shadow:none}
+.voice-stage-head{gap:10px;padding:11px 14px 9px}
+.voice-peer-details h3{font-size:14px;margin-bottom:3px}.voice-kicker{font-size:8px}.voice-encryption-note{padding:4px 7px;font-size:8px}
+.voice-participants{display:flex;gap:7px;margin:0 14px 9px}.voice-participant-card{flex:1;min-height:58px;gap:9px;padding:8px 10px;border-radius:10px;background:var(--surface-2)}
+.voice-participant-avatar{width:34px;height:34px;flex-basis:34px;border-radius:11px;font-size:13px}.voice-participant-copy{gap:3px}.voice-participant-copy strong{font-size:11px}.voice-participant-speaking{font-size:9px}
+.voice-stage-body{padding:0 14px 11px}.voice-device-row{padding:8px;margin-bottom:7px;border-radius:9px}.voice-device-picker{gap:4px}.voice-device-picker select{height:31px;font-size:10px}.voice-refresh-button{height:31px}
+.voice-stage-controls{gap:8px}.voice-control-group{gap:6px}.voice-control-button{min-width:64px;flex-direction:row;gap:5px;padding:7px 9px;border-radius:9px;font-size:9px}.voice-control-icon{width:22px;height:22px;border-radius:7px;font-size:12px}.voice-call-actions .button{min-height:36px;padding:0 12px;font-size:10px}.voice-device-notice{margin-top:7px;font-size:9px}
+.screen-share-layout{width:calc(100% - 28px);margin:0 14px 9px}.screen-share-panel{max-height:45vh;border-radius:10px}.screen-share-panel .remote-screen,.screen-share-panel .local-screen{max-height:45vh}
+.message.own-message{border:0;background:transparent}.message.own-message:hover{background:#a995ff08}.message-body{border-radius:5px 12px 12px 12px}.own-message .message-body{border-radius:12px 5px 12px 12px}
+@media(max-width:680px){.voice-stage{margin:6px 8px}.voice-stage-head{padding:10px}.voice-participants{margin:0 10px 8px}.voice-stage-body{padding:0 10px 10px}.voice-control-button{min-width:0;flex:1}.screen-share-layout{width:calc(100% - 20px);margin:0 10px 8px}}
