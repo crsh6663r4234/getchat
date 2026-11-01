@@ -1179,6 +1179,24 @@ body[data-theme="aurora"] .app-shell::before { background-image: radial-gradient
 .search-results { display: grid; gap: 10px; }
 .search-results .result-card { min-height: 68px; border-radius: 16px; background: #ffffff08; }
 
+/* Turkey calendar identities: restrained for memorial days, celebratory for national days. */
+/* Main mark is generated with Higgsfield and bundled locally, so it works offline. */
+.brand-mark { position: relative; overflow: hidden; font-size: 0; }
+.brand-mark::before { content: ""; position: absolute; inset: 3px; z-index: 1; border-radius: inherit; background: url("assets/ghostchat-logo.png") center / cover no-repeat; mix-blend-mode: screen; }
+body[data-special-day] .brand-mark { overflow: visible; }
+body[data-special-day] .brand-mark::after { position: absolute; right: -5px; bottom: -5px; display: grid; place-items: center; width: 17px; height: 17px; border: 2px solid var(--ink-1); border-radius: 999px; font-size: 9px; box-shadow: 0 4px 12px #0006; }
+body[data-special-day] .brand-mark::before { opacity: .72; filter: saturate(.75); }
+body[data-special-day="ataturk-remembrance"] .brand-mark::before { filter: grayscale(1) contrast(1.12); opacity: .78; }
+body[data-special-day="ataturk-remembrance"] { --ink-1: #0d0d0f; --ink-2: #17171a; --ink-3: #26262a; --lilac: #d6d6d8; --lilac-soft: #f4f4f5; --mint: #aaaab0; filter: saturate(.25); }
+body[data-special-day="ataturk-remembrance"] .brand-mark { background: linear-gradient(145deg, #eeeeef, #77777d); color: #111114; box-shadow: 0 0 0 2px #ffffff22, 0 9px 22px #0008; }
+body[data-special-day="ataturk-remembrance"] .brand-mark::after { content: "∞"; background: #151519; color: #f3f3f4; }
+body[data-special-day="national-sovereignty"] .brand-mark, body[data-special-day="youth-sports"] .brand-mark, body[data-special-day="victory"] .brand-mark, body[data-special-day="republic"] .brand-mark { background: linear-gradient(145deg, #e92c3e, #a41325); color: white; box-shadow: 0 0 0 3px #e92c3e24, 0 10px 24px #9e132342; }
+body[data-special-day="national-sovereignty"] .brand-mark::after, body[data-special-day="youth-sports"] .brand-mark::after, body[data-special-day="victory"] .brand-mark::after, body[data-special-day="republic"] .brand-mark::after { content: "☾"; background: #e92c3e; color: white; }
+body[data-special-day="ramadan-feast"] .brand-mark, body[data-special-day="sacrifice-feast"] .brand-mark { background: linear-gradient(145deg, #125b5b, #1e897d); color: #fff6d8; box-shadow: 0 0 0 3px #58cfbc20, 0 10px 24px #0d5a5240; }
+body[data-special-day="ramadan-feast"] .brand-mark::after, body[data-special-day="sacrifice-feast"] .brand-mark::after { content: "☾"; background: #e4b95b; color: #174d47; }
+body[data-special-day="new-year"] .brand-mark { background: linear-gradient(145deg, #176747, #0d3727); color: #ffdd71; }
+body[data-special-day="new-year"] .brand-mark::after { content: "✦"; background: #d82939; color: #fff3c2; }
+
 @media (max-width: 760px) {
   .app-shell { grid-template-columns: 58px minmax(0, 1fr); }
   .sidebar { display: none; }

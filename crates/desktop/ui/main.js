@@ -878,6 +878,38 @@
     $("#motionSelect").value = localStorage.getItem("ghostchat.motion") || "full";
     applyAppearance();
   }
+  function seasonalIdentity() {
+    const now = new Date(); const month = now.getMonth() + 1; const day = now.getDate();
+    let islamicMonth = 0; let islamicDay = 0;
+    try {
+      const parts = new Intl.DateTimeFormat("en-u-ca-islamic-umalqura", { month: "numeric", day: "numeric" }).formatToParts(now);
+      islamicMonth = Number(parts.find(part => part.type === "month")?.value || 0);
+      islamicDay = Number(parts.find(part => part.type === "day")?.value || 0);
+    } catch {}
+    const specialDay = month === 11 && day === 10 ? "ataturk-remembrance"
+      : month === 4 && day === 23 ? "national-sovereignty"
+      : month === 5 && day === 19 ? "youth-sports"
+      : month === 8 && day === 30 ? "victory"
+      : month === 10 && day === 29 ? "republic"
+      : islamicMonth === 10 && islamicDay <= 3 ? "ramadan-feast"
+      : islamicMonth === 12 && islamicDay >= 10 && islamicDay <= 13 ? "sacrifice-feast"
+      : ((month === 12 && day === 31) || (month === 1 && day === 1)) ? "new-year" : "";
+    document.body.dataset.specialDay = specialDay;
+    const labels = {
+      "ataturk-remembrance": tr() ? "10 Kasım · Atatürk’ü Anma Günü" : "10 November · Atatürk Remembrance Day",
+      "national-sovereignty": tr() ? "23 Nisan" : "National Sovereignty and Children’s Day",
+      "youth-sports": tr() ? "19 Mayıs" : "Commemoration of Atatürk, Youth and Sports Day",
+      victory: tr() ? "30 Ağustos" : "Victory Day",
+      republic: tr() ? "29 Ekim" : "Republic Day",
+      "ramadan-feast": tr() ? "Ramazan Bayramı" : "Eid al-Fitr",
+      "sacrifice-feast": tr() ? "Kurban Bayramı" : "Eid al-Adha",
+      "new-year": tr() ? "Yeni yıl" : "New Year",
+    };
+    $$(".brand-mark").forEach(mark => {
+      mark.title = specialDay ? `${translate("GhostChat")} · ${labels[specialDay]}` : "GhostChat";
+      mark.setAttribute("aria-label", mark.title);
+    });
+  }
   function downloadBlob(blob, filename) {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -896,7 +928,7 @@
     try { state.user = await request("/v1/me"); }
     catch { await clearToken(); state.user = null; show("authView"); return; }
     resetCryptoViewState();
-    show("appView"); updateIdentity(); setTheme(); setPage("messages");
+    show("appView"); updateIdentity(); setTheme(); seasonalIdentity(); setPage("messages");
     await refreshBlockedUsers(); await refreshFriends(); await refreshConversations(); connectSocket(); void checkVoiceRelaySupport();
     await processPendingGroupInvites();
     renderSidebar(); showWelcome();
@@ -3281,7 +3313,7 @@
   navigator.mediaDevices?.addEventListener?.("devicechange", () => { void refreshAudioDevices({ requestPermission: false, quiet: true }); });
 
   async function boot() {
-    setTheme();
+    setTheme(); seasonalIdentity();
     try { state.localBase = await invoke("api_base"); }
     catch { state.localBase = "http://127.0.0.1:38241"; }
     if (!await startupUpdateCheck()) return;
@@ -3307,6 +3339,7 @@
     } else if (state.token) await enterApp(); else show("authView");
   }
   boot();
+  setInterval(seasonalIdentity, 60 * 60 * 1000);
   setTimeout(() => checkForUpdates(true), 8000);
   setInterval(() => checkForUpdates(true), 6 * 60 * 60 * 1000);
 })();
