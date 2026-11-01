@@ -73,7 +73,9 @@ jobs:
             Direct and group text can be opted into MLS encryption after participants verify their security codes. New attachments in verified encrypted chats are encrypted on the device. Earlier messages and files remain unencrypted. MLS device replacement and portable encrypted-state recovery are not supported yet; account recovery restores account access only. Group voice and screen sharing are encrypted in transit but are not end-to-end encrypted.
 
             Review the security and deployment notes before using GhostChat for sensitive conversations or exposing a server to the internet.
-          releaseDraft: true
+          # The desktop updater reads GitHub's public "latest" release. A draft
+          # has no downloadable latest.json, so clients would report up to date.
+          releaseDraft: false
           prerelease: false
           args: --bundles msi
           updaterJsonPreferNsis: false
