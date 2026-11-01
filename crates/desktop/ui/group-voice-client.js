@@ -304,6 +304,17 @@
       if (room && room.localParticipant.isMicrophoneEnabled && deviceId) await room.switchActiveDevice("audioinput", deviceId);
     }
 
+    // LiveKit reads capture defaults while publishing the microphone. Re-publish
+    // an active track so the processing choices apply without leaving the room.
+    async function applyAudioSettings() {
+      if (!room?.localParticipant.isMicrophoneEnabled) { publishState(); return; }
+      const settings = api.getSettings();
+      const shouldEnable = !settings.pushToTalk || (pushToTalkPressed && !micManuallyMuted);
+      await room.localParticipant.setMicrophoneEnabled(false);
+      if (shouldEnable) await room.localParticipant.setMicrophoneEnabled(true, captureOptions());
+      publishState({ micMuted: !shouldEnable, micManuallyMuted, pushToTalkPressed, micAvailable: true });
+    }
+
     async function setSpeakerDevice(deviceId) {
       if (room && deviceId) await room.switchActiveDevice("audiooutput", deviceId);
       for (const [sid, element] of audioElements) {
@@ -324,7 +335,7 @@
     }
 
     return {
-      join, leave, toggleMicrophone, setPushToTalk, toggleScreenSharing, refreshScreenSharing,
+      join, leave, toggleMicrophone, setPushToTalk, toggleScreenSharing, refreshScreenSharing, applyAudioSettings,
       setMicrophoneDevice, setSpeakerDevice, setPeerMuted, applyPlaybackSettings,
       getState: () => ({ ...state, participants: participants() }),
     };

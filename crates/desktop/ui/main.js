@@ -130,6 +130,7 @@
   });
   Object.assign(trText, { "Copy app link": "Uygulama bağlantısını kopyala", "Invite link copied.": "Davet bağlantısı kopyalandı.", "Show conversations": "Sohbetleri göster", "Hide conversations": "Sohbetleri gizle" });
   Object.assign(trText, { "Motion": "Hareketler", "Full": "Tam", "Reduced": "Azaltılmış" });
+  Object.assign(trText, { "Voice processing settings applied.": "Ses işleme ayarları uygulandı." });
   Object.assign(trText, {
     "Online on this device": "Bu cihazda çevrimiçi",
     "Edit profile": "Profili düzenle",
@@ -3102,7 +3103,15 @@
     const motion = $("#motionSelect").value; localStorage.setItem("ghostchat.motion", motion); document.body.classList.toggle("reduced-motion", motion === "reduced");
     applyLanguage();
     persistVoiceSettings(); await applyPlaybackSettings();
-    $("#settingsDialog").close(); toast("Settings saved.");
+    const audioUpdates = await Promise.allSettled([
+      voiceClient?.applyAudioSettings?.(),
+      groupVoiceClient?.applyAudioSettings?.(),
+    ]);
+    const audioFailure = audioUpdates.find(result => result.status === "rejected");
+    if (audioFailure) toast(audioFailure.reason?.message || "Could not apply audio processing settings.", true);
+    const directVoiceActive = ["calling", "connecting", "connected", "reconnecting"].includes(voiceClient?.getState?.().status);
+    const groupVoiceActive = ["connecting", "connected", "reconnecting"].includes(groupVoiceUiState.status);
+    $("#settingsDialog").close(); toast(!audioFailure && (directVoiceActive || groupVoiceActive) ? "Voice processing settings applied." : "Settings saved.");
   };
   $("#exportSettings").onclick = () => { const data = { server: state.base || "local", theme: localStorage.getItem("ghostchat.theme") || "dark", textSize: localStorage.getItem("ghostchat.textSize") || "15", motion: localStorage.getItem("ghostchat.motion") || "full" }; const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })); const link = create("a"); link.href = url; link.download = "ghostchat-preferences.json"; link.click(); URL.revokeObjectURL(url); };
   $("#exportAccount").onclick = async () => { try { const data = await request("/v1/data/export"); const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" })); const link = create("a"); link.href = url; link.download = "ghostchat-account-export.json"; link.click(); URL.revokeObjectURL(url); toast("Account data exported."); } catch (error) { toast(error.message, true); } };

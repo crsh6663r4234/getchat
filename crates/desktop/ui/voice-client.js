@@ -587,6 +587,20 @@
       await attachMicrophone(call, microphone.stream, { keepMuted });
     }
 
+    // Media-processing constraints are selected when a capture track is made.
+    // Replacing the active track makes saved settings take effect mid-call.
+    async function applyAudioSettings() {
+      if (!call?.localAudioTrack) { notify(); return; }
+      const keepMuted = !!call.manualMute;
+      const microphone = await tryCaptureMicrophone(api.getSettings());
+      if (!microphone.stream) {
+        call.micUnavailableReason = microphone.error || "The microphone could not apply the new audio settings.";
+        notify();
+        throw new Error(call.micUnavailableReason);
+      }
+      await attachMicrophone(call, microphone.stream, { keepMuted });
+    }
+
     function setPushToTalk(active) {
       if (!call?.localAudioTrack || !api.getSettings().pushToTalk) return;
       call.pushToTalkPressed = !!active;
@@ -604,7 +618,7 @@
     }
 
     function getState() { return snapshot(); }
-    return { start, accept, decline, hangup, toggleMicrophone, setMicrophoneDevice, toggleScreenSharing, refreshScreenSharing, setPushToTalk, handleSignal, getState };
+    return { start, accept, decline, hangup, toggleMicrophone, setMicrophoneDevice, applyAudioSettings, toggleScreenSharing, refreshScreenSharing, setPushToTalk, handleSignal, getState };
   }
 
   window.GhostChatVoice = { create: createVoiceClient };
