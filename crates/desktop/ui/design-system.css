@@ -1112,6 +1112,13 @@ body {
 .own-message .message-body { border-color: #b8a8ff2d; background: linear-gradient(135deg, #a995ff2b, #8d78e31c); border-radius: 16px 7px 16px 16px; }
 .message.own-message .message-meta { justify-content: flex-end; }
 .message.own-message .message-reactions { justify-content: flex-end; }
+.message-reactions { width: fit-content; min-height: 0; margin-top: 4px; gap: 5px; }
+.quick-reactions { gap: 4px; }
+.message-inline-actions { display: flex; gap: 4px; opacity: 0; pointer-events: none; transform: translateY(-2px); transition: opacity 160ms ease, transform 160ms ease; }
+.message:hover .message-inline-actions, .message:focus-within .message-inline-actions { opacity: 1; pointer-events: auto; transform: translateY(0); }
+.message-inline-action { min-height: 20px; padding: 3px 7px; border-color: #ffffff13; background: #ffffff08; font-size: 9px; }
+.add-reaction { width: 22px; padding: 0; color: var(--lilac-soft); font-size: 14px; line-height: 1; }
+.reaction-pill { min-height: 21px; padding: 3px 7px; border-color: #ffffff18; background: #ffffff0b; }
 .composer { margin: 0 clamp(22px, 6vw, 104px) 18px; min-height: 66px; padding: 12px 13px 25px; border-color: #ffffff12; border-radius: 18px; background: #121722cc; box-shadow: 0 14px 44px #0003; }
 .composer:focus-within { border-color: #b7a8ff62; box-shadow: 0 0 0 3px #a995ff12, 0 14px 44px #0003; }
 .send-button { border-radius: 12px; background: var(--lilac); color: #171324; box-shadow: 0 5px 16px #a995ff38; }

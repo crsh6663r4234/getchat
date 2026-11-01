@@ -1960,9 +1960,19 @@
     } else if (message.content) main.append(create("div", "message-body", message.content));
     if (!message.encrypted) {
       const reactions = create("div", "message-reactions"); reactions.setAttribute("aria-label", translate("Message reactions")); main.append(reactions);
-      const reply = create("button", "message-inline-action", translate("Reply")); reply.type = "button"; reply.onclick = () => setReplyTarget(message); reactions.append(reply);
-      const pin = create("button", "message-inline-action", message.pinned_at ? translate("Unpin message") : translate("Pin message")); pin.type = "button"; pin.onclick = async () => { pin.disabled = true; try { await request(`/v1/messages/${encodeURIComponent(message.id)}/pin`, { method: "POST" }); await loadMessages(false); } catch (error) { toast(error.message, true); pin.disabled = false; } }; reactions.append(pin);
       const quickReactions = create("div", "quick-reactions"); reactions.append(quickReactions);
+      const inlineActions = create("div", "message-inline-actions");
+      const addReaction = create("button", "message-inline-action add-reaction", "+"); addReaction.type = "button"; addReaction.title = translate("Add a reaction"); addReaction.setAttribute("aria-label", addReaction.title); addReaction.onclick = async () => {
+        const emoji = prompt(translate("Add a reaction"), "");
+        if (!emoji?.trim()) return;
+        addReaction.disabled = true;
+        try { await request(`/v1/messages/${encodeURIComponent(message.id)}/reactions`, { method: "POST", body: JSON.stringify({ emoji: emoji.trim().slice(0, 16) }) }); await refreshMessageReactions(); }
+        catch (error) { toast(error.message, true); }
+        finally { addReaction.disabled = false; }
+      };
+      const reply = create("button", "message-inline-action", translate("Reply")); reply.type = "button"; reply.onclick = () => setReplyTarget(message);
+      const pin = create("button", "message-inline-action", message.pinned_at ? translate("Unpin message") : translate("Pin message")); pin.type = "button"; pin.onclick = async () => { pin.disabled = true; try { await request(`/v1/messages/${encodeURIComponent(message.id)}/pin`, { method: "POST" }); await loadMessages(false); } catch (error) { toast(error.message, true); pin.disabled = false; } };
+      inlineActions.append(addReaction, reply, pin); reactions.append(inlineActions);
     }
     row.append(main);
     if (ownMessage) {
@@ -2003,10 +2013,9 @@
         const quick = $(".quick-reactions", row); if (!quick) continue;
         quick.replaceChildren();
         const messageId = row.dataset.messageId;
-        for (const emoji of ["👍", "❤️", "😂", "👀", "🎉"]) {
-          const item = grouped.get(messageId)?.get(emoji);
-          const button = create("button", `reaction-pill${item?.reacted ? " active" : ""}`, item ? `${emoji} ${item.count}` : emoji);
-          button.type = "button"; button.title = `${translate("Add a reaction")} ${emoji}`; button.setAttribute("aria-label", button.title); button.setAttribute("aria-pressed", String(!!item?.reacted));
+        for (const [emoji, item] of grouped.get(messageId) || []) {
+          const button = create("button", `reaction-pill${item.reacted ? " active" : ""}`, `${emoji} ${item.count}`);
+          button.type = "button"; button.title = `${translate("Add a reaction")} ${emoji}`; button.setAttribute("aria-label", button.title); button.setAttribute("aria-pressed", String(!!item.reacted));
           button.onclick = async () => {
             button.disabled = true;
             try { await request(`/v1/messages/${encodeURIComponent(messageId)}/reactions`, { method: "POST", body: JSON.stringify({ emoji }) }); await refreshMessageReactions(); }
