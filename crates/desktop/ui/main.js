@@ -523,6 +523,8 @@
       echoCancellation: localStorage.getItem("ghostchat.voice.echo") !== "false",
       noiseSuppression: localStorage.getItem("ghostchat.voice.noise") !== "false",
       autoGainControl: localStorage.getItem("ghostchat.voice.gain") !== "false",
+      voiceFocus: localStorage.getItem("ghostchat.voice.focus") !== "false",
+      voiceFocusSensitivity: Number(localStorage.getItem("ghostchat.voice.focusSensitivity") || "36"),
       pushToTalk: localStorage.getItem("ghostchat.voice.ptt") === "true",
       shareSystemAudio: localStorage.getItem("ghostchat.voice.systemAudio") === "true",
       relayOnly: localStorage.getItem("ghostchat.voice.relayOnly") === "true",
@@ -537,6 +539,8 @@
     localStorage.setItem("ghostchat.voice.echo", String($("#voiceEchoCancellation").checked));
     localStorage.setItem("ghostchat.voice.noise", String($("#voiceNoiseSuppression").checked));
     localStorage.setItem("ghostchat.voice.gain", String($("#voiceAutoGain").checked));
+    localStorage.setItem("ghostchat.voice.focus", String($("#voiceFocus").checked));
+    localStorage.setItem("ghostchat.voice.focusSensitivity", $("#voiceFocusSensitivity").value);
     localStorage.setItem("ghostchat.voice.ptt", String($("#voicePushToTalk").checked));
     localStorage.setItem("ghostchat.voice.systemAudio", String($("#voiceShareAudio").checked));
     localStorage.setItem("ghostchat.voice.relayOnly", String($("#voiceRelayOnly").checked));
@@ -548,6 +552,8 @@
     $("#voiceEchoCancellation").checked = settings.echoCancellation;
     $("#voiceNoiseSuppression").checked = settings.noiseSuppression;
     $("#voiceAutoGain").checked = settings.autoGainControl;
+    $("#voiceFocus").checked = settings.voiceFocus;
+    $("#voiceFocusSensitivity").value = String(Math.max(1, Math.min(100, settings.voiceFocusSensitivity || 36)));
     $("#voicePushToTalk").checked = settings.pushToTalk;
     $("#voiceShareAudio").checked = settings.shareSystemAudio;
     $("#voiceRelayOnly").checked = settings.relayOnly;
@@ -2690,6 +2696,23 @@
 
   function onVoiceChange(voice) {
     voiceUiState = voice;
+    const processingStatus = $("#voiceProcessingStatus");
+    if (processingStatus) {
+      const processing = voice.audioProcessing;
+      if (!processing) {
+        processingStatus.textContent = translate("Processing is checked when a call starts.");
+      } else {
+        const enabled = [
+          processing.echoCancellation && translate("echo cancellation"),
+          processing.noiseSuppression && translate("noise suppression"),
+          processing.autoGainControl && translate("auto gain"),
+          processing.voiceFocus && translate("voice focus"),
+        ].filter(Boolean);
+        processingStatus.textContent = enabled.length
+          ? `${translate("Active:")} ${enabled.join(" · ")}.`
+          : translate("Your microphone is using the browser fallback. Check the selected device and Windows microphone effects.");
+      }
+    }
     renderVoiceControls();
     syncVoiceSpeakingDetection(voice);
     const audio = $("#remoteAudio");
@@ -3213,7 +3236,7 @@
   $("#refreshAudioDevices").onclick = refreshAudioDevices;
   $("#voiceRefreshDevices").onclick = () => void refreshAudioDevices();
   $("#voiceMicTestButton").onclick = () => void toggleMicrophoneTest();
-  for (const selector of ["#voiceEchoCancellation", "#voiceNoiseSuppression", "#voiceAutoGain"]) {
+  for (const selector of ["#voiceEchoCancellation", "#voiceNoiseSuppression", "#voiceAutoGain", "#voiceFocus", "#voiceFocusSensitivity"]) {
     $(selector).onchange = async () => {
       persistVoiceSettings();
       const updates = await Promise.allSettled([voiceClient?.applyAudioSettings?.(), groupVoiceClient?.applyAudioSettings?.()]);

@@ -122,12 +122,21 @@
 
     function captureOptions() {
       const settings = api.getSettings();
-      return {
+      const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};
+      const options = {
         ...(settings.microphoneId ? { deviceId: settings.microphoneId } : {}),
-        echoCancellation: settings.echoCancellation,
-        noiseSuppression: settings.noiseSuppression,
-        autoGainControl: settings.autoGainControl,
+        echoCancellation: !!settings.echoCancellation,
+        noiseSuppression: !!settings.noiseSuppression,
+        autoGainControl: !!settings.autoGainControl,
       };
+      // Keep the SFU capture speech-shaped as well: mono avoids needless
+      // room noise bandwidth and the isolation hint is used when WebView2
+      // exposes it. LiveKit falls back to browser defaults when unsupported.
+      if (supported.channelCount) options.channelCount = { ideal: 1 };
+      if (supported.sampleRate) options.sampleRate = { ideal: 48_000 };
+      if (supported.latency) options.latency = { ideal: 0.01 };
+      if (settings.voiceIsolation && supported.voiceIsolation) options.voiceIsolation = true;
+      return options;
     }
 
     function bindRoom(activeRoom) {

@@ -10,7 +10,9 @@
         status: call?.status || (incoming ? "incoming" : "idle"),
         conversationId: call?.conversationId || incoming?.conversationId || "",
         peerId: call?.peerId || incoming?.peerId || "",
-        micMuted: call ? !call.localAudioTrack?.enabled : false,
+        // The speech gate may briefly close an otherwise live microphone.
+        // Do not present that as a manual mute in the call UI.
+        micMuted: call ? (!call.localAudioTrack || !!call.manualMute || (!!api.getSettings().pushToTalk && !call.pushToTalkPressed)) : false,
         micAvailable: !!call?.localAudioTrack,
         micManuallyMuted: !!call?.manualMute,
         pushToTalkPressed: !!call?.pushToTalkPressed,
@@ -23,6 +25,8 @@
         localScreenStream: call?.screenStream || null,
         remoteAudioStream: call?.remoteAudioStream || null,
         remoteVideoStream: call?.remoteVideoStream || null,
+        audioProcessing: call?.audioProcessing || null,
+        voiceGateOpen: call?.audioProcessor?.gateOpen !== false,
       };
       return latestState;
     }
@@ -54,26 +58,96 @@
       }
     }
 
+    function captureConstraints(settings, { fallback = false, includeDevice = true } = {}) {
+      const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};
+      const audio = {};
+      const set = (key, value) => { if (fallback || supported[key] !== false) audio[key] = value; };
+      // Ask for one mono, low-latency speech channel. The fallback keeps this
+      // usable on older WebView2 runtimes which do not understand every hint.
+      set("echoCancellation", fallback ? !!settings.echoCancellation : (settings.echoCancellation ? { ideal: "all" } : false));
+      set("noiseSuppression", !!settings.noiseSuppression);
+      set("autoGainControl", !!settings.autoGainControl);
+      if (!fallback) {
+        set("channelCount", { ideal: 1 });
+        set("sampleRate", { ideal: 48_000 });
+        set("latency", { ideal: 0.01 });
+        if (settings.voiceIsolation && supported.voiceIsolation) set("voiceIsolation", true);
+      }
+      if (includeDevice && settings.microphoneId) audio.deviceId = { exact: settings.microphoneId };
+      return audio;
+    }
+
     async function captureMicrophone(settings) {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error("Microphone capture is unavailable in this WebView. Update the Microsoft Edge WebView2 Runtime.");
-      const audio = {
-        echoCancellation: !!settings.echoCancellation,
-        noiseSuppression: !!settings.noiseSuppression,
-        autoGainControl: !!settings.autoGainControl,
-      };
-      if (settings.microphoneId) audio.deviceId = { exact: settings.microphoneId };
+      const attempts = [
+        captureConstraints(settings),
+        captureConstraints(settings, { fallback: true }),
+        ...(settings.microphoneId ? [captureConstraints(settings, { fallback: true, includeDevice: false })] : []),
+      ];
+      let lastError;
+      for (const audio of attempts) {
+        try { return await navigator.mediaDevices.getUserMedia({ audio, video: false }); }
+        catch (error) {
+          lastError = error;
+          if (error?.name === "NotAllowedError" || error?.name === "PermissionDeniedError") throw error;
+        }
+      }
+      throw lastError;
+    }
+
+    function syncOutgoingAudio(activeCall) {
+      const track = activeCall?.localAudioTrack;
+      if (!track) return;
+      const settings = api.getSettings();
+      const gateOpen = activeCall.audioProcessor?.gateOpen !== false;
+      track.enabled = !activeCall.manualMute && (!settings.pushToTalk || !!activeCall.pushToTalkPressed) && gateOpen;
+    }
+
+    function stopAudioProcessor(processor) {
+      if (!processor) return;
+      if (processor.frame) cancelAnimationFrame(processor.frame);
+      try { processor.source?.disconnect(); processor.highPass?.disconnect(); processor.lowPass?.disconnect(); processor.compressor?.disconnect(); processor.analyser?.disconnect(); } catch {}
+      try { processor.context?.close(); } catch {}
+    }
+
+    function createAudioProcessor(rawStream, activeCall) {
+      const rawTrack = rawStream?.getAudioTracks?.()[0];
+      if (!rawTrack) return { stream: null, processor: null, effective: null };
+      const effective = rawTrack.getSettings?.() || {};
+      const AudioContextType = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextType) return { stream: rawStream, processor: null, effective };
       try {
-        return await navigator.mediaDevices.getUserMedia({ audio, video: false });
+        const context = new AudioContextType({ latencyHint: "interactive", sampleRate: 48_000 });
+        const source = context.createMediaStreamSource(rawStream);
+        const highPass = context.createBiquadFilter(); highPass.type = "highpass"; highPass.frequency.value = 75; highPass.Q.value = 0.7;
+        const lowPass = context.createBiquadFilter(); lowPass.type = "lowpass"; lowPass.frequency.value = 9_000; lowPass.Q.value = 0.7;
+        const compressor = context.createDynamicsCompressor();
+        compressor.threshold.value = -30; compressor.knee.value = 20; compressor.ratio.value = 4; compressor.attack.value = 0.003; compressor.release.value = 0.18;
+        const analyser = context.createAnalyser(); analyser.fftSize = 1024; analyser.smoothingTimeConstant = 0.75;
+        const destination = context.createMediaStreamDestination();
+        source.connect(highPass); highPass.connect(lowPass); lowPass.connect(compressor); compressor.connect(destination); compressor.connect(analyser);
+        const processor = { context, source, highPass, lowPass, compressor, analyser, destination, gateOpen: true, frame: 0 };
+        const samples = new Float32Array(analyser.fftSize);
+        const updateGate = () => {
+          if (call !== activeCall) return;
+          analyser.getFloatTimeDomainData(samples);
+          let energy = 0;
+          for (const sample of samples) energy += sample * sample;
+          const db = 20 * Math.log10(Math.max(Math.sqrt(energy / samples.length), 0.00001));
+          const sensitivity = Math.max(1, Math.min(100, Number(api.getSettings().voiceFocusSensitivity) || 36));
+          const threshold = -68 + sensitivity * 0.34;
+          const now = performance.now();
+          if (db >= threshold) processor.holdUntil = now + 420;
+          const shouldOpen = !api.getSettings().voiceFocus || now < (processor.holdUntil || 0);
+          if (processor.gateOpen !== shouldOpen) { processor.gateOpen = shouldOpen; syncOutgoingAudio(activeCall); notify(); }
+          processor.frame = requestAnimationFrame(updateGate);
+        };
+        void context.resume().catch(() => {});
+        updateGate();
+        return { stream: destination.stream, processor, effective };
       } catch (error) {
-        if (!settings.microphoneId || error?.name === "NotAllowedError" || error?.name === "PermissionDeniedError") throw error;
-        return navigator.mediaDevices.getUserMedia({
-          audio: {
-            echoCancellation: audio.echoCancellation,
-            noiseSuppression: audio.noiseSuppression,
-            autoGainControl: audio.autoGainControl,
-          },
-          video: false,
-        });
+        console.debug("Speech processing graph was unavailable; using the WebRTC capture track.", error);
+        return { stream: rawStream, processor: null, effective };
       }
     }
 
@@ -146,19 +220,32 @@
       return stream;
     }
 
-    async function attachMicrophone(activeCall, stream, { keepMuted = false } = {}) {
+    async function attachMicrophone(activeCall, rawStream, { keepMuted = false } = {}) {
       const previousStream = activeCall.localStream;
+      const previousRawStream = activeCall.rawStream;
       const previousTrack = activeCall.localAudioTrack;
+      stopAudioProcessor(activeCall.audioProcessor);
+      const prepared = createAudioProcessor(rawStream, activeCall);
+      const stream = prepared.stream;
       const track = stream?.getAudioTracks()[0] || null;
       const transceiver = findAudioTransceiver(activeCall) || activeCall.pc.addTransceiver("audio", { direction: track ? "sendrecv" : "recvonly" });
       activeCall.audioTransceiver = transceiver;
       if (transceiver.sender.track !== track) await transceiver.sender.replaceTrack(track);
       activeCall.localStream = stream || null;
+      activeCall.rawStream = rawStream || null;
       activeCall.localAudioTrack = track;
+      activeCall.audioProcessor = prepared.processor;
+      activeCall.audioProcessing = rawStream ? {
+        echoCancellation: prepared.effective?.echoCancellation === true,
+        noiseSuppression: prepared.effective?.noiseSuppression === true,
+        autoGainControl: prepared.effective?.autoGainControl === true,
+        voiceIsolation: prepared.effective?.voiceIsolation === true,
+        voiceFocus: !!api.getSettings().voiceFocus,
+      } : null;
       if (track) {
         const settings = api.getSettings();
         activeCall.manualMute = !!keepMuted;
-        track.enabled = !activeCall.manualMute && (!settings.pushToTalk || !!activeCall.pushToTalkPressed);
+        syncOutgoingAudio(activeCall);
         transceiver.direction = "sendrecv";
         track.onended = () => {
           if (call !== activeCall || activeCall.localAudioTrack !== track) return;
@@ -176,6 +263,7 @@
       }
       if (previousTrack && previousTrack !== track) previousTrack.onended = null;
       if (previousStream && previousStream !== stream) previousStream.getTracks().forEach(item => { item.onended = null; item.stop(); });
+      if (previousRawStream && previousRawStream !== rawStream) previousRawStream.getTracks().forEach(item => { item.onended = null; item.stop(); });
       notify();
     }
 
@@ -186,7 +274,8 @@
         try { send(call.conversationId, call.peerId, "hangup", null); } catch {}
       }
       if (call) {
-        for (const stream of [call.localStream, call.screenStream]) {
+        stopAudioProcessor(call.audioProcessor);
+        for (const stream of [call.localStream, call.rawStream, call.screenStream]) {
           stream?.getTracks().forEach(track => { track.onended = null; track.stop(); });
         }
         call.pc?.close();
@@ -280,15 +369,15 @@
       const settings = api.getSettings();
       const configuration = await loadIceConfiguration(settings);
       const microphone = await tryCaptureMicrophone(settings);
-      const localStream = microphone.stream;
       const activeCall = {
         conversationId: conversation.id,
         peerId: conversation.peer_id,
         status: "calling",
-        localStream,
-        localAudioTrack: localStream?.getAudioTracks()[0] || null,
+        localStream: null,
+        rawStream: null,
+        localAudioTrack: null,
         micUnavailableReason: microphone.error,
-        manualMute: !localStream,
+        manualMute: !microphone.stream,
         remoteAudioStream: null,
         remoteVideoStream: null,
         screenStream: null,
@@ -302,13 +391,10 @@
       call = activeCall;
       try {
         const pc = makePeer(activeCall, configuration);
-        activeCall.audioTransceiver = pc.addTransceiver("audio", { direction: activeCall.localAudioTrack ? "sendrecv" : "recvonly" });
+        activeCall.audioTransceiver = pc.addTransceiver("audio", { direction: microphone.stream ? "sendrecv" : "recvonly" });
         activeCall.videoTransceiver = pc.addTransceiver("video", { direction: "sendrecv" });
         await tuneScreenSender(activeCall.videoTransceiver.sender);
-        if (activeCall.localAudioTrack) {
-          if (settings.pushToTalk) activeCall.localAudioTrack.enabled = false;
-          await activeCall.audioTransceiver.sender.replaceTrack(activeCall.localAudioTrack);
-        }
+        await attachMicrophone(activeCall, microphone.stream, { keepMuted: !microphone.stream });
         notify();
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
@@ -336,6 +422,7 @@
         peerId: request.peerId,
         status: "connecting",
         localStream: null,
+        rawStream: null,
         localAudioTrack: null,
         micUnavailableReason: "",
         manualMute: false,
@@ -570,11 +657,10 @@
       }
       if (settings.pushToTalk) {
         call.manualMute = !call.manualMute;
-        call.localAudioTrack.enabled = !call.manualMute && !!call.pushToTalkPressed;
       } else {
-        call.localAudioTrack.enabled = !call.localAudioTrack.enabled;
-        call.manualMute = !call.localAudioTrack.enabled;
+        call.manualMute = !call.manualMute;
       }
+      syncOutgoingAudio(call);
       notify();
     }
 
@@ -608,7 +694,7 @@
     function setPushToTalk(active) {
       if (!call?.localAudioTrack || !api.getSettings().pushToTalk) return;
       call.pushToTalkPressed = !!active;
-      call.localAudioTrack.enabled = !!active && !call.manualMute;
+      syncOutgoingAudio(call);
       notify();
     }
 
