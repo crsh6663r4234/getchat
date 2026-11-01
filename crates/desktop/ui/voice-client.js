@@ -5,6 +5,28 @@
     let ringTimer = null;
     let latestState = { status: "idle" };
 
+    const SHARE_PROFILES = {
+      detail: [
+        { id: "sharp", label: "Sharp text", width: 1920, height: 1080, frameRate: 12, maxBitrate: 3_200_000, hint: "text" },
+        { id: "balanced", label: "Balanced", width: 1280, height: 720, frameRate: 15, maxBitrate: 1_800_000, hint: "detail" },
+        { id: "saving", label: "Data saver", width: 960, height: 540, frameRate: 10, maxBitrate: 850_000, hint: "detail" },
+      ],
+      balanced: [
+        { id: "balanced", label: "Balanced", width: 1280, height: 720, frameRate: 15, maxBitrate: 1_800_000, hint: "detail" },
+        { id: "saving", label: "Data saver", width: 960, height: 540, frameRate: 10, maxBitrate: 850_000, hint: "detail" },
+        { id: "recovery", label: "Recovery", width: 640, height: 360, frameRate: 8, maxBitrate: 450_000, hint: "detail" },
+      ],
+      motion: [
+        { id: "motion", label: "Smooth motion", width: 1280, height: 720, frameRate: 24, maxBitrate: 3_800_000, hint: "motion" },
+        { id: "balanced", label: "Balanced", width: 1280, height: 720, frameRate: 15, maxBitrate: 1_800_000, hint: "motion" },
+        { id: "recovery", label: "Recovery", width: 640, height: 360, frameRate: 10, maxBitrate: 600_000, hint: "motion" },
+      ],
+      saver: [
+        { id: "saving", label: "Data saver", width: 960, height: 540, frameRate: 10, maxBitrate: 850_000, hint: "detail" },
+        { id: "recovery", label: "Recovery", width: 640, height: 360, frameRate: 8, maxBitrate: 450_000, hint: "detail" },
+      ],
+    };
+
     function snapshot() {
       latestState = {
         status: call?.status || (incoming ? "incoming" : "idle"),
@@ -21,6 +43,7 @@
         speakerMuted: !!api.getSettings().speakerMuted,
         screenSharing: !!call?.screenStream,
         screenStarting: !!call?.screenStarting,
+        screenQuality: call?.screenQuality || null,
         localAudioStream: call?.localStream || null,
         localScreenStream: call?.screenStream || null,
         remoteAudioStream: call?.remoteAudioStream || null,
@@ -191,16 +214,18 @@
       notify();
     }
 
-    async function tuneScreenSender(sender) {
+    function shareProfiles(settings = api.getSettings()) {
+      return SHARE_PROFILES[settings.shareQuality] || SHARE_PROFILES.balanced;
+    }
+
+    async function tuneScreenSender(sender, profile = shareProfiles()[0]) {
       if (!sender?.getParameters || !sender?.setParameters) return;
       try {
         const parameters = sender.getParameters();
         if (!parameters.encodings?.length) return;
-        // Prefer a stable frame cadence on weaker networks. WebRTC may lower
-        // resolution automatically instead of freezing at a fixed 1080p.
         parameters.degradationPreference = "balanced";
-        parameters.encodings[0].maxBitrate = 2_400_000;
-        parameters.encodings[0].maxFramerate = 24;
+        parameters.encodings[0].maxBitrate = profile.maxBitrate;
+        parameters.encodings[0].maxFramerate = profile.frameRate;
         await sender.setParameters(parameters);
       } catch (error) {
         console.debug("Could not apply the low-latency screen profile; WebRTC defaults will be used.", error);
@@ -208,31 +233,90 @@
     }
 
     async function captureScreen(settings) {
+      const profile = shareProfiles(settings)[0];
       const stream = await navigator.mediaDevices.getDisplayMedia({
         preferCurrentTab: false,
         selfBrowserSurface: "exclude",
         surfaceSwitching: "include",
         video: {
-          width: { ideal: 1920, max: 1920 },
-          height: { ideal: 1080, max: 1080 },
-          frameRate: { ideal: 20, max: 24 },
+          width: { ideal: profile.width },
+          height: { ideal: profile.height },
+          frameRate: { ideal: profile.frameRate },
         },
         audio: settings.shareSystemAudio,
       });
       const track = stream.getVideoTracks()[0];
       if (track) {
-        try { track.contentHint = "detail"; } catch {}
+        try { track.contentHint = profile.hint; } catch {}
         try {
           await track.applyConstraints({
-            width: { ideal: 1920, max: 1920 },
-            height: { ideal: 1080, max: 1080 },
-            frameRate: { ideal: 20, max: 24 },
+            width: { ideal: profile.width },
+            height: { ideal: profile.height },
+            frameRate: { ideal: profile.frameRate },
           });
         } catch (error) {
           console.debug("Screen capture constraints were not fully supported by this WebView.", error);
         }
       }
+      stream.__ghostShareProfiles = shareProfiles(settings);
       return stream;
+    }
+
+    function stopShareMonitor(activeCall) {
+      if (activeCall?.shareMonitor) clearInterval(activeCall.shareMonitor);
+      if (activeCall) activeCall.shareMonitor = null;
+    }
+
+    async function setShareLevel(activeCall, track, nextLevel, reason = "stable") {
+      const profiles = activeCall.shareProfiles || shareProfiles();
+      const level = Math.max(0, Math.min(profiles.length - 1, nextLevel));
+      const profile = profiles[level];
+      if (!track || !profile) return;
+      try {
+        try { track.contentHint = profile.hint; } catch {}
+        await track.applyConstraints({ width: { ideal: profile.width }, height: { ideal: profile.height }, frameRate: { ideal: profile.frameRate } });
+        await tuneScreenSender(findVideoTransceiver(activeCall)?.sender, profile);
+        activeCall.shareLevel = level;
+        activeCall.screenQuality = { profile: profile.id, label: profile.label, state: reason };
+        notify();
+      } catch (error) {
+        console.debug("GhostShare could not change the capture profile.", error);
+      }
+    }
+
+    function startShareMonitor(activeCall, track, profiles) {
+      stopShareMonitor(activeCall);
+      activeCall.shareProfiles = profiles || shareProfiles();
+      activeCall.shareLevel = 0;
+      activeCall.screenQuality = { profile: activeCall.shareProfiles[0].id, label: activeCall.shareProfiles[0].label, state: "stable" };
+      let badSamples = 0;
+      let goodSamples = 0;
+      activeCall.shareMonitor = setInterval(async () => {
+        if (call !== activeCall || activeCall.screenStream?.getVideoTracks()[0] !== track) return stopShareMonitor(activeCall);
+        try {
+          const reports = await activeCall.pc?.getStats?.();
+          let pair = null; let remoteInbound = null;
+          reports?.forEach(report => {
+            if (report.type === "candidate-pair" && (report.selected || report.nominated) && report.state === "succeeded") pair = report;
+            if (report.type === "remote-inbound-rtp" && report.kind === "video") remoteInbound = report;
+          });
+          const loss = remoteInbound && (remoteInbound.packetsLost || remoteInbound.packetsReceived)
+            ? Number(remoteInbound.packetsLost || 0) / Math.max(1, Number(remoteInbound.packetsLost || 0) + Number(remoteInbound.packetsReceived || 0)) : 0;
+          const rtt = Number(remoteInbound?.roundTripTime || pair?.currentRoundTripTime || 0);
+          const capacity = Number(pair?.availableOutgoingBitrate || 0);
+          const current = activeCall.shareProfiles[activeCall.shareLevel] || activeCall.shareProfiles[0];
+          const congested = loss > 0.045 || rtt > 0.38 || (capacity > 0 && capacity < current.maxBitrate * 1.25);
+          if (congested) { badSamples += 1; goodSamples = 0; }
+          else { goodSamples += 1; badSamples = 0; }
+          if (badSamples >= 2 && activeCall.shareLevel < activeCall.shareProfiles.length - 1) {
+            badSamples = 0;
+            await setShareLevel(activeCall, track, activeCall.shareLevel + 1, "network-adjusted");
+          } else if (goodSamples >= 10 && activeCall.shareLevel > 0) {
+            goodSamples = 0;
+            await setShareLevel(activeCall, track, activeCall.shareLevel - 1, "recovered");
+          }
+        } catch (error) { console.debug("GhostShare network sampling failed.", error); }
+      }, 1500);
     }
 
     async function attachMicrophone(activeCall, rawStream, { keepMuted = false } = {}) {
@@ -290,6 +374,7 @@
       }
       if (call) {
         stopAudioProcessor(call.audioProcessor);
+        stopShareMonitor(call);
         for (const stream of [call.localStream, call.rawStream, call.screenStream]) {
           stream?.getTracks().forEach(track => { track.onended = null; track.stop(); });
         }
@@ -562,6 +647,8 @@
       if (call.screenStream) {
         const stream = call.screenStream;
         call.screenStream = null;
+        stopShareMonitor(call);
+        call.screenQuality = null;
         for (const track of stream.getTracks()) {
           const sender = call.pc.getSenders().find(item => item.track === track);
           if (sender && track.kind === "video" && sender === findVideoTransceiver(call)?.sender) {
@@ -592,13 +679,15 @@
             if (!transceiver) {
               transceiver = call.pc.addTransceiver("video", { direction: "sendrecv" });
               call.videoTransceiver = transceiver;
-              await tuneScreenSender(transceiver.sender);
+              await tuneScreenSender(transceiver.sender, stream.__ghostShareProfiles?.[0]);
             }
             await transceiver.sender.replaceTrack(track);
           } else {
             call.pc.addTrack(track, stream);
           }
         }
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack) startShareMonitor(call, videoTrack, stream.__ghostShareProfiles);
         notify();
       } catch (error) {
         if (error?.name === "NotAllowedError" || error?.name === "AbortError") return;
@@ -613,6 +702,7 @@
       if (call.screenStarting) return;
       const activeCall = call;
       const previousStream = call.screenStream;
+      stopShareMonitor(call);
       const settings = api.getSettings();
       if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("Screen capture is unavailable in this WebView. Update the Microsoft Edge WebView2 Runtime.");
       call.screenStarting = true;
@@ -649,6 +739,11 @@
           track.onended = () => { if (call?.screenStream === nextStream) void toggleScreenSharing(); };
         }
         call.screenStream = nextStream;
+        const videoTrack = nextStream.getVideoTracks()[0];
+        if (videoTrack) {
+          await tuneScreenSender(findVideoTransceiver(call)?.sender, nextStream.__ghostShareProfiles?.[0]);
+          startShareMonitor(call, videoTrack, nextStream.__ghostShareProfiles);
+        }
       } catch (error) {
         if (error?.name !== "NotAllowedError" && error?.name !== "AbortError") throw new Error(explainMediaError(error));
       } finally {

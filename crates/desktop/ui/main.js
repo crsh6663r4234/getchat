@@ -527,6 +527,7 @@
       voiceFocusSensitivity: Number(localStorage.getItem("ghostchat.voice.focusSensitivity") || "36"),
       pushToTalk: localStorage.getItem("ghostchat.voice.ptt") === "true",
       shareSystemAudio: localStorage.getItem("ghostchat.voice.systemAudio") === "true",
+      shareQuality: localStorage.getItem("ghostchat.share.quality") || "balanced",
       relayOnly: localStorage.getItem("ghostchat.voice.relayOnly") === "true",
       volume: Number(localStorage.getItem("ghostchat.voice.volume") || "100"),
       speakerMuted: localStorage.getItem("ghostchat.voice.speakerMuted") === "true",
@@ -543,6 +544,7 @@
     localStorage.setItem("ghostchat.voice.focusSensitivity", $("#voiceFocusSensitivity").value);
     localStorage.setItem("ghostchat.voice.ptt", String($("#voicePushToTalk").checked));
     localStorage.setItem("ghostchat.voice.systemAudio", String($("#voiceShareAudio").checked));
+    localStorage.setItem("ghostchat.share.quality", $("#voiceShareQuality").value);
     localStorage.setItem("ghostchat.voice.relayOnly", String($("#voiceRelayOnly").checked));
     localStorage.setItem("ghostchat.voice.volume", $("#voiceVolume").value);
   }
@@ -556,6 +558,7 @@
     $("#voiceFocusSensitivity").value = String(Math.max(1, Math.min(100, settings.voiceFocusSensitivity || 36)));
     $("#voicePushToTalk").checked = settings.pushToTalk;
     $("#voiceShareAudio").checked = settings.shareSystemAudio;
+    $("#voiceShareQuality").value = ["balanced", "detail", "motion", "saver"].includes(settings.shareQuality) ? settings.shareQuality : "balanced";
     $("#voiceRelayOnly").checked = settings.relayOnly;
     $("#voiceVolume").value = String(Math.max(0, Math.min(100, settings.volume)));
     const micSelects = [$("#voiceMicSelect"), $("#voiceCallMicSelect")];
@@ -2648,7 +2651,10 @@
     $("#voiceStageDecline").classList.toggle("hidden", groupMode || voice.status !== "incoming");
     $("#voiceHangupButton").querySelector("span:last-child").textContent = translate(groupMode ? "Leave call" : "End call");
     $("#voiceHangupButton").classList.toggle("hidden", !activeCall);
-    $("#voiceDeviceNotice").textContent = translate(groupMode && activeCall
+    const shareQualityNotice = !groupMode && voice.screenSharing && voice.screenQuality
+      ? `GhostShare · ${translate(voice.screenQuality.label)}${voice.screenQuality.state === "network-adjusted" ? ` · ${translate("connection adjusted")}` : voice.screenQuality.state === "recovered" ? ` · ${translate("quality recovered")}` : ""}.`
+      : "";
+    $("#voiceDeviceNotice").textContent = translate(shareQualityNotice || (groupMode && activeCall
       ? translate(!voice.micAvailable ? "Group voice is relayed by a LiveKit SFU and is not end-to-end encrypted. No microphone was found; you joined muted." : "Group voice is relayed by a LiveKit SFU and is not end-to-end encrypted. Your microphone is off.")
       : voice.status === "incoming"
       ? "Join the call when you are ready. If no microphone is available, you can still listen muted."
@@ -2660,7 +2666,7 @@
             ? "Your microphone is off. You can still hear the call."
             : activeCall
               ? "Your microphone is on. Use the controls above to switch devices or mute."
-              : "Choose your microphone and speaker, or join muted and listen.");
+              : "Choose your microphone and speaker, or join muted and listen."));
     $(".voice-encryption-note").textContent = groupMode ? translate("RELAYED · NOT END-TO-END ENCRYPTED") : "LIVE · AUDIO";
     const hasRemoteVideo = !!voice.remoteVideoStream?.getVideoTracks().some(track => track.readyState === "live" && !track.muted);
     const hasLocalVideo = !!voice.localScreenStream?.getVideoTracks().some(track => track.readyState === "live" && !track.muted);

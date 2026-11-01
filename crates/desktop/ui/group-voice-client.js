@@ -262,11 +262,20 @@
 
     function screenShareOptions(enabled) {
       const settings = api.getSettings();
+      const profiles = {
+        detail: { width: 1920, height: 1080, frameRate: 12, maxBitrate: 3_200_000, hint: "text" },
+        balanced: { width: 1280, height: 720, frameRate: 15, maxBitrate: 1_800_000, hint: "detail" },
+        motion: { width: 1280, height: 720, frameRate: 24, maxBitrate: 3_800_000, hint: "motion" },
+        saver: { width: 960, height: 540, frameRate: 10, maxBitrate: 850_000, hint: "detail" },
+      };
+      const profile = profiles[settings.shareQuality] || profiles.balanced;
       return {
         audio: enabled && settings.shareSystemAudio,
         systemAudio: enabled && settings.shareSystemAudio ? "include" : "exclude",
-        contentHint: "detail",
-        resolution: LK.VideoPresets.h1080.resolution,
+        contentHint: profile.hint,
+        resolution: { width: profile.width, height: profile.height, frameRate: profile.frameRate },
+        screenShareEncoding: { maxBitrate: profile.maxBitrate, maxFramerate: profile.frameRate },
+        simulcast: true,
       };
     }
 
