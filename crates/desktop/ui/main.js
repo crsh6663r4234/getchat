@@ -2754,6 +2754,7 @@
           throw error;
         }
       },
+      getShareToken: conversationId => request(`/v1/conversations/${encodeURIComponent(conversationId)}/share-token`, { method: "POST" }),
       sendSignal: ({ conversationId, peerId, kind, payload }) => {
         if (!state.socket || state.socket.readyState !== WebSocket.OPEN) throw new Error("The chat server is reconnecting. Wait until it is connected and try again.");
         state.socket.send(JSON.stringify({ type: "voice_signal", conversation_id: conversationId, to_user_id: peerId, kind, payload }));

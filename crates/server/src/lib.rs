@@ -373,6 +373,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/messages/search", get(search_messages))
         .route("/v1/voice/ice", get(voice_ice_servers))
         .route("/v1/conversations/:id/voice-token", post(group_voice_token))
+        .route("/v1/conversations/:id/share-token", post(ghost_share_token))
         .route("/v1/ws", get(websocket))
         .fallback(|| async { ApiError::not_found() })
         .layer(DefaultBodyLimit::max(96 * 1024))
@@ -708,6 +709,58 @@ async fn group_voice_token(
         "room": conversation_id,
         "expires_at": now.saturating_add(10 * 60)
     })))
+}
+
+// GhostShare uses a separate LiveKit room for one-to-one screen sharing. Audio
+// remains on the existing direct-call path; separating the screen publisher lets
+// the SFU adapt layers without renegotiating or destabilising the call itself.
+async fn ghost_share_token(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(conversation_id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let user = authenticate(&headers, &state).await?;
+    let participant = sqlx::query_as::<_, (String, String)>(
+        "SELECT u.display_name,c.kind FROM conversations c JOIN conversation_members cm ON cm.conversation_id=c.id JOIN users u ON u.id=cm.user_id WHERE c.id=? AND cm.user_id=?",
+    )
+    .bind(&conversation_id)
+    .bind(&user.id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| ApiError::internal())?
+    .ok_or_else(ApiError::not_found)?;
+    if participant.1 != "direct" {
+        return Err(ApiError::not_found());
+    }
+    let api_key = state.voice.livekit_api_key.as_deref().ok_or_else(|| {
+        ApiError::unavailable("GhostShare needs a configured LiveKit media server.")
+    })?;
+    let api_secret = state.voice.livekit_api_secret.as_deref().ok_or_else(|| {
+        ApiError::unavailable("GhostShare needs a configured LiveKit media server.")
+    })?;
+    let server_url = state.voice.livekit_url.as_deref().ok_or_else(|| {
+        ApiError::unavailable("GhostShare needs a configured LiveKit media server.")
+    })?;
+    if !allow_rate(&state, &format!("ghostshare-token:{}", user.id), 12, Duration::from_secs(60)) {
+        return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, "Please wait before requesting another GhostShare token."));
+    }
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let room = format!("ghostshare-{conversation_id}");
+    let identity = format!("{}-{}", user.id, Uuid::new_v4().simple());
+    let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#);
+    let metadata = serde_json::json!({"account_id": user.id, "purpose": "ghostshare"}).to_string();
+    let claims = serde_json::json!({
+        "iss": api_key, "sub": identity, "name": participant.0, "metadata": metadata,
+        "iat": now, "nbf": now.saturating_sub(5), "exp": now.saturating_add(10 * 60),
+        "video": {"roomJoin": true, "room": room, "canPublish": true,
+          "canPublishSources": ["screen_share", "screen_share_audio"], "canSubscribe": true, "canPublishData": false}
+    });
+    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).map_err(|_| ApiError::internal())?);
+    let signing_input = format!("{header}.{payload}");
+    let mut mac = Hmac::<Sha256>::new_from_slice(api_secret.as_bytes()).map_err(|_| ApiError::internal())?;
+    mac.update(signing_input.as_bytes());
+    let token = format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()));
+    Ok(Json(serde_json::json!({"url": server_url, "token": token, "room": room, "expires_at": now.saturating_add(10 * 60)})))
 }
 
 fn allow_rate(state: &AppState, key: &str, count: usize, period: Duration) -> bool {

@@ -319,6 +319,69 @@
       }, 1500);
     }
 
+    function ghostShareOptions(settings) {
+      const profile = shareProfiles(settings)[0];
+      return {
+        audio: !!settings.shareSystemAudio,
+        systemAudio: settings.shareSystemAudio ? "include" : "exclude",
+        contentHint: profile.hint,
+        resolution: { width: profile.width, height: profile.height, frameRate: profile.frameRate },
+        screenShareEncoding: { maxBitrate: profile.maxBitrate, maxFramerate: profile.frameRate },
+        simulcast: true,
+      };
+    }
+
+    function ensureGhostShare(activeCall) {
+      if (activeCall.ghostShare) return activeCall.ghostShare;
+      if (!window.GhostChatShare?.create || !api.getShareToken) throw new Error("GhostShare is unavailable in this app build.");
+      activeCall.ghostShare = window.GhostChatShare.create({
+        getToken: conversationId => api.getShareToken(conversationId),
+        onLocalStream: stream => {
+          if (call !== activeCall) return;
+          const wasSharing = !!activeCall.screenStream;
+          activeCall.screenStream = stream;
+          activeCall.screenQuality = stream ? { profile: shareProfiles()[0].id, label: shareProfiles()[0].label, state: "sfu" } : null;
+          if (!stream && wasSharing) {
+            try { send(activeCall.conversationId, activeCall.peerId, "screen_stopped", null); } catch {}
+          }
+          notify();
+        },
+        onRemoteStream: stream => {
+          if (call !== activeCall) return;
+          activeCall.remoteVideoStream = stream;
+          notify();
+        },
+      });
+      return activeCall.ghostShare;
+    }
+
+    async function toggleGhostShare(activeCall) {
+      const share = ensureGhostShare(activeCall);
+      activeCall.screenStarting = true;
+      notify();
+      try {
+        if (activeCall.screenStream) {
+          await share.stop();
+          await share.leave();
+          activeCall.ghostShare = null;
+          activeCall.screenStream = null;
+          activeCall.screenQuality = null;
+          send(activeCall.conversationId, activeCall.peerId, "screen_stopped", null);
+        } else {
+          await share.start(activeCall.conversationId, ghostShareOptions(api.getSettings()));
+          send(activeCall.conversationId, activeCall.peerId, "ghostshare_started", null);
+        }
+      } finally {
+        if (call === activeCall) { activeCall.screenStarting = false; notify(); }
+      }
+    }
+
+    async function watchGhostShare(activeCall) {
+      if (!activeCall.ghostShareAvailable) return;
+      try { await ensureGhostShare(activeCall).watch(activeCall.conversationId); }
+      catch (error) { console.debug("GhostShare viewer could not join; keeping direct-share compatibility.", error); }
+    }
+
     async function attachMicrophone(activeCall, rawStream, { keepMuted = false } = {}) {
       const previousStream = activeCall.localStream;
       const previousRawStream = activeCall.rawStream;
@@ -375,6 +438,7 @@
       if (call) {
         stopAudioProcessor(call.audioProcessor);
         stopShareMonitor(call);
+        void call.ghostShare?.leave?.();
         for (const stream of [call.localStream, call.rawStream, call.screenStream]) {
           stream?.getTracks().forEach(track => { track.onended = null; track.stop(); });
         }
@@ -395,6 +459,7 @@
       }
       return {
         iceServers,
+        ghostShareAvailable: !!config.group_voice_available,
         iceTransportPolicy: settings.relayOnly ? "relay" : "all",
         bundlePolicy: "max-bundle",
         rtcpMuxPolicy: "require",
@@ -483,6 +548,7 @@
         initialNegotiation: true,
         negotiating: false,
         polite: api.getUserId() > conversation.peer_id,
+        ghostShareAvailable: !!configuration.ghostShareAvailable,
       };
       call = activeCall;
       try {
@@ -531,6 +597,7 @@
         initialNegotiation: true,
         negotiating: false,
         polite: api.getUserId() > request.peerId,
+        ghostShareAvailable: !!configuration.ghostShareAvailable,
       };
       call = activeCall;
       incoming = null;
@@ -628,6 +695,10 @@
       try {
         if (event.kind === "screen_stopped") {
           clearRemoteScreen(call);
+          void call.ghostShare?.leave?.();
+          call.ghostShare = null;
+        } else if (event.kind === "ghostshare_started") {
+          await watchGhostShare(call);
         } else if (event.kind === "answer" && event.payload?.type === "answer") {
           await applyDescription(call, event.payload);
         } else if (event.kind === "offer" && event.payload?.type === "offer") {
@@ -644,6 +715,15 @@
     async function toggleScreenSharing() {
       if (!call || call.status === "calling") throw new Error("Wait until the call is connected before sharing your screen.");
       if (call.screenStarting) return;
+      if (call.ghostShareAvailable) {
+        try { return await toggleGhostShare(call); }
+        catch (error) {
+          // A self-hosted SFU can be temporarily unavailable. Direct sharing
+          // stays as a compatibility fallback instead of blocking the call.
+          console.debug("GhostShare unavailable; using direct adaptive sharing.", error);
+          call.ghostShare = null;
+        }
+      }
       if (call.screenStream) {
         const stream = call.screenStream;
         call.screenStream = null;
@@ -700,6 +780,19 @@
     async function refreshScreenSharing() {
       if (!call || !call.screenStream || call.status === "calling") throw new Error("Start sharing your screen before refreshing it.");
       if (call.screenStarting) return;
+      if (call.ghostShare) {
+        const activeCall = call;
+        activeCall.screenStarting = true;
+        notify();
+        try {
+          await activeCall.ghostShare.stop();
+          if (call !== activeCall) return;
+          await activeCall.ghostShare.start(activeCall.conversationId, ghostShareOptions(api.getSettings()));
+        } finally {
+          if (call === activeCall) { activeCall.screenStarting = false; notify(); }
+        }
+        return;
+      }
       const activeCall = call;
       const previousStream = call.screenStream;
       stopShareMonitor(call);
