@@ -131,6 +131,12 @@
   Object.assign(trText, { "Copy app link": "Uygulama bağlantısını kopyala", "Invite link copied.": "Davet bağlantısı kopyalandı.", "Show conversations": "Sohbetleri göster", "Hide conversations": "Sohbetleri gizle" });
   Object.assign(trText, { "Motion": "Hareketler", "Full": "Tam", "Reduced": "Azaltılmış" });
   Object.assign(trText, {
+    "Online on this device": "Bu cihazda çevrimiçi",
+    "Edit profile": "Profili düzenle",
+    "Start your first conversation": "İlk sohbetini başlat",
+    "Your profile is ready. Add a photo, refine your name, or find someone you trust to start a conversation.": "Profilin hazır. Bir fotoğraf ekle, adını düzenle veya sohbet başlatmak için güvendiğin birini bul."
+  });
+  Object.assign(trText, {
     "Account options": "Hesap seçenekleri", "Main navigation": "Ana gezinme", "Call participants": "Arama katılımcıları",
     "Your profile": "Profilin", "Log out": "Çıkış yap", "Close": "Kapat", "Send message": "Mesajı gönder",
     "Write a message": "Mesaj yaz", "Microphone input level": "Mikrofon giriş seviyesi",
@@ -898,7 +904,14 @@
     setAvatar($("#chatAvatar"), "G"); $("#messagePanel").classList.add("hidden"); $("#pageContent").classList.remove("hidden");
     $("#pageContent").innerHTML = "";
     const card = create("div", "welcome-card");
-    card.append(create("div", "welcome-orb", "◌"), create("h2", "", "A little more room to talk."), create("p", "", "Find someone by username, send a friend request, then start a private conversation. Your account does not need an email or phone number."));
+    const profile = create("button", "welcome-profile");
+    profile.type = "button"; profile.title = translate("Edit profile"); profile.setAttribute("aria-label", profile.title);
+    const avatar = create("span", "welcome-profile-avatar"); setAvatar(avatar, state.user?.display_name, state.user?.avatar_data);
+    const profileCopy = create("span", "welcome-profile-copy");
+    profileCopy.append(create("strong", "", state.user?.display_name || "Ghost"), create("span", "", `@${state.user?.username || "ghost"}`), create("small", "", "Online on this device"));
+    const edit = create("span", "welcome-profile-edit", "Edit profile");
+    profile.append(avatar, profileCopy, edit); profile.onclick = openSettings;
+    card.append(profile, create("div", "welcome-orb", "◌"), create("h2", "", "Start your first conversation"), create("p", "", "Your profile is ready. Add a photo, refine your name, or find someone you trust to start a conversation."));
     const actions = create("div", "welcome-actions");
     const find = create("button", "button primary", "Find people"); find.onclick = () => setPage("search");
     const friends = create("button", "button secondary", "View friends"); friends.onclick = () => setPage("friends");
