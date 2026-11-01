@@ -915,7 +915,7 @@
     const actions = create("div", "welcome-actions");
     const find = create("button", "button primary", "Find people"); find.onclick = () => setPage("search");
     const friends = create("button", "button secondary", "View friends"); friends.onclick = () => setPage("friends");
-    actions.append(find, friends); card.append(actions); $("#pageContent").append(card); renderVoiceControls();
+    actions.append(find, friends); card.append(actions); $("#pageContent").append(card); animateContent($("#pageContent")); renderVoiceControls();
   }
   function closeMobileSidebar() {
     $("#appView").classList.remove("sidebar-open");
@@ -923,6 +923,12 @@
     button.setAttribute("aria-expanded", "false");
     button.setAttribute("aria-label", translate("Show conversations"));
     button.title = translate("Show conversations");
+  }
+  function animateContent(node) {
+    if (!node || document.body.classList.contains("reduced-motion")) return;
+    node.classList.remove("content-enter");
+    void node.offsetWidth;
+    node.classList.add("content-enter");
   }
   function setPage(page) {
     sendTyping(false);
@@ -940,7 +946,7 @@
     const sidebarActionLabel = translate(page === "messages" ? "Start a conversation" : "Find people");
     $("#sidebarAction").title = sidebarActionLabel;
     $("#sidebarAction").setAttribute("aria-label", sidebarActionLabel);
-    if (page !== "messages") { $("#messagePanel").classList.add("hidden"); $("#pageContent").classList.remove("hidden"); renderPage(); }
+    if (page !== "messages") { $("#messagePanel").classList.add("hidden"); $("#pageContent").classList.remove("hidden"); renderPage(); animateContent($("#pageContent")); }
     else if (state.active) openConversation(state.active.id, false);
     else showWelcome();
     renderSidebar(); renderVoiceControls(); renderSafetyControls();
