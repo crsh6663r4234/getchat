@@ -865,7 +865,7 @@
   function updateServerLabels() {
     const remote = !!state.base;
     const label = remote ? new URL(state.base).host : "on this device";
-    $("#serverModeLabel").textContent = remote ? "Selected server" : "Local server";
+    $("#serverModeLabel").textContent = translate(remote ? "Selected server" : "Local server");
     $("#serverLabel").textContent = label; $("#serverAddressInput").value = state.base;
   }
   function avatarText(value = "G") { return (value.trim().replace(/^@/, "")[0] || "G").toUpperCase(); }
@@ -2838,6 +2838,7 @@
     try { const reply = await request("/v1/accounts", { method: "POST", body: JSON.stringify({ display_name: form.get("display_name"), avatar_data: signupAvatarData }) }); await authenticateReply(reply); }
     catch (error) { toast(error.message, true); } finally { button.disabled = false; }
   });
+  $("#recoveryKeyInput").addEventListener("input", event => { $("#recoverSubmit").disabled = !event.currentTarget.value.trim(); });
   $("#recoverForm").addEventListener("submit", async event => {
     event.preventDefault(); const form = new FormData(event.currentTarget); const button = event.currentTarget.querySelector("button[type=submit]"); button.disabled = true;
     try {
