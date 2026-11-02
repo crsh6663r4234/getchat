@@ -212,14 +212,44 @@
     // build. This explicit cleanup also prevents a final frozen frame from
     // staying visible when the other caller stops sharing.
     function clearRemoteScreen(activeCall) {
+      if (activeCall?.remoteScreenTimer) clearTimeout(activeCall.remoteScreenTimer);
+      if (activeCall) activeCall.remoteScreenTimer = null;
+      if (activeCall) activeCall.remoteScreenWatched = null;
       const stream = activeCall?.remoteVideoStream;
       if (!stream) return;
+      stream.oninactive = null;
       for (const track of stream.getVideoTracks()) {
         track.onended = null;
         track.onmute = null;
         try { stream.removeTrack(track); } catch {}
       }
       activeCall.remoteVideoStream = null;
+      notify();
+    }
+
+    // Direct WebRTC and GhostShare/SFU do not always deliver the same end
+    // event. Watch both the stream and its track, then clear the video source
+    // ourselves so a stopped share never leaves a frozen last frame behind.
+    function setRemoteScreen(activeCall, stream) {
+      if (activeCall?.remoteScreenWatched === stream) return;
+      if (activeCall?.remoteVideoStream !== stream) clearRemoteScreen(activeCall);
+      if (!stream) return;
+      activeCall.remoteVideoStream = stream;
+      activeCall.remoteScreenWatched = stream;
+      const clear = () => {
+        if (call === activeCall && activeCall.remoteVideoStream === stream) clearRemoteScreen(activeCall);
+      };
+      stream.oninactive = clear;
+      for (const track of stream.getVideoTracks()) {
+        track.onended = clear;
+        track.onmute = () => {
+          // Short transport hiccups can mute a remote track briefly; avoid
+          // tearing down a healthy share for that, but never retain a freeze.
+          if (activeCall.remoteScreenTimer) clearTimeout(activeCall.remoteScreenTimer);
+          activeCall.remoteScreenTimer = setTimeout(() => { if (track.muted) clear(); }, 900);
+        };
+        track.onunmute = () => { if (activeCall.remoteScreenTimer) clearTimeout(activeCall.remoteScreenTimer); activeCall.remoteScreenTimer = null; notify(); };
+      }
       notify();
     }
 
@@ -357,8 +387,7 @@
         },
         onRemoteStream: stream => {
           if (call !== activeCall) return;
-          activeCall.remoteVideoStream = stream;
-          notify();
+          setRemoteScreen(activeCall, stream);
         },
       });
       return activeCall.ghostShare;
@@ -496,9 +525,7 @@
         } else if (track.kind === "video") {
           activeCall.remoteVideoStream ||= new MediaStream();
           if (!activeCall.remoteVideoStream.getTracks().some(item => item.id === track.id)) activeCall.remoteVideoStream.addTrack(track);
-          track.onended = () => clearRemoteScreen(activeCall);
-          track.onmute = () => { if (track.muted) clearRemoteScreen(activeCall); else notify(); };
-          track.onunmute = notify;
+          setRemoteScreen(activeCall, activeCall.remoteVideoStream);
         }
         track.onended ||= notify;
         notify();
