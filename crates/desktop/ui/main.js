@@ -2840,7 +2840,12 @@
   });
   $("#recoverForm").addEventListener("submit", async event => {
     event.preventDefault(); const form = new FormData(event.currentTarget); const button = event.currentTarget.querySelector("button[type=submit]"); button.disabled = true;
-    try { const recoveryKey = form.get("recovery_token").trim(); const reply = await request("/v1/sessions/recover", { method: "POST", body: JSON.stringify({ recovery_token: recoveryKey }) }); await authenticateReply(reply, recoveryKey); }
+    try {
+      const recoveryKey = String(form.get("recovery_token") || "").trim();
+      if (!recoveryKey) throw new Error(state.language === "tr" ? "Önce kaydettiğin kurtarma anahtarını yapıştır." : "Paste your saved recovery key first.");
+      const reply = await request("/v1/sessions/recover", { method: "POST", body: JSON.stringify({ recovery_token: recoveryKey }) });
+      await authenticateReply(reply, recoveryKey);
+    }
     catch (error) { toast(error.message, true); } finally { button.disabled = false; }
   });
   $("#copyRecovery").onclick = async () => { try { await navigator.clipboard.writeText($("#recoveryValue").textContent); toast("Recovery key copied."); } catch { toast("Copy was blocked. Select and copy the key manually.", true); } };
