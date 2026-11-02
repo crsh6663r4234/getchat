@@ -133,6 +133,7 @@
   });
   Object.assign(trText, { "Copy app link": "Uygulama bağlantısını kopyala", "Invite link copied.": "Davet bağlantısı kopyalandı.", "Show conversations": "Sohbetleri göster", "Hide conversations": "Sohbetleri gizle" });
   Object.assign(trText, { "Motion": "Hareketler", "Full": "Tam", "Reduced": "Azaltılmış" });
+  Object.assign(trText, { "Preview": "Önizleme", "Open preview": "Önizlemeyi aç", "Shared image": "Paylaşılan görsel", "SHARED MEDIA": "PAYLAŞILAN MEDYA" });
   Object.assign(trText, { "Voice processing settings applied.": "Ses işleme ayarları uygulandı." });
   Object.assign(trText, {
     "Online on this device": "Bu cihazda çevrimiçi",
@@ -2412,6 +2413,22 @@
     for (const url of state.attachmentObjectUrls) URL.revokeObjectURL(url);
     state.attachmentObjectUrls = [];
   }
+  function openMediaPreview({ url, filename, type }) {
+    const dialog = $("#mediaPreviewDialog");
+    const content = $("#mediaPreviewContent");
+    $("#mediaPreviewName").textContent = filename || translate("Preview");
+    content.replaceChildren();
+    if (type === "video") {
+      const video = create("video", "media-preview-video");
+      video.src = url; video.controls = true; video.autoplay = true; video.playsInline = true; video.preload = "metadata";
+      content.append(video);
+    } else {
+      const image = create("img", "media-preview-image");
+      image.src = url; image.alt = filename || translate("Shared image");
+      content.append(image);
+    }
+    if (!dialog.open) dialog.showModal();
+  }
   async function renderAttachment(container, attachmentId, messageRow) {
     try {
       const base = activeBase();
@@ -2432,17 +2449,19 @@
           state.attachmentObjectUrls.push(previewUrl);
         } catch (error) { console.warn("Using attachment preview link", error); }
         if (!container.isConnected || !messageRow?.isConnected) return;
-        const image = create("img", "message-image"); image.alt = filename; image.loading = "lazy";
+        const image = create("img", "message-image"); image.alt = filename; image.loading = "lazy"; image.tabIndex = 0; image.setAttribute("role", "button"); image.title = translate("Open preview");
         image.onload = () => loading.remove();
         image.onerror = () => {
           loading.remove(); image.remove();
           const fallback = create("a", "attachment-download", `⇩  ${filename}`); fallback.href = url; fallback.download = filename; container.prepend(fallback);
         };
         image.src = previewUrl;
+        image.onclick = () => openMediaPreview({ url: previewUrl, filename, type: "image" });
+        image.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openMediaPreview({ url: previewUrl, filename, type: "image" }); } };
         container.append(image);
         container.append(create("span", "attachment-filename", filename));
       } else if (attachment.content_type?.startsWith("video/")) {
-        const video = create("video", "message-video"); video.src = url; video.controls = true; video.preload = "metadata"; container.append(video);
+        const video = create("video", "message-video"); video.src = url; video.controls = true; video.preload = "metadata"; video.playsInline = true; video.title = translate("Open preview"); video.ondblclick = () => openMediaPreview({ url, filename, type: "video" }); container.append(video);
         container.append(create("span", "attachment-filename", filename));
       } else {
         const link = create("a", "attachment-download", `⇩  ${filename}`); link.href = url; link.download = filename; container.append(link);
