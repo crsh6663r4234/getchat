@@ -101,8 +101,8 @@
         <section id="voiceStage" class="voice-stage hidden" aria-labelledby="voiceStageTitle">
           <div class="voice-stage-scroll">
           <div class="voice-stage-head">
-            <div class="voice-peer-details"><p class="voice-kicker" data-en="VOICE CALL" data-tr="SESLİ ARAMA">VOICE CALL</p><h3 id="voiceStageTitle" data-en="Who’s here" data-tr="Görüşmedekiler">Who’s here</h3><p class="voice-status-line"><i id="voiceStageDot" class="status-dot connecting"></i><span id="voiceStageStatus" aria-live="polite">Waiting to connect…</span></p></div>
-            <span class="voice-encryption-note" data-en="LIVE CALL" data-tr="CANLI ARAMA">LIVE CALL</span>
+            <div class="voice-peer-details"><p class="voice-kicker" data-en="VOICE CALL" data-tr="SESLİ ARAMA">VOICE CALL</p><h3 id="voiceStageTitle" data-en="Who’s here" data-tr="Görüşmedekiler">Who’s here</h3><p class="voice-status-line"><i id="voiceStageDot" class="status-dot connecting"></i><span id="voiceStageStatus" aria-live="polite">Waiting to connect…</span><span id="voiceCallDuration" class="voice-call-duration hidden">00:00</span></p></div>
+            <div class="voice-stage-meta"><span id="voiceConnectionQuality" class="voice-connection-quality" data-en="Connection checking" data-tr="Bağlantı kontrol ediliyor">Connection checking</span><span class="voice-encryption-note" data-en="LIVE CALL" data-tr="CANLI ARAMA">LIVE CALL</span></div>
           </div>
           <div class="voice-participants" role="group" aria-label="Call participants" data-en-label="Call participants" data-tr-label="Arama katılımcıları">
             <button id="voicePeerCard" class="voice-participant-card peer-participant" type="button" aria-haspopup="menu" aria-expanded="false" title="Right-click to mute or unmute this caller" data-en-title="Right-click to mute or unmute this caller" data-tr-title="Arayanın sesini kısmak veya açmak için sağ tıkla">
@@ -146,6 +146,7 @@
               <div class="voice-control-group">
                 <button id="voiceStageMicButton" class="voice-control-button" type="button" aria-pressed="true"><span id="voiceStageMicIcon" class="voice-control-icon" aria-hidden="true">🎙</span><span id="voiceStageMicLabel">Turn mic on</span></button>
                 <button id="voiceOutputButton" class="voice-control-button" type="button" aria-pressed="false"><span id="voiceOutputIcon" class="voice-control-icon" aria-hidden="true">🔊</span><span id="voiceOutputLabel">Sound on</span></button>
+                <button id="voiceDeviceButton" class="voice-control-button" type="button" aria-expanded="false"><span class="voice-control-icon" aria-hidden="true">⚙</span><span data-en="Devices" data-tr="Aygıtlar">Devices</span></button>
                 <button id="voiceStageShareButton" class="voice-control-button hidden" type="button"><span id="voiceStageShareIcon" class="voice-control-icon" aria-hidden="true">▣</span><span id="voiceStageShareLabel">Share screen</span></button>
                 <button id="voiceRefreshScreenButton" class="voice-control-button hidden" type="button" title="Refresh screen share" data-en-title="Refresh screen share" data-tr-title="Ekran paylaşımını yenile"><span class="voice-control-icon" aria-hidden="true">↻</span><span data-en="Refresh share" data-tr="Paylaşımı yenile">Refresh share</span></button>
               </div>
@@ -166,6 +167,7 @@
       </div>
     </section>
   </div>
+  <div id="appContextMenu" class="app-context-menu hidden" role="menu" aria-label="Context actions"></div>
 
   <dialog id="newConversationDialog" class="dialog" aria-labelledby="newConversationTitle">
     <form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="MESSAGES" data-tr="MESAJLAR">MESSAGES</p><h2 id="newConversationTitle" data-en="Start a conversation" data-tr="Sohbet başlat">Start a conversation</h2></div><button class="icon-button" aria-label="Close" data-en-title="Close" data-tr-title="Kapat">×</button></form>

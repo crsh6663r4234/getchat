@@ -14,6 +14,8 @@
   let signupAvatarData = null;
   let profileAvatarData = null;
   let settingsRecoveryStatusKey = "";
+  let voiceDevicePanelOpen = false;
+  let voiceCallOpenedAt = 0;
   const trText = {
     "Create account": "Hesap oluştur", "Recover": "Kurtar", "Name": "Ad", "Display name": "Görünen ad", "Profile picture": "Profil fotoğrafı", "Choose": "Seç", "Create anonymous account": "Anonim hesap oluştur", "Recover account": "Hesabı kurtar", "Recovery key": "Kurtarma anahtarı", "Your recovery key": "Kurtarma anahtarın", "Copy key": "Anahtarı kopyala", "Save backup": "Yedek kaydet", "Continue to GhostChat": "GhostChat'e devam et", "Messages": "Mesajlar", "Friends": "Arkadaşlar", "Find people": "Kişi bul", "Search messages": "Mesajlarda ara", "Settings": "Ayarlar", "Profile": "Profil", "Connection": "Bağlantı", "Appearance": "Görünüm", "Notifications": "Bildirimler", "Voice and screen sharing": "Sesli sohbet ve ekran paylaşımı", "Updates": "Güncellemeler", "Privacy and data": "Gizlilik ve veriler", "Theme": "Tema", "Text size": "Yazı boyutu", "Dark": "Koyu", "Light": "Açık", "Compact": "Küçük", "Default": "Varsayılan", "Large": "Büyük", "Windows notifications": "Windows bildirimleri", "Send test notification": "Test bildirimi gönder", "Microphone": "Mikrofon", "Speaker": "Hoparlör", "System default": "Sistem varsayılanı", "Refresh audio devices": "Ses aygıtlarını yenile", "Echo cancellation": "Yankı engelleme", "Noise suppression": "Gürültü azaltma", "Automatic microphone gain": "Otomatik mikrofon seviyesi", "Push to talk (hold Space)": "Bas-konuş (Boşluk tuşunu basılı tut)", "Share system audio with screen": "Ekranla sistem sesini paylaş", "Save settings": "Ayarları kaydet", "Check now": "Şimdi kontrol et", "Install and restart": "Yükle ve yeniden başlat", "Save profile": "Profili kaydet", "Remove photo": "Fotoğrafı kaldır", "Your quiet corner": "Sana özel alan", "A little more room to talk.": "Rahatça konuşabileceğin bir alan.", "Find someone by username, send a friend request, then start a private conversation. Your account does not need an email or phone number.": "Etiketiyle kişi bul, arkadaşlık isteği gönder ve özel sohbete başla. Hesap için e-posta veya telefon gerekmez.", "View friends": "Arkadaşları gör", "Search": "Ara", "Search by username or user ID. GhostChat does not publish a public directory.": "Kullanıcı etiketiyle veya kullanıcı kimliğiyle ara. GhostChat herkese açık bir rehber yayınlamaz.", "No conversations yet. Find a friend to start a chat.": "Henüz sohbet yok. Sohbet başlatmak için arkadaş ekle.", "No pending requests.": "Bekleyen istek yok.", "YOUR FRIENDS": "ARKADAŞLARIN", "REQUESTS": "İSTEKLER", "DIRECT MESSAGES": "ÖZEL MESAJLAR", "No friends yet. Use Find people to add someone.": "Henüz arkadaşın yok. Kişi bul bölümünden arkadaş ekleyebilirsin.", "Manage requests and start a private conversation.": "İstekleri yönet ve özel sohbet başlat.", "All friends": "Tüm arkadaşlar", "Accept": "Kabul et", "Ignore": "Yoksay", "Message": "Mesaj", "Add friend": "Arkadaş ekle", "Request sent": "İstek gönderildi", "No friend requests right now.": "Şu anda arkadaşlık isteği yok.", "No matching messages.": "Eşleşen mesaj yok.", "Edited": "Düzenlendi", "Edit": "Düzenle", "Delete": "Sil", "Write a message…": "Mesaj yaz…", "Load earlier messages": "Önceki mesajları yükle", "Call": "Ara", "End call": "Aramayı bitir", "Settings saved.": "Ayarlar kaydedildi.", "Profile saved.": "Profil kaydedildi.", "Friend request accepted.": "Arkadaşlık isteği kabul edildi.", "Request removed.": "İstek kaldırıldı.", "Choose an image file.": "Bir resim dosyası seç.", "That photo is too detailed. Choose a smaller image.": "Fotoğraf çok detaylı. Daha küçük bir görsel seç.", "Could not use that photo.": "Fotoğraf kullanılamadı.", "Checking for updates": "Güncellemeler kontrol ediliyor", "Update required": "Güncelleme gerekli", "Downloading update": "Güncelleme indiriliyor", "Update failed": "Güncelleme başarısız", "Try again": "Yeniden dene", "Getting the latest version ready…": "En yeni sürüm hazırlanıyor…", "This app version is out of date.": "Bu uygulama sürümü güncel değil.", "Preparing the update…": "Güncelleme hazırlanıyor…"
   };
@@ -290,7 +292,10 @@
       }
       if (!participant.local) {
         const toggle = () => setGroupPeerMuted(conversationId, participant.id, !isGroupPeerMuted(conversationId, participant.id));
-        card.addEventListener("contextmenu", event => { event.preventDefault(); toggle(); });
+        card.addEventListener("contextmenu", event => openAppContextMenu(event, [
+          { label: translate(isGroupPeerMuted(conversationId, participant.id) ? "Unmute their audio" : "Mute their audio"), run: toggle },
+          { label: state.language === "tr" ? "Profili görüntüle" : "View profile", run: () => { const friend = state.friends.find(item => item.id === participant.id); showProfilePreview({ id: participant.id, display_name: participant.name, username: friend?.username || "ghost", avatar_data: participant.avatar || friend?.avatar_data }); } },
+        ]));
         card.addEventListener("keydown", event => { if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) { event.preventDefault(); toggle(); } });
       }
       container.append(card);
@@ -316,6 +321,32 @@
     const volume = peerVolume();
     $("#voiceParticipantVolume").value = String(volume);
     $("#voiceParticipantVolumeValue").textContent = `${volume}%`;
+  }
+
+  function closeAppContextMenu() { $("#appContextMenu").classList.add("hidden"); }
+  function openAppContextMenu(event, actions) {
+    event.preventDefault();
+    const menu = $("#appContextMenu");
+    menu.replaceChildren();
+    for (const action of actions.filter(Boolean)) {
+      const button = create("button", action.danger ? "danger" : "", action.label);
+      button.type = "button";
+      button.setAttribute("role", "menuitem");
+      button.onclick = async () => { closeAppContextMenu(); await action.run(); };
+      menu.append(button);
+    }
+    if (!menu.childElementCount) return;
+    menu.classList.remove("hidden");
+    menu.style.left = `${Math.max(8, Math.min(event.clientX, window.innerWidth - menu.offsetWidth - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(event.clientY, window.innerHeight - menu.offsetHeight - 8))}px`;
+    menu.querySelector("button")?.focus({ preventScroll: true });
+  }
+  function updateVoiceCallDuration() {
+    const target = $("#voiceCallDuration");
+    if (!voiceCallOpenedAt) { target.classList.add("hidden"); return; }
+    const seconds = Math.max(0, Math.floor((Date.now() - voiceCallOpenedAt) / 1000));
+    target.textContent = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
+    target.classList.remove("hidden");
   }
 
   function closeVoiceParticipantMenu({ restoreFocus = false } = {}) {
@@ -1149,7 +1180,7 @@
         for (const item of state.pending || []) { const row = create("div", "request-card"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, item.display_name, item.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", item.display_name), create("span", "", `@${item.username}`)); row.append(copy); const actions = create("div", "request-actions"); const accept = create("button", "button primary", "Accept"); accept.onclick = () => respondFriend(item.id, "accept"); const reject = create("button", "button secondary", "Ignore"); reject.onclick = () => respondFriend(item.id, "reject"); actions.append(accept, reject); row.append(actions); list.append(row); }
       } else {
         if (!state.friends.length) list.append(create("div", "empty-list", "No friends yet. Use Find people to add someone."));
-        for (const friend of state.friends) { const row = create("div", "result-card"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, friend.display_name, friend.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", friend.display_name), create("span", "", `@${friend.username}`)); row.append(copy); const actions = create("div", "friend-actions"); const message = create("button", "button primary", "Message"); message.onclick = () => startConversation(friend.id); const remove = create("button", "button secondary", state.language === "tr" ? "Arkadaşlıktan çıkar" : "Remove friend"); remove.onclick = () => removeFriend(friend); actions.append(message, remove); row.append(actions); list.append(row); }
+        for (const friend of state.friends) { const row = create("div", "result-card"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, friend.display_name, friend.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", friend.display_name), create("span", "", `@${friend.username}`)); row.append(copy); const actions = create("div", "friend-actions"); const message = create("button", "button primary", "Message"); message.onclick = () => startConversation(friend.id); const remove = create("button", "button secondary", state.language === "tr" ? "Arkadaşlıktan çıkar" : "Remove friend"); remove.onclick = () => removeFriend(friend); actions.append(message, remove); row.append(actions); row.addEventListener("contextmenu", event => openAppContextMenu(event, [{ label: state.language === "tr" ? "Mesaj gönder" : "Message", run: () => startConversation(friend.id) }, { label: state.language === "tr" ? "Arkadaşlıktan çıkar" : "Remove friend", danger: true, run: () => removeFriend(friend) }])); list.append(row); }
       }
     } else if (state.page === "searchMessages") {
       page.append(create("h2", "", "Search messages"), create("p", "muted", "Searches the 50 latest messages in each conversation on this device; your search phrase stays local."));
@@ -2006,6 +2037,13 @@
     setAvatar($("#chatAvatar"), state.active.display_name, state.active.avatar_data);
     if (state.active.kind === "direct") addPresenceDot($("#chatAvatar"), state.active.peer_id);
     $("#chatAvatar").onclick = () => state.active?.kind === "direct" && showProfilePreview({ id: state.active.peer_id, display_name: state.active.display_name, username: state.active.username, avatar_data: state.active.avatar_data });
+    $("#chatAvatar").oncontextmenu = event => {
+      if (state.active?.kind !== "direct") return;
+      openAppContextMenu(event, [
+        { label: state.language === "tr" ? "Profili görüntüle" : "View profile", run: () => showProfilePreview({ id: state.active.peer_id, display_name: state.active.display_name, username: state.active.username, avatar_data: state.active.avatar_data }) },
+        { label: state.language === "tr" ? "Güvenlik seçenekleri" : "Safety options", run: () => $("#userSafetyButton").click() },
+      ]);
+    };
     renderSafetyControls();
     renderTypingIndicator();
     renderVoiceControls();
@@ -2191,6 +2229,12 @@
     if (ownMessage) {
       const actions = create("div", "message-actions"); if (!message.encrypted) { const edit = create("button", "", "Edit"); edit.onclick = () => editMessage(message); actions.append(edit); } const remove = create("button", "", "Delete"); remove.onclick = () => deleteMessage(message.id); actions.append(remove); row.append(actions);
     }
+    row.addEventListener("contextmenu", event => openAppContextMenu(event, [
+      { label: state.language === "tr" ? "Yanıtla" : "Reply", run: () => setReplyTarget(message) },
+      { label: state.language === "tr" ? "Metni kopyala" : "Copy text", run: async () => { try { await navigator.clipboard.writeText(message.content || ""); toast(state.language === "tr" ? "Mesaj kopyalandı." : "Message copied."); } catch { toast(state.language === "tr" ? "Kopyalama engellendi." : "Copy was blocked.", true); } } },
+      !message.encrypted && ownMessage ? { label: state.language === "tr" ? "Düzenle" : "Edit", run: () => editMessage(message) } : null,
+      ownMessage ? { label: state.language === "tr" ? "Sil" : "Delete", danger: true, run: () => deleteMessage(message.id) } : null,
+    ]));
     if (prepend) container.prepend(row); else container.append(row);
     updateSeenBadge();
   }
@@ -2638,7 +2682,20 @@
     $("#voiceStageStatus").textContent = translate(voice.status === "incoming" ? "Incoming call" : (labels[voice.status] || "Voice call"));
     $("#voiceStageDot").classList.toggle("connecting", !["connected", "incoming"].includes(voice.status));
     $("#voiceStageDot").classList.toggle("offline", voice.status === "reconnecting");
-    $("#voiceDeviceRow").classList.toggle("hidden", !activeCall);
+    if (activeCall && !voiceCallOpenedAt) voiceCallOpenedAt = Date.now();
+    if (!activeCall) { voiceCallOpenedAt = 0; voiceDevicePanelOpen = false; }
+    updateVoiceCallDuration();
+    const connectionQuality = voice.status === "connected"
+      ? (state.language === "tr" ? "● Bağlantı canlı" : "● Connection live")
+      : voice.status === "reconnecting"
+        ? (state.language === "tr" ? "● Yeniden bağlanıyor" : "● Reconnecting")
+        : (state.language === "tr" ? "● Bağlanıyor" : "● Connecting");
+    $("#voiceConnectionQuality").textContent = connectionQuality;
+    $("#voiceConnectionQuality").classList.toggle("is-live", voice.status === "connected");
+    $("#voiceConnectionQuality").classList.toggle("is-warning", voice.status === "reconnecting");
+    $("#voiceDeviceRow").classList.toggle("hidden", !activeCall || !voiceDevicePanelOpen);
+    $("#voiceDeviceButton").classList.toggle("hidden", !activeCall);
+    $("#voiceDeviceButton").setAttribute("aria-expanded", String(voiceDevicePanelOpen));
     $("#voiceStageMicButton").classList.toggle("hidden", !activeCall);
     $("#voiceStageMicButton").classList.toggle("is-muted", voice.micMuted && (!pushToTalk || voice.micManuallyMuted || !voice.micAvailable));
     $("#voiceStageMicButton").setAttribute("aria-pressed", String(voice.micMuted));
@@ -2700,6 +2757,7 @@
     $("#activeCallMic").setAttribute("aria-pressed", String(voice.micMuted));
     $("#activeCallEnd").textContent = translate(voice.status === "incoming" ? "Decline" : groupMode ? "Leave call" : "End call");
     if (voice.status === "idle") {
+      updateVoiceCallDuration();
       closeVoiceParticipantMenu();
       if (!groupMode) {
         $("#remoteAudio").srcObject = null;
@@ -3293,10 +3351,13 @@
   };
   document.addEventListener("pointerdown", event => {
     if (!$("#voiceParticipantMenu").contains(event.target) && !$("#voicePeerCard").contains(event.target)) closeVoiceParticipantMenu();
+    if (!$("#appContextMenu").contains(event.target)) closeAppContextMenu();
   });
   document.addEventListener("keydown", event => {
     if (event.key === "Escape" && !$("#voiceParticipantMenu").classList.contains("hidden")) closeVoiceParticipantMenu({ restoreFocus: true });
+    if (event.key === "Escape") closeAppContextMenu();
   });
+  setInterval(updateVoiceCallDuration, 1000);
   $("#settingsDialog").addEventListener("close", () => {
     void stopMicrophoneTest();
     $("#settingsRecoveryValue").value = "";
@@ -3362,6 +3423,7 @@
     void applyPlaybackSettings();
     renderVoiceControls();
   };
+  $("#voiceDeviceButton").onclick = () => { voiceDevicePanelOpen = !voiceDevicePanelOpen; renderVoiceControls(); };
   $("#voiceStageShareButton").onclick = () => {
     const action = groupVoiceUiState.status !== "idle" ? groupVoiceClient.toggleScreenSharing() : voiceClient.toggleScreenSharing();
     void action.catch(error => toast(error.message, true));
