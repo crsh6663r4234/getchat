@@ -1149,7 +1149,7 @@
         for (const item of state.pending || []) { const row = create("div", "request-card"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, item.display_name, item.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", item.display_name), create("span", "", `@${item.username}`)); row.append(copy); const actions = create("div", "request-actions"); const accept = create("button", "button primary", "Accept"); accept.onclick = () => respondFriend(item.id, "accept"); const reject = create("button", "button secondary", "Ignore"); reject.onclick = () => respondFriend(item.id, "reject"); actions.append(accept, reject); row.append(actions); list.append(row); }
       } else {
         if (!state.friends.length) list.append(create("div", "empty-list", "No friends yet. Use Find people to add someone."));
-        for (const friend of state.friends) { const row = create("div", "result-card"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, friend.display_name, friend.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", friend.display_name), create("span", "", `@${friend.username}`)); row.append(copy); const message = create("button", "button primary", "Message"); message.onclick = () => startConversation(friend.id); row.append(message); list.append(row); }
+        for (const friend of state.friends) { const row = create("div", "result-card"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, friend.display_name, friend.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", friend.display_name), create("span", "", `@${friend.username}`)); row.append(copy); const actions = create("div", "friend-actions"); const message = create("button", "button primary", "Message"); message.onclick = () => startConversation(friend.id); const remove = create("button", "button secondary", state.language === "tr" ? "Arkadaşlıktan çıkar" : "Remove friend"); remove.onclick = () => removeFriend(friend); actions.append(message, remove); row.append(actions); list.append(row); }
       }
     } else if (state.page === "searchMessages") {
       page.append(create("h2", "", "Search messages"), create("p", "muted", "Searches the 50 latest messages in each conversation on this device; your search phrase stays local."));
@@ -1264,6 +1264,16 @@
   async function respondFriend(id, action) {
     try { await request(`/v1/friends/requests/${encodeURIComponent(id)}/${action}`, { method: "POST", body: "{}" }); await refreshFriends(); toast(action === "accept" ? "Friend request accepted." : "Request removed."); }
     catch (error) { toast(error.message, true); }
+  }
+  async function removeFriend(friend) {
+    const name = friend.display_name || friend.username || "this person";
+    const question = state.language === "tr" ? `${name} kişisini arkadaşlıktan çıkarmak istiyor musun?` : `Remove ${name} from your friends?`;
+    if (!confirm(question)) return;
+    try {
+      await request(`/v1/friends/${encodeURIComponent(friend.id)}`, { method: "DELETE" });
+      await refreshFriends({ notifyNew: false });
+      toast(state.language === "tr" ? "Arkadaşlıktan çıkarıldı." : "Friend removed.");
+    } catch (error) { toast(error.message, true); }
   }
   async function startConversation(userId) {
     try { const convo = await request("/v1/conversations/direct", { method: "POST", body: JSON.stringify({ user_id: userId }) }); await refreshConversations(); setPage("messages"); await openConversation(convo.id); }
