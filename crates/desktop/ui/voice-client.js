@@ -122,14 +122,16 @@
       const track = activeCall?.localAudioTrack;
       if (!track) return;
       const settings = api.getSettings();
-      const gateOpen = activeCall.audioProcessor?.gateOpen !== false;
-      track.enabled = !activeCall.manualMute && (!settings.pushToTalk || !!activeCall.pushToTalkPressed) && gateOpen;
+      // The speech gate itself is a smooth gain stage. Keeping the RTP track
+      // alive prevents WebView2 from producing a click/pop every time quiet
+      // background sound crosses the gate threshold.
+      track.enabled = !activeCall.manualMute && (!settings.pushToTalk || !!activeCall.pushToTalkPressed);
     }
 
     function stopAudioProcessor(processor) {
       if (!processor) return;
       if (processor.frame) cancelAnimationFrame(processor.frame);
-      try { processor.source?.disconnect(); processor.highPass?.disconnect(); processor.lowPass?.disconnect(); processor.compressor?.disconnect(); processor.analyser?.disconnect(); } catch {}
+      try { processor.source?.disconnect(); processor.highPass?.disconnect(); processor.lowPass?.disconnect(); processor.compressor?.disconnect(); processor.gate?.disconnect(); processor.analyser?.disconnect(); } catch {}
       try { processor.context?.close(); } catch {}
     }
 
@@ -146,10 +148,11 @@
         const lowPass = context.createBiquadFilter(); lowPass.type = "lowpass"; lowPass.frequency.value = 9_000; lowPass.Q.value = 0.7;
         const compressor = context.createDynamicsCompressor();
         compressor.threshold.value = -30; compressor.knee.value = 20; compressor.ratio.value = 4; compressor.attack.value = 0.003; compressor.release.value = 0.18;
+        const gate = context.createGain(); gate.gain.value = 1;
         const analyser = context.createAnalyser(); analyser.fftSize = 1024; analyser.smoothingTimeConstant = 0.75;
         const destination = context.createMediaStreamDestination();
-        source.connect(highPass); highPass.connect(lowPass); lowPass.connect(compressor); compressor.connect(destination); compressor.connect(analyser);
-        const processor = { context, source, highPass, lowPass, compressor, analyser, destination, gateOpen: true, frame: 0 };
+        source.connect(highPass); highPass.connect(lowPass); lowPass.connect(compressor); compressor.connect(gate); gate.connect(destination); gate.connect(analyser);
+        const processor = { context, source, highPass, lowPass, compressor, gate, analyser, destination, gateOpen: true, frame: 0 };
         const samples = new Float32Array(analyser.fftSize);
         const updateGate = () => {
           if (call !== activeCall) return;
@@ -162,7 +165,13 @@
           const now = performance.now();
           if (db >= threshold) processor.holdUntil = now + 420;
           const shouldOpen = !api.getSettings().voiceFocus || now < (processor.holdUntil || 0);
-          if (processor.gateOpen !== shouldOpen) { processor.gateOpen = shouldOpen; syncOutgoingAudio(activeCall); notify(); }
+          if (processor.gateOpen !== shouldOpen) {
+            processor.gateOpen = shouldOpen;
+            // A short fade keeps speech natural while closing quickly enough
+            // that keyboard/fan noise is not sent between words.
+            gate.gain.setTargetAtTime(shouldOpen ? 1 : 0, context.currentTime, shouldOpen ? 0.012 : 0.055);
+            notify();
+          }
           processor.frame = requestAnimationFrame(updateGate);
         };
         void context.resume().catch(() => {});

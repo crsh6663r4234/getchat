@@ -147,6 +147,7 @@
                 <button id="voiceStageMicButton" class="voice-control-button" type="button" aria-pressed="true"><span id="voiceStageMicIcon" class="voice-control-icon" aria-hidden="true">🎙</span><span id="voiceStageMicLabel">Turn mic on</span></button>
                 <button id="voiceOutputButton" class="voice-control-button" type="button" aria-pressed="false"><span id="voiceOutputIcon" class="voice-control-icon" aria-hidden="true">🔊</span><span id="voiceOutputLabel">Sound on</span></button>
                 <button id="voiceDeviceButton" class="voice-control-button" type="button" aria-expanded="false"><span class="voice-control-icon" aria-hidden="true">⚙</span><span data-en="Devices" data-tr="Aygıtlar">Devices</span></button>
+                <button id="voiceMusicButton" class="voice-control-button" type="button" aria-expanded="false"><span class="voice-control-icon" aria-hidden="true">♫</span><span data-en="Music" data-tr="Müzik">Music</span></button>
                 <button id="voiceStageShareButton" class="voice-control-button hidden" type="button"><span id="voiceStageShareIcon" class="voice-control-icon" aria-hidden="true">▣</span><span id="voiceStageShareLabel">Share screen</span></button>
                 <button id="voiceRefreshScreenButton" class="voice-control-button hidden" type="button" title="Refresh screen share" data-en-title="Refresh screen share" data-tr-title="Ekran paylaşımını yenile"><span class="voice-control-icon" aria-hidden="true">↻</span><span data-en="Refresh share" data-tr="Paylaşımı yenile">Refresh share</span></button>
               </div>
@@ -157,6 +158,12 @@
               </div>
             </div>
             <p id="voiceDeviceNotice" class="voice-device-notice" data-en="You can change devices above at any time." data-tr="Aygıtlarını istediğin zaman yukarıdan değiştirebilirsin.">You can change devices above at any time.</p>
+            <section id="voiceMusicPanel" class="voice-music-panel hidden" aria-label="Shared music" data-en-label="Shared music" data-tr-label="Ortak müzik">
+              <div class="voice-music-head"><div><p data-en="SHARED LISTENING" data-tr="ORTAK DİNLEME">SHARED LISTENING</p><strong data-en="Call playlist" data-tr="Arama çalma listesi">Call playlist</strong></div><button id="voiceMusicClose" class="icon-button" type="button" aria-label="Close" data-en-title="Close" data-tr-title="Kapat">×</button></div>
+              <form id="voiceMusicForm" class="voice-music-form"><input id="voiceMusicUrl" type="url" inputmode="url" required placeholder="Paste a music link" data-en-placeholder="Paste a music link" data-tr-placeholder="Müzik bağlantısı yapıştır"><button class="button primary" type="submit" data-en="Add" data-tr="Ekle">Add</button></form>
+              <p class="voice-music-note" data-en="All music links can be queued. Direct HTTPS audio links play in sync; platform links open safely in their source." data-tr="Tüm müzik bağlantıları sıraya eklenir. Doğrudan HTTPS ses linkleri senkron çalar; platform bağlantıları güvenle kendi kaynağında açılır.">All music links can be queued. Direct HTTPS audio links play in sync; platform links open safely in their source.</p>
+              <div id="voiceMusicQueue" class="voice-music-queue"></div><audio id="voiceMusicAudio" preload="metadata"></audio>
+            </section>
           </div>
           <audio id="remoteAudio" autoplay playsinline></audio><button id="enableCallAudio" class="button secondary hidden" type="button">Enable call audio</button>
         </section>

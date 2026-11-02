@@ -5402,6 +5402,19 @@ async fn relay_voice_signal(state: &AppState, sender: &PublicUser, text: &str) {
             .as_str()
             .is_some_and(|candidate| !candidate.is_empty() && candidate.len() <= 4 * 1024),
         "hangup" => signal.payload.is_null(),
+        "music_state" => {
+            let queue = signal.payload["queue"].as_array();
+            let valid_queue = queue.is_some_and(|items| items.len() <= 32 && items.iter().all(|item| {
+                item["id"].as_str().is_some_and(|value| !value.is_empty() && value.len() <= 64)
+                    && item["url"].as_str().is_some_and(|value| value.starts_with("https://") && value.len() <= 2048)
+                    && item["title"].as_str().is_some_and(|value| value.len() <= 160)
+                    && item["direct"].as_bool().is_some()
+            }));
+            valid_queue
+                && signal.payload["index"].as_i64().is_some_and(|value| value >= -1 && value < 32)
+                && signal.payload["playing"].as_bool().is_some()
+                && signal.payload["position"].as_f64().is_some_and(|value| (0.0..=86_400.0).contains(&value))
+        }
         _ => false,
     };
     if !valid_payload {
