@@ -2252,13 +2252,15 @@
       const reactions = create("div", "message-reactions"); reactions.setAttribute("aria-label", translate("Message reactions")); main.append(reactions);
       const quickReactions = create("div", "quick-reactions"); reactions.append(quickReactions);
       const inlineActions = create("div", "message-inline-actions");
-      const addReaction = create("button", "message-inline-action add-reaction", "+"); addReaction.type = "button"; addReaction.title = translate("Add a reaction"); addReaction.setAttribute("aria-label", addReaction.title); addReaction.onclick = async () => {
-        const emoji = prompt(translate("Add a reaction"), "");
-        if (!emoji?.trim()) return;
-        addReaction.disabled = true;
-        try { await request(`/v1/messages/${encodeURIComponent(message.id)}/reactions`, { method: "POST", body: JSON.stringify({ emoji: emoji.trim().slice(0, 16) }) }); await refreshMessageReactions(); }
-        catch (error) { toast(error.message, true); }
-        finally { addReaction.disabled = false; }
+      const addReaction = create("button", "message-inline-action add-reaction", "+"); addReaction.type = "button"; addReaction.title = translate("Add a reaction"); addReaction.setAttribute("aria-label", addReaction.title); addReaction.onclick = () => {
+        const existing = $(".reaction-picker", reactions); if (existing) { existing.remove(); return; }
+        const picker = create("div", "reaction-picker"); picker.setAttribute("role", "group"); picker.setAttribute("aria-label", translate("Add a reaction"));
+        for (const emoji of preferredReactions(message.conversation_id || state.active?.id || "")) {
+          const option = create("button", "reaction-choice", emoji); option.type = "button"; option.title = `${translate("Add a reaction")} ${emoji}`;
+          option.onclick = async () => { picker.querySelectorAll("button").forEach(button => { button.disabled = true; }); try { await toggleReaction(message.id, emoji); picker.remove(); } catch (error) { toast(error.message, true); picker.querySelectorAll("button").forEach(button => { button.disabled = false; }); } };
+          picker.append(option);
+        }
+        reactions.append(picker);
       };
       const reply = create("button", "message-inline-action", translate("Reply")); reply.type = "button"; reply.onclick = () => setReplyTarget(message);
       const pin = create("button", "message-inline-action", message.pinned_at ? translate("Unpin message") : translate("Pin message")); pin.type = "button"; pin.onclick = async () => { pin.disabled = true; try { await request(`/v1/messages/${encodeURIComponent(message.id)}/pin`, { method: "POST" }); await loadMessages(false); } catch (error) { toast(error.message, true); pin.disabled = false; } };
@@ -2314,7 +2316,7 @@
           button.type = "button"; button.title = `${translate("Add a reaction")} ${emoji}`; button.setAttribute("aria-label", button.title); button.setAttribute("aria-pressed", String(!!item.reacted));
           button.onclick = async () => {
             button.disabled = true;
-            try { await request(`/v1/messages/${encodeURIComponent(messageId)}/reactions`, { method: "POST", body: JSON.stringify({ emoji }) }); await refreshMessageReactions(); }
+            try { await toggleReaction(messageId, emoji); }
             catch (error) { toast(error.message, true); button.disabled = false; }
           };
           quick.append(button);
@@ -2428,6 +2430,26 @@
       content.append(image);
     }
     if (!dialog.open) dialog.showModal();
+  }
+  const DEFAULT_REACTIONS = ["👍", "❤️", "😂", "👀", "🎉"];
+  function reactionUsageKey(conversationId) { return `ghostchat.reactionUsage.${state.base || "local"}.${state.user?.id || "guest"}.${conversationId}`; }
+  function preferredReactions(conversationId) {
+    try {
+      const usage = JSON.parse(localStorage.getItem(reactionUsageKey(conversationId)) || "{}");
+      return [...DEFAULT_REACTIONS].sort((left, right) => (Number(usage[right]) || 0) - (Number(usage[left]) || 0));
+    } catch { return [...DEFAULT_REACTIONS]; }
+  }
+  function rememberReaction(conversationId, emoji) {
+    try {
+      const usage = JSON.parse(localStorage.getItem(reactionUsageKey(conversationId)) || "{}");
+      usage[emoji] = Math.min(999, (Number(usage[emoji]) || 0) + 1);
+      localStorage.setItem(reactionUsageKey(conversationId), JSON.stringify(usage));
+    } catch {}
+  }
+  async function toggleReaction(messageId, emoji) {
+    await request(`/v1/messages/${encodeURIComponent(messageId)}/reactions`, { method: "POST", body: JSON.stringify({ emoji }) });
+    if (state.active) rememberReaction(state.active.id, emoji);
+    await refreshMessageReactions();
   }
   async function renderAttachment(container, attachmentId, messageRow) {
     try {
