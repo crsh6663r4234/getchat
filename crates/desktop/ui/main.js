@@ -15,6 +15,7 @@
   let profileAvatarData = null;
   let settingsRecoveryStatusKey = "";
   let voiceDevicePanelOpen = false;
+  let voiceStageCompact = localStorage.getItem("ghostchat.voice.compact") !== "false";
   let voiceCallOpenedAt = 0;
   const callMusic = { open: false, queue: [], index: -1, playing: false, applyingRemote: false };
   const trText = {
@@ -134,6 +135,7 @@
   Object.assign(trText, { "Copy app link": "Uygulama bağlantısını kopyala", "Invite link copied.": "Davet bağlantısı kopyalandı.", "Show conversations": "Sohbetleri göster", "Hide conversations": "Sohbetleri gizle" });
   Object.assign(trText, { "Motion": "Hareketler", "Full": "Tam", "Reduced": "Azaltılmış" });
   Object.assign(trText, { "Preview": "Önizleme", "Open preview": "Önizlemeyi aç", "Shared image": "Paylaşılan görsel", "SHARED MEDIA": "PAYLAŞILAN MEDYA" });
+  Object.assign(trText, { "Compact call view": "Kompakt arama görünümü", "Expand call view": "Arama görünümünü genişlet" });
   Object.assign(trText, { "Voice processing settings applied.": "Ses işleme ayarları uygulandı." });
   Object.assign(trText, {
     "Online on this device": "Bu cihazda çevrimiçi",
@@ -2745,6 +2747,7 @@
     const voiceConversationId = groupMode ? groupVoice.conversationId : directVoice.conversationId;
     const conversation = state.conversations.find(item => item.id === voiceConversationId) || (state.active?.id === voiceConversationId ? state.active : null);
     const peer = groupMode ? (conversation?.display_name || translate("Group call")) : (conversation?.display_name || "Your friend");
+    $("#voiceStageTitle").textContent = peer;
     $("#voicePeerName").textContent = peer;
     setAvatar($("#voicePeerAvatar"), peer, conversation?.avatar_data);
     const localName = state.user?.display_name || translate("You");
@@ -2826,6 +2829,12 @@
     $(".voice-encryption-note").textContent = groupMode ? translate("RELAYED · NOT END-TO-END ENCRYPTED") : "LIVE · AUDIO";
     const hasRemoteVideo = !!voice.remoteVideoStream?.getVideoTracks().some(track => track.readyState === "live" && !track.muted);
     const hasLocalVideo = !!voice.localScreenStream?.getVideoTracks().some(track => track.readyState === "live" && !track.muted);
+    const compactCall = activeCall && voiceStageCompact && !hasRemoteVideo && !hasLocalVideo && !voiceDevicePanelOpen && !callMusic.open;
+    $("#voiceStage").classList.toggle("is-compact", compactCall);
+    $("#voiceStageCompactButton").classList.toggle("hidden", !activeCall || hasRemoteVideo || hasLocalVideo);
+    $("#voiceStageCompactButton").setAttribute("aria-expanded", String(!compactCall));
+    $("#voiceStageCompactButton").textContent = compactCall ? "⌄" : "⌃";
+    $("#voiceStageCompactButton").title = compactCall ? translate("Expand call view") : translate("Compact call view");
     $("#remoteScreenPanel").classList.toggle("hidden", groupMode || !hasRemoteVideo);
     $("#localScreenPanel").classList.toggle("hidden", groupMode || !voice.screenSharing || !hasLocalVideo);
     $("#groupVoiceMedia").classList.toggle("hidden", !groupMode || !$("#groupVoiceMedia .group-screen-tile"));
@@ -3513,6 +3522,7 @@
     renderVoiceControls();
   };
   $("#voiceDeviceButton").onclick = () => { voiceDevicePanelOpen = !voiceDevicePanelOpen; renderVoiceControls(); };
+  $("#voiceStageCompactButton").onclick = () => { voiceStageCompact = !voiceStageCompact; localStorage.setItem("ghostchat.voice.compact", String(voiceStageCompact)); renderVoiceControls(); };
   $("#voiceMusicButton").onclick = () => { callMusic.open = !callMusic.open; renderMusicPanel(); };
   $("#voiceMusicClose").onclick = () => { callMusic.open = false; renderMusicPanel(); };
   $("#voiceMusicForm").addEventListener("submit", event => {
