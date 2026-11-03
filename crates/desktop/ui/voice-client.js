@@ -265,7 +265,9 @@
           // Short transport hiccups can mute a remote track briefly; avoid
           // tearing down a healthy share for that, but never retain a freeze.
           if (activeCall.remoteScreenTimer) clearTimeout(activeCall.remoteScreenTimer);
-          activeCall.remoteScreenTimer = setTimeout(() => { if (track.muted) clear(); }, 900);
+          // Transport mute is recoverable: retain the track so onunmute can
+          // restore the same share without requiring a fresh subscription.
+          activeCall.remoteScreenTimer = setTimeout(() => { if (call === activeCall && track.muted) notify(); }, 900);
         };
         track.onunmute = () => { if (activeCall.remoteScreenTimer) clearTimeout(activeCall.remoteScreenTimer); activeCall.remoteScreenTimer = null; notify(); };
       }

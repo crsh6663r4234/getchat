@@ -34,6 +34,7 @@
       const E = LK.RoomEvent;
       activeRoom
         .on(E.TrackSubscribed, (track) => {
+          if (room !== activeRoom) return;
           if (track.kind !== LK.Track.Kind.Video || track.source !== LK.Track.Source.ScreenShare) return;
           clearRemote();
           remoteTrack = track.mediaStreamTrack;
@@ -45,19 +46,21 @@
           track.mediaStreamTrack.onmute = () => {
             if (remoteMuteTimer) clearTimeout(remoteMuteTimer);
             remoteMuteTimer = setTimeout(() => {
-              if (track.mediaStreamTrack.muted) clearRemote();
+              if (remoteTrack === track.mediaStreamTrack && remoteTrack.muted) api.onState?.({ connected: true, sharing: !!localStream, reconnecting: true });
             }, 1200);
           };
           track.mediaStreamTrack.onunmute = () => {
             if (remoteMuteTimer) clearTimeout(remoteMuteTimer);
             remoteMuteTimer = null;
+            if (remoteTrack === track.mediaStreamTrack) api.onRemoteStream?.(remoteStream);
           };
           api.onRemoteStream?.(remoteStream);
         })
         .on(E.TrackUnsubscribed, track => {
-          if (track.kind === LK.Track.Kind.Video && track.source === LK.Track.Source.ScreenShare) clearRemote();
+          if (room === activeRoom && track.mediaStreamTrack === remoteTrack) clearRemote();
         })
         .on(E.LocalTrackPublished, publication => {
+          if (room !== activeRoom) return;
           const track = publication.track;
           if (track?.kind !== LK.Track.Kind.Video || track.source !== LK.Track.Source.ScreenShare) return;
           localStream = new MediaStream([track.mediaStreamTrack]);
@@ -66,6 +69,7 @@
           emit();
         })
         .on(E.LocalTrackUnpublished, publication => {
+          if (room !== activeRoom) return;
           if (publication.track?.kind === LK.Track.Kind.Video && publication.track.source === LK.Track.Source.ScreenShare) {
             localStream = null;
             api.onLocalStream?.(null);

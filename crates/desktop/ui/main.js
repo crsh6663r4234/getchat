@@ -84,6 +84,7 @@
   let watchParty = null;
   let watchPartyOpen = false;
   let watchPartyLocal = null;
+  let watchPartyBuffering = null;
   const localWatchPrefix = "https://local.watch.ghostchat.invalid/";
   const trText = {
     "Create account": "Hesap oluştur", "Recover": "Kurtar", "Name": "Ad", "Display name": "Görünen ad", "Profile picture": "Profil fotoğrafı", "Choose": "Seç", "Create anonymous account": "Anonim hesap oluştur", "Recover account": "Hesabı kurtar", "Recovery key": "Kurtarma anahtarı", "Your recovery key": "Kurtarma anahtarın", "Copy key": "Anahtarı kopyala", "Save backup": "Yedek kaydet", "Continue to GhostChat": "GhostChat'e devam et", "Messages": "Mesajlar", "Friends": "Arkadaşlar", "Find people": "Kişi bul", "Search messages": "Mesajlarda ara", "Settings": "Ayarlar", "Profile": "Profil", "Connection": "Bağlantı", "Appearance": "Görünüm", "Notifications": "Bildirimler", "Voice and screen sharing": "Sesli sohbet ve ekran paylaşımı", "Updates": "Güncellemeler", "Privacy and data": "Gizlilik ve veriler", "Theme": "Tema", "Text size": "Yazı boyutu", "Dark": "Koyu", "Light": "Açık", "Compact": "Küçük", "Default": "Varsayılan", "Large": "Büyük", "Windows notifications": "Windows bildirimleri", "Send test notification": "Test bildirimi gönder", "Microphone": "Mikrofon", "Speaker": "Hoparlör", "System default": "Sistem varsayılanı", "Refresh audio devices": "Ses aygıtlarını yenile", "Echo cancellation": "Yankı engelleme", "Noise suppression": "Gürültü azaltma", "Automatic microphone gain": "Otomatik mikrofon seviyesi", "Push to talk (hold Space)": "Bas-konuş (Boşluk tuşunu basılı tut)", "Share system audio with screen": "Ekranla sistem sesini paylaş", "Save settings": "Ayarları kaydet", "Check now": "Şimdi kontrol et", "Install and restart": "Yükle ve yeniden başlat", "Save profile": "Profili kaydet", "Remove photo": "Fotoğrafı kaldır", "Your quiet corner": "Sana özel alan", "A little more room to talk.": "Rahatça konuşabileceğin bir alan.", "Find someone by username, send a friend request, then start a private conversation. Your account does not need an email or phone number.": "Etiketiyle kişi bul, arkadaşlık isteği gönder ve özel sohbete başla. Hesap için e-posta veya telefon gerekmez.", "View friends": "Arkadaşları gör", "Search": "Ara", "Search by username or user ID. GhostChat does not publish a public directory.": "Kullanıcı etiketiyle veya kullanıcı kimliğiyle ara. GhostChat herkese açık bir rehber yayınlamaz.", "No conversations yet. Find a friend to start a chat.": "Henüz sohbet yok. Sohbet başlatmak için arkadaş ekle.", "No pending requests.": "Bekleyen istek yok.", "YOUR FRIENDS": "ARKADAŞLARIN", "REQUESTS": "İSTEKLER", "DIRECT MESSAGES": "ÖZEL MESAJLAR", "No friends yet. Use Find people to add someone.": "Henüz arkadaşın yok. Kişi bul bölümünden arkadaş ekleyebilirsin.", "Manage requests and start a private conversation.": "İstekleri yönet ve özel sohbet başlat.", "All friends": "Tüm arkadaşlar", "Accept": "Kabul et", "Ignore": "Yoksay", "Message": "Mesaj", "Add friend": "Arkadaş ekle", "Request sent": "İstek gönderildi", "No friend requests right now.": "Şu anda arkadaşlık isteği yok.", "No matching messages.": "Eşleşen mesaj yok.", "Edited": "Düzenlendi", "Edit": "Düzenle", "Delete": "Sil", "Write a message…": "Mesaj yaz…", "Load earlier messages": "Önceki mesajları yükle", "Call": "Ara", "End call": "Aramayı bitir", "Settings saved.": "Ayarlar kaydedildi.", "Profile saved.": "Profil kaydedildi.", "Friend request accepted.": "Arkadaşlık isteği kabul edildi.", "Request removed.": "İstek kaldırıldı.", "Choose an image file.": "Bir resim dosyası seç.", "That photo is too detailed. Choose a smaller image.": "Fotoğraf çok detaylı. Daha küçük bir görsel seç.", "Could not use that photo.": "Fotoğraf kullanılamadı.", "Checking for updates": "Güncellemeler kontrol ediliyor", "Update required": "Güncelleme gerekli", "Downloading update": "Güncelleme indiriliyor", "Update failed": "Güncelleme başarısız", "Try again": "Yeniden dene", "Getting the latest version ready…": "En yeni sürüm hazırlanıyor…", "This app version is out of date.": "Bu uygulama sürümü güncel değil.", "Preparing the update…": "Güncelleme hazırlanıyor…"
@@ -447,7 +448,12 @@
     video.dataset.partySource = value.source;
     if (video.getAttribute("src") !== url) { video.src = url; video.load(); }
     if (video.readyState > 0 && Math.abs(video.currentTime - value.position) > 1.1) video.currentTime = Math.min(value.position, Number.isFinite(video.duration) ? video.duration : value.position);
-    if (value.playing) void video.play().catch(() => { $("#watchPartyStatus").textContent = tr() ? "İzlemeye katılmak için Oynat'a bas." : "Press Play to join playback."; });
+    if (value.playing) void video.play().catch(error => {
+      // A replaced source aborts an old play promise. It must not overwrite
+      // the status for the new source with a misleading permission message.
+      if (video.dataset.partySource !== value.source || watchParty?.getState().source !== value.source || !watchParty?.getState().playing) return;
+      if (error?.name === "NotAllowedError") $("#watchPartyStatus").textContent = tr() ? "İzlemeye katılmak için Oynat'a bas." : "Press Play to join playback.";
+    });
     else video.pause();
     $("#watchPartyStatus").textContent = local ? (tr() ? "Yerel video · senkron izleme" : "Local video · synchronized") : (tr() ? "Ortak video · oynat, duraklat ve sar" : "Shared video · play, pause and seek");
   }
@@ -3086,8 +3092,9 @@
         state.socket.send(JSON.stringify({ type: "voice_signal", conversation_id: conversationId, to_user_id: peerId, kind, payload }));
       },
       onChange: value => {
+        if (value.remote || !value.source || (watchPartyBuffering && watchPartyBuffering !== value.source)) watchPartyBuffering = null;
         renderWatchParty();
-        if (value.remote && value.action === "source" && !watchPartyOpen) toast(tr() ? "Arkadaşın Watch Party başlattı. Arama panelinden katılabilirsin." : "Your friend started Watch Party. Join from the call panel.");
+        if (value.source && value.remote && value.action === "source" && !watchPartyOpen) toast(tr() ? "Arkadaşın Watch Party başlattı. Arama panelinden katılabilirsin." : "Your friend started Watch Party. Join from the call panel.");
       }
     });
     voiceClient = window.GhostChatVoice.create({
@@ -3795,6 +3802,7 @@
     } catch (error) { toast(error.message, true); }
   };
   $("#watchPartyPlay").onclick = () => {
+    watchPartyBuffering = null;
     try {
       const video = $("#watchPartyVideo");
       if (!video.hasAttribute("src")) throw new Error(tr() ? "Önce videoyu seç." : "Choose the video first.");
@@ -3806,10 +3814,30 @@
     if (Number.isFinite(video.duration)) { try { watchParty.seek(Number(event.currentTarget.value) / 100 * video.duration); } catch (error) { toast(error.message, true); } }
   };
   $("#watchPartyStop").onclick = () => {
+    watchPartyBuffering = null;
     try { watchParty.stop(); }
-    catch (error) { toast(error.message, true); }
+    catch (error) { toast(error.message, true); return; }
+    if (watchPartyLocal) { URL.revokeObjectURL(watchPartyLocal.url); watchPartyLocal = null; }
   };
   $("#watchPartyVideo").addEventListener("loadedmetadata", renderWatchParty);
+  $("#watchPartyVideo").addEventListener("waiting", () => {
+    const value = watchParty?.getState();
+    if (value?.source && value.playing && value.actor === state.user?.id) {
+      watchPartyBuffering = value.source;
+      try { watchParty.pause($("#watchPartyVideo").currentTime); } catch { watchPartyBuffering = null; }
+    }
+    if ($("#watchPartyVideo").hasAttribute("src")) $("#watchPartyStatus").textContent = tr() ? "Video yükleniyor… bağlantı bekleniyor." : "Buffering video… waiting for the connection.";
+  });
+  $("#watchPartyVideo").addEventListener("canplay", () => {
+    const value = watchParty?.getState();
+    if (watchPartyBuffering && value?.source === watchPartyBuffering && value.actor === state.user?.id) {
+      watchPartyBuffering = null;
+      try { watchParty.play($("#watchPartyVideo").currentTime); } catch {}
+    }
+  });
+  $("#watchPartyVideo").addEventListener("playing", () => {
+    if ($("#watchPartyVideo").hasAttribute("src")) $("#watchPartyStatus").textContent = tr() ? "Birlikte izleniyor · senkron açık" : "Watching together · sync active";
+  });
   $("#watchPartyVideo").addEventListener("timeupdate", event => {
     const video = event.currentTarget;
     $("#watchPartySeek").value = Number.isFinite(video.duration) && video.duration > 0 ? video.currentTime / video.duration * 100 : 0;
@@ -3827,7 +3855,7 @@
     const value = watchParty?.getState();
     const video = $("#watchPartyVideo");
     if (!value?.source || !video.hasAttribute("src") || voiceClient?.getState().status !== "connected") return;
-    if (value.actor === state.user?.id && video.readyState >= 2) {
+    if (value.actor === state.user?.id && video.readyState >= 2 && !watchPartyBuffering) {
       try { watchParty.update({ position: video.currentTime, playing: !video.paused && !video.ended }); } catch {}
     } else renderWatchParty();
   }, 4000);

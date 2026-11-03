@@ -12,9 +12,10 @@ const { create, validateSource } = sandbox.window.GhostChatWatchParty;
 function endpoint(id, peer) {
   const sent = [];
   const changes = [];
+  const transport = { fail: false };
   const call = { status: 'connected', conversationId: 'conversation', peerId: peer };
-  const client = create({ getCall: () => call, getUserId: () => id, sendSignal: signal => sent.push(signal), onChange: state => changes.push(state) });
-  return { id, sent, changes, call, client };
+  const client = create({ getCall: () => call, getUserId: () => id, sendSignal: signal => { if (transport.fail) throw new Error('Disconnected'); sent.push(signal); }, onChange: state => changes.push(state) });
+  return { id, sent, changes, call, client, transport };
 }
 function deliver(from, to, index = from.sent.length - 1) {
   const signal = from.sent[index];
@@ -82,4 +83,30 @@ assert.throws(() => C.client.play(0));
 C.client.reset();
 assert.equal(C.client.getState().source, '');
 assert.equal(C.client.getState().revision, 0);
-console.log('Watch Party checks passed: local marker, sync, stop, requests, revision ties, peer scoping, validation and no echoes.');
+
+const E = endpoint('z', 'a');
+E.client.setSource('https://example.com/a.mp4');
+E.client.play(10);
+const beforeFailure = E.client.getState();
+const changesBeforeFailure = E.changes.length;
+E.transport.fail = true;
+assert.throws(() => E.client.setSource('https://example.com/failed.mp4'), /Disconnected/);
+assert.equal(E.client.getState().source, beforeFailure.source, 'A failed send must not replace the source locally');
+assert.equal(E.client.getState().revision, beforeFailure.revision, 'A failed send must not advance the revision');
+assert.equal(E.client.getState().playing, beforeFailure.playing);
+assert.equal(E.changes.length, changesBeforeFailure, 'Unsent state must not notify the UI');
+assert.throws(() => E.client.requestState(), /Disconnected/);
+assert.equal(E.client.handleSignal({ kind: 'watch_party', conversation_id: E.call.conversationId, from_user_id: E.call.peerId, payload: {
+  source: beforeFailure.source, playing: beforeFailure.playing, position: beforeFailure.position,
+  revision: beforeFailure.revision, sentAt: wallClock, action: 'state',
+} }), false, 'A failed resync request must not authorize an otherwise stale state response');
+E.transport.fail = false;
+E.call.conversationId = 'new-conversation';
+const beforeNewCall = E.sent.length;
+assert.throws(() => E.client.play(20), /Choose a video/);
+assert.equal(E.sent.length, beforeNewCall, 'A late play event must not publish an old source into a new call');
+assert.equal(E.client.getState().source, '');
+E.client.setSource('https://example.com/new.mp4');
+assert.equal(E.sent.at(-1).conversationId, 'new-conversation');
+assert.equal(E.sent.at(-1).payload.revision, 1);
+console.log('Watch Party checks passed: local marker, sync, stop, requests, revision ties, peer scoping, validation, no echoes, failed-send rollback and call transitions.');

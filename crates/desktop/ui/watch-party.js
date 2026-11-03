@@ -71,9 +71,16 @@
       bind(call);
       const revision = state.revision + 1;
       if (revision > MAX_REVISION) throw new Error("Restart Watch Party to continue syncing.");
+      const previousState = state;
+      const previousAnchor = anchor;
       state = { ...snapshot(), ...patch, revision, actor: String(api.getUserId?.() || ""), updatedAt: Date.now(), remote: false, action };
       anchor = performance.now();
-      send(action, call);
+      try { send(action, call); }
+      catch (error) {
+        state = previousState;
+        anchor = previousAnchor;
+        throw error;
+      }
       notify();
       return snapshot();
     }
@@ -84,6 +91,11 @@
       return publish("source", { source: "", playing: false, position: 0 });
     }
     function update(patch = {}) {
+      const call = currentCall();
+      if (!call) throw new Error("Join a direct call before starting Watch Party.");
+      // Clear the previous call's source before validating this operation.
+      // Otherwise a late play/seek could reuse stale media in a new call.
+      bind(call);
       if (!state.source) throw new Error("Choose a video before starting playback.");
       const position = patch.position === undefined ? snapshot().position : clampPosition(patch.position);
       const playing = patch.playing === undefined ? state.playing : !!patch.playing;
@@ -129,10 +141,13 @@
       const call = currentCall();
       if (!call) return;
       bind(call);
+      const previousAwaitingState = awaitingState;
       awaitingState = true;
-      api.sendSignal({ conversationId: call.conversationId, peerId: call.peerId, kind: "watch_party", payload: {
-        source: "", playing: false, position: 0, revision: Math.max(1, state.revision), sentAt: Date.now(), action: "request",
-      } });
+      try {
+        api.sendSignal({ conversationId: call.conversationId, peerId: call.peerId, kind: "watch_party", payload: {
+          source: "", playing: false, position: 0, revision: Math.max(1, state.revision), sentAt: Date.now(), action: "request",
+        } });
+      } catch (error) { awaitingState = previousAwaitingState; throw error; }
     }
     return {
       getState: snapshot, setSource, stop, update, handleSignal, reset, requestState,
