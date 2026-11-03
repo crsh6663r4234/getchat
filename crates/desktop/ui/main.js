@@ -79,6 +79,7 @@
   let voiceStageCompact = localStorage.getItem("ghostchat.voice.compact") !== "false";
   let voiceCallOpenedAt = 0;
   let screenPreviewHidden = false;
+  let screenViewerGroup = false;
   let callNoteTimer = null;
   const callMusic = { open: false, queue: [], index: -1, playing: false, applyingRemote: false };
   const trText = {
@@ -3026,7 +3027,7 @@
     const localScreenStream = voice.localScreenStream?.getVideoTracks().some(track => track.readyState === "live" && !track.muted) ? voice.localScreenStream : null;
     setVideoStream(video, remoteScreenStream);
     setVideoStream(localVideo, localScreenStream);
-    if ($("#screenViewerDialog").open) {
+    if ($("#screenViewerDialog").open && !screenViewerGroup) {
       if (remoteScreenStream) setVideoStream($("#screenViewerVideo"), remoteScreenStream);
       else $("#screenViewerDialog").close();
     }
@@ -3088,6 +3089,10 @@
       onError: message => toast(message, true),
     });
     groupVoiceClient = window.GhostChatGroupVoice.create({
+      onScreenExpand: stream => openScreenViewer(stream, true),
+      onScreenRemoved: stream => {
+        if (screenViewerGroup && (!stream || $("#screenViewerVideo").srcObject === stream)) $("#screenViewerDialog").close();
+      },
       getSettings: voiceSettings,
       getUserId: () => state.user?.id || "",
       getDisplayName: () => state.user?.display_name || translate("You"),
@@ -3763,12 +3768,19 @@
   };
   $("#expandRemoteScreen").onclick = () => {
     const stream = voiceClient.getState().remoteVideoStream;
+    openScreenViewer(stream);
+  };
+  function openScreenViewer(stream, group = false) {
     if (!stream?.getVideoTracks().some(track => track.readyState === "live")) return;
+    screenViewerGroup = group;
     openOverlayDialog($("#screenViewerDialog"));
     setVideoStream($("#screenViewerVideo"), stream);
-  };
+  }
   $("#remoteScreen").addEventListener("dblclick", () => $("#expandRemoteScreen").click());
-  $("#screenViewerDialog").addEventListener("close", () => clearVideoElement($("#screenViewerVideo")));
+  $("#screenViewerDialog").addEventListener("close", () => {
+    screenViewerGroup = false;
+    clearVideoElement($("#screenViewerVideo"));
+  });
   $("#voiceRefreshScreenButton").onclick = () => {
     const action = groupVoiceUiState.status !== "idle" ? groupVoiceClient.refreshScreenSharing() : voiceClient.refreshScreenSharing();
     void action.catch(error => toast(error.message, true));

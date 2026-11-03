@@ -84,6 +84,7 @@
       }
       const screen = screenElements.get(sid);
       if (screen) {
+        api.onScreenRemoved?.(screen.video.srcObject);
         track.detach(screen.video);
         try { screen.video.pause(); } catch {}
         screen.video.srcObject = null;
@@ -95,6 +96,9 @@
     }
 
     function addTrack(track, participant) {
+      // Re-subscriptions may deliver the same SID after a reconnect.
+      // Detach the old tile before mounting its replacement.
+      if (audioElements.has(track.sid) || screenElements.has(track.sid)) removeTrack(track);
       const accountId = identityAccountId(participant);
       if (track.kind === LK.Track.Kind.Audio) {
         const element = track.attach();
@@ -117,7 +121,13 @@
         video.playsInline = true;
         video.muted = true;
         video.className = "group-screen-video";
-        tile.append(title, video);
+        const expand = document.createElement("button");
+        expand.className = "screen-expand-button";
+        expand.type = "button";
+        expand.textContent = api.translate("Expand");
+        expand.onclick = () => api.onScreenExpand?.(video.srcObject);
+        video.ondblclick = expand.onclick;
+        tile.append(title, video, expand);
         document.querySelector("#groupVoiceMedia").append(tile);
         screenElements.set(track.sid, { tile, video });
         void video.play().catch(() => {});
@@ -161,6 +171,7 @@
         .on(E.Reconnecting, () => publishState({ status: "reconnecting" }))
         .on(E.Reconnected, () => publishState({ status: "connected" }))
         .on(E.Disconnected, () => {
+          api.onScreenRemoved?.();
           for (const [sid, element] of audioElements) element.remove();
           for (const screen of screenElements.values()) screen.tile.remove();
           audioElements.clear(); screenElements.clear();
@@ -212,6 +223,7 @@
     }
 
     async function leave() {
+      api.onScreenRemoved?.();
       const activeRoom = room;
       room = null;
       screenOperation = null;
