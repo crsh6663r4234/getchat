@@ -44,6 +44,7 @@
         screenSharing: !!call?.screenStream,
         screenStarting: !!call?.screenStarting,
         screenQuality: call?.screenQuality || null,
+        networkQuality: call?.networkQuality || null,
         localAudioStream: call?.localStream || null,
         localScreenStream: call?.screenStream || null,
         remoteAudioStream: call?.remoteAudioStream || null,
@@ -318,6 +319,45 @@
       if (activeCall) activeCall.shareMonitor = null;
     }
 
+    function stopConnectionMonitor(activeCall) {
+      if (activeCall?.connectionMonitor) clearInterval(activeCall.connectionMonitor);
+      if (activeCall) activeCall.connectionMonitor = null;
+    }
+
+    // Keep quality feedback derived from the actual selected ICE path. This is
+    // deliberately separate from screen-quality adaptation: a call can be
+    // healthy while a high-resolution screen layer is temporarily reduced.
+    function startConnectionMonitor(activeCall) {
+      if (activeCall?.connectionMonitor) return;
+      const sample = async () => {
+        if (call !== activeCall || activeCall.pc?.connectionState !== "connected") return stopConnectionMonitor(activeCall);
+        try {
+          const reports = await activeCall.pc.getStats();
+          let pair = null; let inbound = null;
+          reports.forEach(report => {
+            if (report.type === "candidate-pair" && (report.selected || report.nominated) && report.state === "succeeded") pair = report;
+            if (report.type === "remote-inbound-rtp" && (report.kind === "audio" || report.kind === "video")) inbound = report;
+          });
+          const rtt = Number(inbound?.roundTripTime || pair?.currentRoundTripTime || 0);
+          const lost = Number(inbound?.packetsLost || 0);
+          const received = Number(inbound?.packetsReceived || 0);
+          const previous = activeCall.networkSample || { lost, received };
+          const lostDelta = Math.max(0, lost - previous.lost);
+          const receivedDelta = Math.max(0, received - previous.received);
+          activeCall.networkSample = { lost, received };
+          const loss = (lostDelta || receivedDelta) ? lostDelta / Math.max(1, lostDelta + receivedDelta) : 0;
+          const level = rtt > 0.42 || loss > 0.06 ? "weak" : rtt > 0.22 || loss > 0.022 ? "fair" : "good";
+          const next = { level, rtt: Math.round(rtt * 1000), loss: Math.round(loss * 100), relay: pair?.localCandidateType === "relay" || pair?.remoteCandidateType === "relay" };
+          if (JSON.stringify(activeCall.networkQuality) !== JSON.stringify(next)) {
+            activeCall.networkQuality = next;
+            notify();
+          }
+        } catch (error) { console.debug("Call quality sampling failed.", error); }
+      };
+      void sample();
+      activeCall.connectionMonitor = setInterval(() => { void sample(); }, 2500);
+    }
+
     // Stop the direct compatibility publisher in one place.  Source tracks
     // emit `ended` while the user is stopping a share, and calling the old
     // toggle function from that event could race a new share/refresh.  Clear
@@ -520,6 +560,7 @@
       if (call) {
         stopAudioProcessor(call.audioProcessor);
         stopShareMonitor(call);
+        stopConnectionMonitor(call);
         void call.ghostShare?.leave?.();
         for (const stream of [call.localStream, call.rawStream, call.screenStream]) {
           stream?.getTracks().forEach(track => { track.onended = null; track.stop(); });
@@ -576,7 +617,11 @@
       };
       pc.onconnectionstatechange = () => {
         if (!call || call !== activeCall) return;
-        if (pc.connectionState === "connected") { activeCall.status = "connected"; clearTimeout(ringTimer); ringTimer = null; }
+        if (pc.connectionState === "connected") {
+          activeCall.status = "connected";
+          clearTimeout(ringTimer); ringTimer = null;
+          startConnectionMonitor(activeCall);
+        }
         else if (pc.connectionState === "disconnected") activeCall.status = "reconnecting";
         else if (pc.connectionState === "failed") {
           closeCall({ message: "The call could not cross this network. A TURN server may be needed." });

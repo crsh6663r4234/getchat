@@ -2882,14 +2882,17 @@
       }
     }
     updateVoiceCallDuration();
+    const qualityLabels = state.language === "tr"
+      ? { good: "● Bağlantı iyi", fair: "● Bağlantı orta", weak: "● Bağlantı zayıf" }
+      : { good: "● Connection good", fair: "● Connection fair", weak: "● Connection weak" };
     const connectionQuality = voice.status === "connected"
-      ? (state.language === "tr" ? "● Bağlantı canlı" : "● Connection live")
+      ? (qualityLabels[voice.networkQuality?.level] || (state.language === "tr" ? "● Bağlantı canlı" : "● Connection live"))
       : voice.status === "reconnecting"
         ? (state.language === "tr" ? "● Yeniden bağlanıyor" : "● Reconnecting")
         : (state.language === "tr" ? "● Bağlanıyor" : "● Connecting");
     $("#voiceConnectionQuality").textContent = connectionQuality;
-    $("#voiceConnectionQuality").classList.toggle("is-live", voice.status === "connected");
-    $("#voiceConnectionQuality").classList.toggle("is-warning", voice.status === "reconnecting");
+    $("#voiceConnectionQuality").classList.toggle("is-live", voice.status === "connected" && voice.networkQuality?.level !== "weak");
+    $("#voiceConnectionQuality").classList.toggle("is-warning", voice.status === "reconnecting" || voice.networkQuality?.level === "weak");
     $("#voiceDeviceRow").classList.toggle("hidden", !activeCall || !voiceDevicePanelOpen);
     $("#voiceDeviceButton").classList.toggle("hidden", !activeCall);
     $("#voiceDeviceButton").setAttribute("aria-expanded", String(voiceDevicePanelOpen));
@@ -2916,8 +2919,13 @@
     $("#voiceStageDecline").classList.toggle("hidden", groupMode || voice.status !== "incoming");
     $("#voiceHangupButton").querySelector("span:last-child").textContent = translate(groupMode ? "Leave call" : "End call");
     $("#voiceHangupButton").classList.toggle("hidden", !activeCall);
+    const lossLabel = state.language === "tr" ? "kayıp" : "loss";
+    const relayLabel = state.language === "tr" ? "aktarma" : "relay";
+    const connectionDetail = !groupMode && voice.networkQuality
+      ? `${voice.networkQuality.rtt ? `${voice.networkQuality.rtt} ms` : ""}${voice.networkQuality.loss ? ` · ${voice.networkQuality.loss}% ${lossLabel}` : ""}${voice.networkQuality.relay ? ` · ${relayLabel}` : ""}`.replace(/^ · | · $/g, "")
+      : "";
     const shareQualityNotice = !groupMode && voice.screenSharing && voice.screenQuality
-      ? `GhostShare · ${translate(voice.screenQuality.label)}${voice.screenQuality.state === "network-adjusted" ? ` · ${translate("connection adjusted")}` : voice.screenQuality.state === "recovered" ? ` · ${translate("quality recovered")}` : ""}.`
+      ? `GhostShare · ${translate(voice.screenQuality.label)}${voice.screenQuality.state === "network-adjusted" ? ` · ${translate("connection adjusted")}` : voice.screenQuality.state === "recovered" ? ` · ${translate("quality recovered")}` : ""}${connectionDetail ? ` · ${connectionDetail}` : ""}.`
       : "";
     $("#voiceDeviceNotice").textContent = translate(shareQualityNotice || (groupMode && activeCall
       ? translate(!voice.micAvailable ? "Group voice is relayed by a LiveKit SFU and is not end-to-end encrypted. No microphone was found; you joined muted." : "Group voice is relayed by a LiveKit SFU and is not end-to-end encrypted. Your microphone is off.")
