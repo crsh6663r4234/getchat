@@ -44,6 +44,7 @@
         screenSharing: !!call?.screenStream,
         screenStarting: !!call?.screenStarting,
         screenQuality: call?.screenQuality || null,
+        screenTransport: call?.screenTransport || null,
         networkQuality: call?.networkQuality || null,
         callNote: call?.callNote || "",
         localAudioStream: call?.localStream || null,
@@ -370,6 +371,7 @@
       activeCall.screenStream = null;
       stopShareMonitor(activeCall);
       activeCall.screenQuality = null;
+      activeCall.screenTransport = null;
       const task = (async () => {
         for (const track of stream.getTracks()) {
           const sender = activeCall.pc?.getSenders().find(item => item.track === track);
@@ -465,6 +467,7 @@
           const wasSharing = !!activeCall.screenStream;
           activeCall.screenStream = stream;
           activeCall.screenQuality = stream ? { profile: shareProfiles()[0].id, label: shareProfiles()[0].label, state: "sfu" } : null;
+          activeCall.screenTransport = stream ? "sfu" : null;
           if (!stream && wasSharing) {
             try { send(activeCall.conversationId, activeCall.peerId, "screen_stopped", null); } catch {}
           }
@@ -489,6 +492,7 @@
           activeCall.ghostShare = null;
           activeCall.screenStream = null;
           activeCall.screenQuality = null;
+          activeCall.screenTransport = null;
           send(activeCall.conversationId, activeCall.peerId, "screen_stopped", null);
         } else {
           await share.start(activeCall.conversationId, ghostShareOptions(api.getSettings()));
@@ -823,6 +827,7 @@
           clearRemoteScreen(call);
           void call.ghostShare?.leave?.();
           call.ghostShare = null;
+          call.screenTransport = null;
         } else if (event.kind === "ghostshare_started") {
           await watchGhostShare(call);
         } else if (event.kind === "call_note" && typeof event.payload?.text === "string") {
@@ -865,6 +870,7 @@
         const stream = await captureScreen(settings);
         if (!call || call !== activeCall) { stream.getTracks().forEach(track => track.stop()); return; }
         call.screenStream = stream;
+        call.screenTransport = "direct";
         for (const track of stream.getTracks()) {
           track.onended = () => {
             if (call === activeCall && activeCall.screenStream === stream) {
@@ -953,6 +959,7 @@
           };
         }
         call.screenStream = nextStream;
+        call.screenTransport = "direct";
         const videoTrack = nextStream.getVideoTracks()[0];
         if (videoTrack) {
           await tuneScreenSender(findVideoTransceiver(call)?.sender, nextStream.__ghostShareProfiles?.[0]);

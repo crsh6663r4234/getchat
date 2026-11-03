@@ -2925,8 +2925,11 @@
     const connectionDetail = !groupMode && voice.networkQuality
       ? `${voice.networkQuality.rtt ? `${voice.networkQuality.rtt} ms` : ""}${voice.networkQuality.loss ? ` · ${voice.networkQuality.loss}% ${lossLabel}` : ""}${voice.networkQuality.relay ? ` · ${relayLabel}` : ""}`.replace(/^ · | · $/g, "")
       : "";
+    const shareTransportLabel = voice.screenTransport === "direct"
+      ? (state.language === "tr" ? "Doğrudan uyumluluk modu" : "Direct compatibility mode")
+      : "GhostShare SFU";
     const shareQualityNotice = !groupMode && voice.screenSharing && voice.screenQuality
-      ? `GhostShare · ${translate(voice.screenQuality.label)}${voice.screenQuality.state === "network-adjusted" ? ` · ${translate("connection adjusted")}` : voice.screenQuality.state === "recovered" ? ` · ${translate("quality recovered")}` : ""}${connectionDetail ? ` · ${connectionDetail}` : ""}.`
+      ? `${shareTransportLabel} · ${translate(voice.screenQuality.label)}${voice.screenQuality.state === "network-adjusted" ? ` · ${translate("connection adjusted")}` : voice.screenQuality.state === "recovered" ? ` · ${translate("quality recovered")}` : ""}${connectionDetail ? ` · ${connectionDetail}` : ""}.`
       : "";
     $("#voiceDeviceNotice").textContent = translate(shareQualityNotice || (groupMode && activeCall
       ? translate(!voice.micAvailable ? "Group voice is relayed by a LiveKit SFU and is not end-to-end encrypted. No microphone was found; you joined muted." : "Group voice is relayed by a LiveKit SFU and is not end-to-end encrypted. Your microphone is off.")
