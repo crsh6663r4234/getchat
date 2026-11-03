@@ -3642,11 +3642,13 @@
     };
   }
   $("#voiceNvidiaBroadcast").onchange = async event => {
-    const enabled = event.currentTarget.checked;
+    const control = event.currentTarget;
+    const enabled = control.checked;
     await refreshAudioDevices({ requestPermission: false, quiet: true });
     const nvidiaMic = nvidiaBroadcastDeviceId();
+    control.checked = enabled;
     if (enabled && !nvidiaMic) {
-      event.currentTarget.checked = false;
+      control.checked = false;
       updateNvidiaBroadcastState({ available: false });
       toast(state.language === "tr" ? "NVIDIA Broadcast mikrofonu bulunamadı. NVIDIA Broadcast’i kurup çalıştır, sonra aygıtları yenile." : "NVIDIA Broadcast microphone was not found. Install and start NVIDIA Broadcast, then refresh devices.", true);
       return;

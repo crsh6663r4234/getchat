@@ -135,6 +135,7 @@
     function stopAudioProcessor(processor) {
       if (!processor) return;
       if (processor.frame) cancelAnimationFrame(processor.frame);
+      if (processor.timer) clearInterval(processor.timer);
       try { processor.source?.disconnect(); processor.highPass?.disconnect(); processor.lowPass?.disconnect(); processor.compressor?.disconnect(); processor.gate?.disconnect(); processor.analyser?.disconnect(); } catch {}
       try { processor.context?.close(); } catch {}
     }
@@ -156,7 +157,9 @@
         const gate = context.createGain(); gate.gain.value = 1;
         const analyser = context.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0.68;
         const destination = context.createMediaStreamDestination();
-        source.connect(highPass); highPass.connect(lowPass); lowPass.connect(compressor); compressor.connect(gate); gate.connect(destination); gate.connect(analyser);
+        // Detect speech before attenuation. Listening after the gate locks it
+        // closed: once silence is produced, new speech cannot reopen it.
+        source.connect(highPass); highPass.connect(lowPass); lowPass.connect(compressor); compressor.connect(gate); gate.connect(destination); compressor.connect(analyser);
         const processor = { context, source, highPass, lowPass, compressor, gate, analyser, destination, gateOpen: true, noiseFloorDb: -68, frame: 0 };
         const samples = new Float32Array(analyser.fftSize);
         const spectrum = new Float32Array(analyser.frequencyBinCount);
@@ -184,13 +187,14 @@
             processor.gateOpen = shouldOpen;
             // A short fade keeps speech natural while closing quickly enough
             // that keyboard/fan noise is not sent between words.
-            gate.gain.setTargetAtTime(shouldOpen ? 1 : 0, context.currentTime, shouldOpen ? 0.012 : 0.055);
+            // Keep a quiet floor so uncertain detection never deletes speech.
+            gate.gain.setTargetAtTime(shouldOpen ? 1 : 0.08, context.currentTime, shouldOpen ? 0.012 : 0.055);
             notify();
           }
-          processor.frame = requestAnimationFrame(updateGate);
         };
         void context.resume().catch(() => {});
         updateGate();
+        processor.timer = setInterval(updateGate, 50);
         return { stream: destination.stream, processor, effective };
       } catch (error) {
         console.debug("Speech processing graph was unavailable; using the WebRTC capture track.", error);
@@ -513,13 +517,28 @@
       const previousStream = activeCall.localStream;
       const previousRawStream = activeCall.rawStream;
       const previousTrack = activeCall.localAudioTrack;
-      stopAudioProcessor(activeCall.audioProcessor);
-      const prepared = createAudioProcessor(rawStream, activeCall);
+      const previousProcessor = activeCall.audioProcessor;
+      let prepared = createAudioProcessor(rawStream, activeCall);
+      if (prepared.processor?.context.state !== undefined && prepared.processor.context.state !== "running") {
+        // A suspended AudioContext outputs silence. Retain browser microphone
+        // processing rather than publishing a silent synthetic track.
+        stopAudioProcessor(prepared.processor);
+        prepared = { stream: rawStream, processor: null, effective: rawStream?.getAudioTracks()[0]?.getSettings?.() || {} };
+      }
       const stream = prepared.stream;
       const track = stream?.getAudioTracks()[0] || null;
       const transceiver = findAudioTransceiver(activeCall) || activeCall.pc.addTransceiver("audio", { direction: track ? "sendrecv" : "recvonly" });
       activeCall.audioTransceiver = transceiver;
-      if (transceiver.sender.track !== track) await transceiver.sender.replaceTrack(track);
+      try {
+        if (transceiver.sender.track !== track) await transceiver.sender.replaceTrack(track);
+      } catch (error) {
+        stopAudioProcessor(prepared.processor);
+        for (const stream of new Set([rawStream, prepared.stream])) {
+          if (stream && stream !== previousStream && stream !== previousRawStream) stream.getTracks().forEach(item => item.stop());
+        }
+        throw error;
+      }
+      stopAudioProcessor(previousProcessor);
       activeCall.localStream = stream || null;
       activeCall.rawStream = rawStream || null;
       activeCall.localAudioTrack = track;
@@ -529,7 +548,7 @@
         noiseSuppression: prepared.effective?.noiseSuppression === true,
         autoGainControl: prepared.effective?.autoGainControl === true,
         voiceIsolation: prepared.effective?.voiceIsolation === true,
-        voiceFocus: !!api.getSettings().voiceFocus,
+        voiceFocus: !!prepared.processor && !!api.getSettings().voiceFocus,
       } : null;
       if (track) {
         const settings = api.getSettings();
@@ -1018,14 +1037,22 @@
     // Replacing the active track makes saved settings take effect mid-call.
     async function applyAudioSettings() {
       if (!call?.localAudioTrack) { notify(); return; }
-      const keepMuted = !!call.manualMute;
-      const microphone = await tryCaptureMicrophone(api.getSettings());
-      if (!microphone.stream) {
-        call.micUnavailableReason = microphone.error || "The microphone could not apply the new audio settings.";
-        notify();
-        throw new Error(call.micUnavailableReason);
-      }
-      await attachMicrophone(call, microphone.stream, { keepMuted });
+      const activeCall = call;
+      const previous = activeCall.audioSettingsTask || Promise.resolve();
+      const task = previous.catch(() => {}).then(async () => {
+        if (call !== activeCall) return;
+        const microphone = await tryCaptureMicrophone(api.getSettings());
+        if (call !== activeCall) { microphone.stream?.getTracks().forEach(track => track.stop()); return; }
+        if (!microphone.stream) {
+          activeCall.micUnavailableReason = microphone.error || "The microphone could not apply the new audio settings.";
+          notify();
+          throw new Error(activeCall.micUnavailableReason);
+        }
+        await attachMicrophone(activeCall, microphone.stream, { keepMuted: !!activeCall.manualMute });
+      });
+      activeCall.audioSettingsTask = task;
+      try { await task; }
+      finally { if (activeCall.audioSettingsTask === task) activeCall.audioSettingsTask = null; }
     }
 
     function setPushToTalk(active) {
