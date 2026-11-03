@@ -125,9 +125,9 @@
       const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};
       const options = {
         ...(settings.microphoneId ? { deviceId: settings.microphoneId } : {}),
-        echoCancellation: !!settings.echoCancellation,
-        noiseSuppression: !!settings.noiseSuppression,
-        autoGainControl: !!settings.autoGainControl,
+        echoCancellation: !settings.nvidiaBroadcast && !!settings.echoCancellation,
+        noiseSuppression: !settings.nvidiaBroadcast && !!settings.noiseSuppression,
+        autoGainControl: !settings.nvidiaBroadcast && !!settings.autoGainControl,
       };
       // Keep the SFU capture speech-shaped as well: mono avoids needless
       // room noise bandwidth and the isolation hint is used when WebView2

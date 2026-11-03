@@ -87,9 +87,10 @@
       const set = (key, value) => { if (fallback || supported[key] !== false) audio[key] = value; };
       // Ask for one mono, low-latency speech channel. The fallback keeps this
       // usable on older WebView2 runtimes which do not understand every hint.
-      set("echoCancellation", fallback ? !!settings.echoCancellation : (settings.echoCancellation ? { ideal: "all" } : false));
-      set("noiseSuppression", !!settings.noiseSuppression);
-      set("autoGainControl", !!settings.autoGainControl);
+      const appProcessing = !settings.nvidiaBroadcast;
+      set("echoCancellation", appProcessing && (fallback ? !!settings.echoCancellation : (settings.echoCancellation ? { ideal: "all" } : false)));
+      set("noiseSuppression", appProcessing && !!settings.noiseSuppression);
+      set("autoGainControl", appProcessing && !!settings.autoGainControl);
       if (!fallback) {
         set("channelCount", { ideal: 1 });
         set("sampleRate", { ideal: 48_000 });
@@ -139,6 +140,7 @@
       const rawTrack = rawStream?.getAudioTracks?.()[0];
       if (!rawTrack) return { stream: null, processor: null, effective: null };
       const effective = rawTrack.getSettings?.() || {};
+      if (api.getSettings().nvidiaBroadcast) return { stream: rawStream, processor: null, effective };
       const AudioContextType = window.AudioContext || window.webkitAudioContext;
       if (!AudioContextType) return { stream: rawStream, processor: null, effective };
       try {
@@ -149,11 +151,12 @@
         const compressor = context.createDynamicsCompressor();
         compressor.threshold.value = -30; compressor.knee.value = 20; compressor.ratio.value = 4; compressor.attack.value = 0.003; compressor.release.value = 0.18;
         const gate = context.createGain(); gate.gain.value = 1;
-        const analyser = context.createAnalyser(); analyser.fftSize = 1024; analyser.smoothingTimeConstant = 0.75;
+        const analyser = context.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0.68;
         const destination = context.createMediaStreamDestination();
         source.connect(highPass); highPass.connect(lowPass); lowPass.connect(compressor); compressor.connect(gate); gate.connect(destination); gate.connect(analyser);
-        const processor = { context, source, highPass, lowPass, compressor, gate, analyser, destination, gateOpen: true, frame: 0 };
+        const processor = { context, source, highPass, lowPass, compressor, gate, analyser, destination, gateOpen: true, noiseFloorDb: -68, frame: 0 };
         const samples = new Float32Array(analyser.fftSize);
+        const spectrum = new Float32Array(analyser.frequencyBinCount);
         const updateGate = () => {
           if (call !== activeCall) return;
           analyser.getFloatTimeDomainData(samples);
@@ -161,9 +164,18 @@
           for (const sample of samples) energy += sample * sample;
           const db = 20 * Math.log10(Math.max(Math.sqrt(energy / samples.length), 0.00001));
           const sensitivity = Math.max(1, Math.min(100, Number(api.getSettings().voiceFocusSensitivity) || 36));
-          const threshold = -68 + sensitivity * 0.34;
+          analyser.getFloatFrequencyData(spectrum);
+          const hzPerBin = context.sampleRate / analyser.fftSize;
+          const start = Math.max(1, Math.floor(120 / hzPerBin));
+          const end = Math.min(spectrum.length, Math.ceil(3_800 / hzPerBin));
+          let speechDb = -100;
+          for (let index = start; index < end; index++) speechDb = Math.max(speechDb, spectrum[index]);
+          const threshold = -65 + sensitivity * 0.22;
+          if (speechDb < threshold - 4) processor.noiseFloorDb = processor.noiseFloorDb * 0.97 + speechDb * 0.03;
+          const requiredSnr = Math.max(5, 13 - sensitivity * 0.075);
+          const isSpeech = db >= threshold && speechDb >= processor.noiseFloorDb + requiredSnr;
           const now = performance.now();
-          if (db >= threshold) processor.holdUntil = now + 420;
+          if (isSpeech) processor.holdUntil = now + 460;
           const shouldOpen = !api.getSettings().voiceFocus || now < (processor.holdUntil || 0);
           if (processor.gateOpen !== shouldOpen) {
             processor.gateOpen = shouldOpen;

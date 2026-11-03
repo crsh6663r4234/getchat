@@ -656,6 +656,7 @@
       echoCancellation: localStorage.getItem("ghostchat.voice.echo") !== "false",
       noiseSuppression: localStorage.getItem("ghostchat.voice.noise") !== "false",
       autoGainControl: localStorage.getItem("ghostchat.voice.gain") !== "false",
+      nvidiaBroadcast: localStorage.getItem("ghostchat.voice.nvidiaBroadcast") === "true",
       voiceFocus: localStorage.getItem("ghostchat.voice.focus") !== "false",
       voiceFocusSensitivity: Number(localStorage.getItem("ghostchat.voice.focusSensitivity") || "36"),
       pushToTalk: localStorage.getItem("ghostchat.voice.ptt") === "true",
@@ -673,6 +674,7 @@
     localStorage.setItem("ghostchat.voice.echo", String($("#voiceEchoCancellation").checked));
     localStorage.setItem("ghostchat.voice.noise", String($("#voiceNoiseSuppression").checked));
     localStorage.setItem("ghostchat.voice.gain", String($("#voiceAutoGain").checked));
+    localStorage.setItem("ghostchat.voice.nvidiaBroadcast", String($("#voiceNvidiaBroadcast").checked));
     localStorage.setItem("ghostchat.voice.focus", String($("#voiceFocus").checked));
     localStorage.setItem("ghostchat.voice.focusSensitivity", $("#voiceFocusSensitivity").value);
     localStorage.setItem("ghostchat.voice.ptt", String($("#voicePushToTalk").checked));
@@ -687,6 +689,7 @@
     $("#voiceEchoCancellation").checked = settings.echoCancellation;
     $("#voiceNoiseSuppression").checked = settings.noiseSuppression;
     $("#voiceAutoGain").checked = settings.autoGainControl;
+    $("#voiceNvidiaBroadcast").checked = settings.nvidiaBroadcast;
     $("#voiceFocus").checked = settings.voiceFocus;
     $("#voiceFocusSensitivity").value = String(Math.max(1, Math.min(100, settings.voiceFocusSensitivity || 36)));
     $("#voicePushToTalk").checked = settings.pushToTalk;
@@ -706,7 +709,20 @@
       if (settings.speakerId && ![...select.options].some(option => option.value === settings.speakerId)) select.add(new Option("Previously selected speaker", settings.speakerId));
       select.value = settings.speakerId;
     }
+    updateNvidiaBroadcastState();
     void checkVoiceRelaySupport();
+  }
+
+  function nvidiaBroadcastDeviceId() { return localStorage.getItem("ghostchat.voice.nvidiaMicrophone") || ""; }
+  function updateNvidiaBroadcastState({ available = !!nvidiaBroadcastDeviceId() } = {}) {
+    const enabled = $("#voiceNvidiaBroadcast").checked;
+    const status = $("#voiceNvidiaBroadcastStatus");
+    [$("#voiceEchoCancellation"), $("#voiceNoiseSuppression"), $("#voiceAutoGain"), $("#voiceFocus")].forEach(control => { control.disabled = enabled; });
+    status.textContent = enabled && available
+      ? (state.language === "tr" ? "NVIDIA Broadcast mikrofonu seçili. Çifte işlemeyi önlemek için GhostChat’in yerel filtreleri kapalı." : "NVIDIA Broadcast microphone is selected. GhostChat’s local filters are off to avoid double processing.")
+      : enabled
+        ? (state.language === "tr" ? "NVIDIA Broadcast bulunamadı. Broadcast uygulamasını açıp aygıtları yenile." : "NVIDIA Broadcast was not found. Start Broadcast and refresh audio devices.")
+        : (state.language === "tr" ? "RTX temizleme için NVIDIA Broadcast kurulmalı; uygun cihaz bulunursa burada otomatik seçilir." : "Install NVIDIA Broadcast for RTX processing; its microphone is selected here when available.");
   }
 
   async function checkVoiceRelaySupport() {
@@ -753,6 +769,9 @@
       const devices = await navigator.mediaDevices.enumerateDevices();
       const selectedMic = voiceSettings().microphoneId; const selectedSpeaker = voiceSettings().speakerId;
       const microphones = devices.filter(device => device.kind === "audioinput");
+      const nvidiaMic = microphones.find(device => /nvidia\s+broadcast/i.test(device.label || ""));
+      if (nvidiaMic) localStorage.setItem("ghostchat.voice.nvidiaMicrophone", nvidiaMic.deviceId);
+      else localStorage.removeItem("ghostchat.voice.nvidiaMicrophone");
       function fill(select, kind, selected, fallback) {
         if (!select) return;
         const options = devices.filter(device => device.kind === kind);
@@ -765,6 +784,7 @@
       const notice = $("#voiceDeviceNotice");
       if (!microphones.length) notice.textContent = "No microphone detected. Calls can still be joined muted so you can listen.";
       else if (permissionError && voiceUiState.status !== "idle") notice.textContent = "Microphone access is unavailable. You can stay muted or allow access and try again.";
+      updateNvidiaBroadcastState({ available: !!nvidiaMic });
       if (!quiet) {
         if (!microphones.length) toast("No microphone found. You can still join calls muted.");
         else toast("Audio devices refreshed.");
@@ -3545,6 +3565,27 @@
       else toast(translate("Audio processing applied."));
     };
   }
+  $("#voiceNvidiaBroadcast").onchange = async event => {
+    const enabled = event.currentTarget.checked;
+    await refreshAudioDevices({ requestPermission: false, quiet: true });
+    const nvidiaMic = nvidiaBroadcastDeviceId();
+    if (enabled && !nvidiaMic) {
+      event.currentTarget.checked = false;
+      updateNvidiaBroadcastState({ available: false });
+      toast(state.language === "tr" ? "NVIDIA Broadcast mikrofonu bulunamadı. NVIDIA Broadcast’i kurup çalıştır, sonra aygıtları yenile." : "NVIDIA Broadcast microphone was not found. Install and start NVIDIA Broadcast, then refresh devices.", true);
+      return;
+    }
+    if (enabled) {
+      for (const select of [$("#voiceMicSelect"), $("#voiceCallMicSelect")]) select.value = nvidiaMic;
+      localStorage.setItem("ghostchat.voice.microphone", nvidiaMic);
+    }
+    persistVoiceSettings();
+    updateNvidiaBroadcastState({ available: !!nvidiaMic });
+    const updates = await Promise.allSettled([voiceClient?.applyAudioSettings?.(), groupVoiceClient?.applyAudioSettings?.()]);
+    const failed = updates.find(result => result.status === "rejected");
+    if (failed) toast(failed.reason?.message || "Could not apply NVIDIA Broadcast.", true);
+    else toast(enabled ? (state.language === "tr" ? "NVIDIA Broadcast etkin." : "NVIDIA Broadcast enabled.") : (state.language === "tr" ? "NVIDIA Broadcast kapatıldı." : "NVIDIA Broadcast disabled."));
+  };
   $("#voicePeerCard").addEventListener("contextmenu", openVoiceParticipantMenu);
   $("#voicePeerCard").addEventListener("keydown", event => {
     if (event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey)) openVoiceParticipantMenu(event);
