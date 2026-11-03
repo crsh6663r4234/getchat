@@ -825,9 +825,8 @@
       try {
         if (event.kind === "screen_stopped") {
           clearRemoteScreen(call);
-          void call.ghostShare?.leave?.();
-          call.ghostShare = null;
-          call.screenTransport = null;
+          // The shared SFU room may still carry our own publication. A peer
+          // stopping their screen must not disconnect our active publisher.
         } else if (event.kind === "ghostshare_started") {
           await watchGhostShare(call);
         } else if (event.kind === "call_note" && typeof event.payload?.text === "string") {

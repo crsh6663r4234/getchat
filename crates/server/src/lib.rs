@@ -5426,7 +5426,7 @@ async fn relay_voice_signal(state: &AppState, sender: &PublicUser, text: &str) {
         "ice" => signal.payload["candidate"]
             .as_str()
             .is_some_and(|candidate| !candidate.is_empty() && candidate.len() <= 4 * 1024),
-        "hangup" => signal.payload.is_null(),
+        "hangup" | "screen_stopped" | "ghostshare_started" => signal.payload.is_null(),
         "music_state" => {
             let queue = signal.payload["queue"].as_array();
             let valid_queue = queue.is_some_and(|items| items.len() <= 32 && items.iter().all(|item| {

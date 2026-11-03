@@ -1307,3 +1307,18 @@ body[data-special-day="new-year"] .brand-mark::after { content: "✦"; backgroun
   #settingsDialog .dialog-body { grid-template-columns: 1fr; padding: 12px; }
   #settingsDialog .settings-section:nth-child(n) { grid-column: auto; }
 }
+
+/* Keep room for chat while sharing, with independently scrollable call tools. */
+.voice-stage.has-screen-share { max-height: min(56dvh, 520px); min-height: 0; }
+.voice-stage.has-screen-share .voice-participants { display: none; }
+.voice-stage .screen-share-panel { max-height: 30dvh; }
+.voice-stage .screen-share-panel video { max-height: 30dvh; }
+.voice-stage .voice-stage-body { max-height: 24dvh; overflow-y: auto; }
+.voice-stage .voice-call-notes { display: block; }
+.voice-call-notes summary { cursor: pointer; color: var(--text); font-size: 11px; font-weight: 650; }
+.voice-call-notes textarea { margin-top: 9px; }
+.voice-call-notes small { display: block; margin-top: 5px; }
+@media (max-width: 700px) {
+  .voice-stage.has-screen-share { max-height: 52dvh; }
+  .voice-stage .screen-share-panel, .voice-stage .screen-share-panel video { max-height: 25dvh; }
+}
