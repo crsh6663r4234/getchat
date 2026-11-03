@@ -76,7 +76,7 @@
   let quickProfileAvatarData = null;
   let settingsRecoveryStatusKey = "";
   let voiceDevicePanelOpen = false;
-  let voiceStageCompact = localStorage.getItem("ghostchat.voice.compact") !== "false";
+  let voiceStageCompact = localStorage.getItem("ghostchat.voice.roomCompact") === "true";
   let voiceCallOpenedAt = 0;
   let screenPreviewHidden = false;
   let screenViewerGroup = false;
@@ -2830,6 +2830,25 @@
     clearTimeout(connectSocket.timer); connectSocket.timer = setTimeout(() => { if (state.token) connectSocket(); }, state.reconnect);
     state.reconnect = Math.min(30000, state.reconnect * 1.7);
   }
+  const voiceRoomPaths = {
+    mic: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/>',
+    micOff: '<path d="m3 3 18 18M9 9v2a3 3 0 0 0 5 2M9 5V4a3 3 0 0 1 6 0v7M5 10v2a7 7 0 0 0 12 5M19 10v2M12 19v3M8 22h8"/>',
+    sound: '<path d="m11 4-6 5H2v6h3l6 5V4ZM15 8a6 6 0 0 1 0 8M18 5a10 10 0 0 1 0 14"/>',
+    soundOff: '<path d="m11 4-6 5H2v6h3l6 5V4ZM16 9l6 6M22 9l-6 6"/>',
+    share: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 22h8M12 17v5M12 13V7m-3 3 3-3 3 3"/>',
+    stop: '<rect x="5" y="5" width="14" height="14" rx="2"/>',
+    device: '<path d="M4 14v-3a8 8 0 0 1 16 0v3M4 12H2v7h4v-7H4ZM20 12h2v7h-4v-7h2Z"/>',
+    music: '<path d="M9 18V5l12-3v13M9 8l12-3"/><ellipse cx="6" cy="18" rx="3" ry="3"/><ellipse cx="18" cy="15" rx="3" ry="3"/>',
+    refresh: '<path d="M20 7v5h-5M4 17v-5h5M5.5 7a7 7 0 0 1 12-2L20 8M4 16l2.5 3a7 7 0 0 0 12-2"/>',
+    preview: '<rect x="2" y="4" width="20" height="16" rx="2"/><rect x="12" y="11" width="7" height="6" rx="1"/>',
+    end: '<path d="M3 15v-4c5-5 13-5 18 0v4l-5-1v-3a13 13 0 0 0-8 0v3l-5 1Z"/>'
+  };
+  function setVoiceRoomIcon(selector, name) {
+    const node = $(selector);
+    if (!node || node.dataset.voiceIcon === name) return;
+    node.dataset.voiceIcon = name;
+    node.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${voiceRoomPaths[name] || voiceRoomPaths.mic}</svg>`;
+  }
   function renderVoiceControls() {
     $("#manageGroupButton").classList.toggle("hidden", !state.active || state.active.kind !== "group");
     if (!voiceClient) return;
@@ -2839,6 +2858,7 @@
     groupVoiceUiState = groupVoice;
     const groupMode = groupVoice.status !== "idle" || (state.active?.kind === "group" && directVoice.status === "idle");
     const voice = groupMode ? groupVoice : directVoice;
+    window.GhostChatRingtone?.setIncoming(directVoice.status === "incoming" && state.presenceMode !== "dnd");
     const activeCall = !["idle", "incoming"].includes(voice.status);
     const visible = !!state.active || directVoice.status !== "idle" || groupVoice.status !== "idle";
     $("#voiceTools").classList.toggle("hidden", !visible);
@@ -2903,13 +2923,18 @@
     $("#voiceStageMicButton").classList.toggle("hidden", !activeCall);
     $("#voiceStageMicButton").classList.toggle("is-muted", voice.micMuted && (!pushToTalk || voice.micManuallyMuted || !voice.micAvailable));
     $("#voiceStageMicButton").setAttribute("aria-pressed", String(voice.micMuted));
-    $("#voiceStageMicIcon").textContent = voice.micMuted ? "🎙" : "🎤";
+    setVoiceRoomIcon("#voiceStageMicIcon", voice.micMuted ? "micOff" : "mic");
     $("#voiceStageMicLabel").textContent = translate(!voice.micAvailable ? "Try microphone" : pushToTalk ? (voice.micManuallyMuted ? "Mic off" : (voice.pushToTalkPressed ? "Speaking" : "Hold Space")) : (voice.micMuted ? "Turn mic on" : "Mute mic"));
     $("#voiceStageMicButton").title = translate(!voice.micAvailable ? "Try to connect a microphone; if none is available you can keep listening muted" : (voice.micMuted ? "Turn microphone on" : "Mute microphone"));
     $("#voiceOutputButton").classList.toggle("hidden", !activeCall);
     $("#voiceOutputButton").classList.toggle("is-muted", voice.speakerMuted);
     $("#voiceOutputButton").setAttribute("aria-pressed", String(voice.speakerMuted));
-    $("#voiceOutputIcon").textContent = voice.speakerMuted ? "🔇" : "🔊";
+    setVoiceRoomIcon("#voiceOutputIcon", voice.speakerMuted ? "soundOff" : "sound");
+    setVoiceRoomIcon("#voiceDeviceButton .voice-control-icon", "device");
+    setVoiceRoomIcon("#voiceMusicButton .voice-control-icon", "music");
+    setVoiceRoomIcon("#voiceRefreshScreenButton .voice-control-icon", "refresh");
+    setVoiceRoomIcon("#voicePreviewButton .voice-control-icon", "preview");
+    setVoiceRoomIcon("#voiceHangupButton .voice-control-icon", "end");
     $("#voiceOutputLabel").textContent = translate(voice.speakerMuted ? "Sound off" : "Sound on");
     $("#voiceStageShareButton").classList.toggle("hidden", !activeCall || !["connected", "reconnecting"].includes(voice.status));
     $("#voiceRefreshScreenButton").classList.toggle("hidden", !activeCall || !voice.screenSharing);
@@ -2919,9 +2944,13 @@
     $("#voicePreviewButton span:last-child").textContent = state.language === "tr"
       ? (screenPreviewHidden ? "Önizlemeyi göster" : "Önizlemeyi gizle")
       : (screenPreviewHidden ? "Show preview" : "Hide preview");
-    $("#voiceStageShareIcon").textContent = voice.screenSharing ? "■" : "▣";
+    setVoiceRoomIcon("#voiceStageShareIcon", voice.screenSharing ? "stop" : "share");
     $("#voiceStageShareLabel").textContent = translate(voice.screenStarting ? "Starting…" : (voice.screenSharing ? "Stop sharing" : "Share screen"));
     $("#voiceStageShareButton").disabled = !!voice.screenStarting;
+    for (const button of $$("#voiceStage .voice-control-button")) {
+      const label = button.querySelector("span:last-child")?.textContent;
+      if (label) { button.title = label; button.setAttribute("aria-label", label); }
+    }
     $("#voiceStageAccept").classList.toggle("hidden", groupMode || voice.status !== "incoming");
     $("#voiceStageAccept").textContent = translate("Join call");
     $("#voiceStageDecline").classList.toggle("hidden", groupMode || voice.status !== "incoming");
@@ -3731,7 +3760,7 @@
     renderVoiceControls();
   };
   $("#voiceDeviceButton").onclick = () => { voiceDevicePanelOpen = !voiceDevicePanelOpen; renderVoiceControls(); };
-  $("#voiceStageCompactButton").onclick = () => { voiceStageCompact = !voiceStageCompact; localStorage.setItem("ghostchat.voice.compact", String(voiceStageCompact)); renderVoiceControls(); };
+  $("#voiceStageCompactButton").onclick = () => { voiceStageCompact = !voiceStageCompact; localStorage.setItem("ghostchat.voice.roomCompact", String(voiceStageCompact)); renderVoiceControls(); };
   $("#voiceMusicButton").onclick = () => { callMusic.open = !callMusic.open; renderMusicPanel(); };
   $("#voiceMusicClose").onclick = () => { callMusic.open = false; renderMusicPanel(); };
   $("#voiceCallNote").addEventListener("input", event => {

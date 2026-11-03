@@ -1,0 +1,54 @@
+/* Voice room: intentionally scoped so chat, profile and settings keep their layout. */
+#voiceStage{--room-accent:var(--accent,#a995ff);display:flex;flex-direction:column;min-height:0;height:auto;max-height:55dvh;margin:10px 20px;border:1px solid var(--line);border-radius:16px;resize:none;background:var(--surface);box-shadow:0 8px 28px #0002;isolation:isolate}
+#voiceStage .voice-stage-scroll{flex:1 1 auto;min-height:0;overflow:auto}
+#voiceStage .voice-stage-head{min-height:0;align-items:center;gap:12px;padding:13px 16px;border-bottom:1px solid var(--line)}
+#voiceStage .voice-kicker{display:none}
+#voiceStage .voice-peer-details{display:flex;align-items:center;flex-wrap:wrap;gap:5px 12px}
+#voiceStage .voice-peer-details h3{font-size:13px;letter-spacing:-.015em;margin:0}
+#voiceStage .voice-status-line{margin:0;font-size:10px}
+#voiceStage .voice-stage-meta{gap:6px;flex-wrap:wrap;justify-content:flex-end}
+#voiceStage .voice-encryption-note{display:none}
+#voiceStage .voice-connection-quality{padding:4px 7px;font-size:9px;background:transparent;border-color:var(--line)}
+#voiceStage .voice-participants{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:0;padding:16px}
+#voiceStage .voice-participant-card{position:relative;display:flex;align-items:center;gap:12px;min-height:84px;margin:0;padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--surface-2);box-shadow:none;transform:none;animation:none;overflow:hidden;text-align:left}
+#voiceStage .voice-participant-card:hover{border-color:var(--room-accent);transform:none}
+#voiceStage .voice-participant-avatar{flex:0 0 46px;width:46px;height:46px;min-width:46px;border-radius:50%;border:2px solid transparent;box-shadow:none;font-size:18px;transition:box-shadow .2s,border-color .2s}
+#voiceStage .voice-participant-copy{display:grid;gap:5px;min-width:0}
+#voiceStage .voice-participant-copy strong{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#voiceStage .voice-participant-speaking{font-size:10px;color:var(--muted)}
+#voiceStage .voice-participant-muted{margin-left:auto;padding:4px 6px;border-radius:6px;font-size:9px;background:#ed7c8318;color:var(--danger)}
+#voiceStage .voice-participant-card.is-speaking{border-color:#63c79c88;background:color-mix(in srgb,var(--surface-2) 94%,#63c79c);animation:none;box-shadow:none}
+#voiceStage .is-speaking .voice-participant-avatar{border-color:var(--good);box-shadow:0 0 0 4px #63c79c18}
+#voiceStage .is-speaking .voice-speaking-dot{background:var(--good);box-shadow:0 0 8px #63c79c66}
+#voiceStage .voice-stage-body{flex:0 0 auto;max-height:25dvh;overflow:auto;padding:10px 12px;border-top:1px solid var(--line);background:transparent}
+#voiceStage .voice-stage-controls{display:flex;flex-direction:row;align-items:center;gap:8px;padding:0}
+#voiceStage .voice-control-group{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-start;gap:5px;min-width:0}
+#voiceStage .voice-control-button{display:inline-flex;flex-direction:row;align-items:center;justify-content:center;gap:7px;flex:0 0 auto;min-width:0;min-height:36px;padding:7px 10px;border:1px solid var(--line);border-radius:9px;background:var(--surface-2);color:var(--text);font-size:10px;box-shadow:none;transform:none;transition:background .15s,border-color .15s}
+#voiceStage .voice-control-button:hover{border-color:var(--room-accent);background:var(--surface-3);transform:none}
+#voiceStage .voice-control-icon{display:grid;place-items:center;width:18px;height:18px;min-width:18px;border-radius:0;background:transparent;font-size:15px}
+.voice-control-icon svg{display:block;width:18px;height:18px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+#voiceStage .voice-control-button.is-muted{background:#ed7c8315;color:var(--danger);border-color:#ed7c8340}
+#voiceStage .voice-control-button.is-muted .voice-control-icon{background:transparent}
+#voiceStage .voice-call-actions{margin-left:auto;flex-shrink:0}
+#voiceStage .voice-end-button{min-width:36px;background:#b74353;color:#fff;border-color:#b74353}
+#voiceStage .voice-end-button:hover{background:#cb4d60;border-color:#cb4d60}
+#voiceStage .voice-device-notice{margin:8px 2px 0;font-size:9px;line-height:1.4;color:var(--muted)}
+#voiceStage .voice-device-row{margin:0 16px 12px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2)}
+#voiceStage .voice-device-picker select{background:var(--surface);color:var(--text);border-color:var(--line)}
+#voiceStage .voice-call-notes{margin-top:8px;padding:8px 10px;background:var(--surface-2);border-color:var(--line);border-radius:9px}
+#voiceStage .voice-call-notes summary{font-size:10px}
+#voiceStage.is-compact .voice-participants{display:none}
+#voiceStage.is-compact .voice-stage-head{padding:9px 13px}
+#voiceStage.is-compact .voice-control-button>span:last-child{display:none}
+#voiceStage.is-compact .voice-control-button{min-width:36px;padding:8px}
+#voiceStage.has-screen-share{max-height:57dvh}
+#voiceStage.has-screen-share .voice-participants{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));padding:9px 16px;gap:8px}
+#voiceStage.has-screen-share .voice-participant-card{min-height:42px;padding:6px 9px;gap:8px}
+#voiceStage.has-screen-share .voice-participant-avatar{width:28px;height:28px;min-width:28px;flex-basis:28px}
+#voiceStage.has-screen-share .voice-participant-copy strong{font-size:11px}
+#voiceStage.has-screen-share .voice-participant-speaking{font-size:9px}
+#voiceStage .screen-share-layout{width:calc(100% - 32px);margin:0 16px 10px}
+#voiceStage .group-voice-participants{grid-column:1/-1;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px}
+@media(max-width:800px){#voiceStage{margin:8px 10px}#voiceStage .voice-control-button>span:last-child{display:none}#voiceStage .voice-control-button{min-width:36px;padding:8px}#voiceStage .voice-stage-head{padding:10px 12px}#voiceStage .voice-participants{padding:12px;gap:8px}#voiceStage .voice-participant-card{padding:10px;gap:8px}#voiceStage .voice-participant-avatar{width:36px;height:36px;min-width:36px;flex-basis:36px}#voiceStage .voice-participant-muted{display:none}}
+@media(prefers-reduced-motion:reduce){#voiceStage *{animation:none!important;transition:none!important}}
+body[data-motion="reduced"] #voiceStage *{animation:none!important;transition:none!important}
