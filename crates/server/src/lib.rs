@@ -59,6 +59,7 @@ pub struct AppState {
     attachment_ticket_key: [u8; 32],
     events: broadcast::Sender<ServerEvent>,
     limiter: Arc<Mutex<HashMap<String, VecDeque<Instant>>>>,
+    online_users: Arc<Mutex<HashMap<String, usize>>>,
     voice: VoiceServerConfig,
 }
 
@@ -213,6 +214,7 @@ pub async fn build_state_with_attachment_dir(db: SqlitePool, attachment_dir: Pat
         attachment_ticket_key,
         events,
         limiter: Arc::new(Mutex::new(HashMap::new())),
+        online_users: Arc::new(Mutex::new(HashMap::new())),
         voice: VoiceServerConfig {
             stun_urls,
             turn_urls,
@@ -862,7 +864,41 @@ async fn list_presence(
     .fetch_all(&state.db)
     .await
     .map_err(|_| ApiError::internal())?;
+    let connected = state.online_users.lock().map(|users| users.clone()).unwrap_or_default();
+    let rows = rows.into_iter().map(|mut row| {
+        // A remembered account session is not an online application. Friends
+        // see offline until at least one authenticated WebSocket is alive.
+        if row.user_id != user.id && connected.get(&row.user_id).copied().unwrap_or(0) == 0 {
+            row.mode = "offline".into();
+        }
+        row
+    }).collect();
     Ok(Json(rows))
+}
+
+fn register_online_connection(state: &AppState, user_id: &str) -> bool {
+    let Ok(mut users) = state.online_users.lock() else { return false; };
+    let count = users.entry(user_id.to_owned()).or_insert(0);
+    *count += 1;
+    *count == 1
+}
+
+fn unregister_online_connection(state: &AppState, user_id: &str) -> bool {
+    let Ok(mut users) = state.online_users.lock() else { return false; };
+    let Some(count) = users.get_mut(user_id) else { return false; };
+    *count = count.saturating_sub(1);
+    if *count == 0 { users.remove(user_id); true } else { false }
+}
+
+async fn broadcast_current_presence(state: &AppState, user_id: &str) {
+    let saved_mode = sqlx::query_scalar::<_, String>("SELECT mode FROM user_presence WHERE user_id=?")
+        .bind(user_id).fetch_optional(&state.db).await.ok().flatten().unwrap_or_else(|| "online".into());
+    let connected = state.online_users.lock().ok().and_then(|users| users.get(user_id).copied()).unwrap_or(0) > 0;
+    let mode = if connected { saved_mode } else { "offline".into() };
+    let mut recipients = sqlx::query_scalar::<_, String>("SELECT CASE WHEN user_low=? THEN user_high ELSE user_low END FROM friendships WHERE user_low=? OR user_high=?")
+        .bind(user_id).bind(user_id).bind(user_id).fetch_all(&state.db).await.unwrap_or_default();
+    recipients.push(user_id.to_owned());
+    let _ = state.events.send(ServerEvent { recipients, event: serde_json::json!({"type":"presence_updated","user_id":user_id,"mode":mode}) });
 }
 
 async fn update_presence(
@@ -881,18 +917,7 @@ async fn update_presence(
         .execute(&state.db)
         .await
         .map_err(|_| ApiError::internal())?;
-    let mut recipients = sqlx::query_scalar::<_, String>("SELECT CASE WHEN user_low=? THEN user_high ELSE user_low END FROM friendships WHERE user_low=? OR user_high=?")
-        .bind(&user.id)
-        .bind(&user.id)
-        .bind(&user.id)
-        .fetch_all(&state.db)
-        .await
-        .map_err(|_| ApiError::internal())?;
-    recipients.push(user.id.clone());
-    let _ = state.events.send(ServerEvent {
-        recipients,
-        event: serde_json::json!({"type":"presence_updated","user_id":user.id,"mode":mode}),
-    });
+    broadcast_current_presence(&state, &user.id).await;
     Ok(Json(PresenceRow { user_id: user.id, mode }))
 }
 
@@ -5480,6 +5505,9 @@ async fn websocket_session(mut socket: WebSocket, state: AppState) {
     {
         return;
     }
+    if register_online_connection(&state, &user.id) {
+        broadcast_current_presence(&state, &user.id).await;
+    }
     let mut events = state.events.subscribe();
     let mut session_check = tokio::time::interval(Duration::from_secs(15));
     session_check.tick().await;
@@ -5528,6 +5556,9 @@ async fn websocket_session(mut socket: WebSocket, state: AppState) {
         }
     }
     let _ = socket.close().await;
+    if unregister_online_connection(&state, &user.id) {
+        broadcast_current_presence(&state, &user.id).await;
+    }
 }
 
 pub async fn bind_default(
