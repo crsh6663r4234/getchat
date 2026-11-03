@@ -45,6 +45,7 @@
         screenStarting: !!call?.screenStarting,
         screenQuality: call?.screenQuality || null,
         networkQuality: call?.networkQuality || null,
+        callNote: call?.callNote || "",
         localAudioStream: call?.localStream || null,
         localScreenStream: call?.screenStream || null,
         remoteAudioStream: call?.remoteAudioStream || null,
@@ -824,6 +825,9 @@
           call.ghostShare = null;
         } else if (event.kind === "ghostshare_started") {
           await watchGhostShare(call);
+        } else if (event.kind === "call_note" && typeof event.payload?.text === "string") {
+          call.callNote = event.payload.text.slice(0, 1200);
+          notify();
         } else if (event.kind === "answer" && event.payload?.type === "answer") {
           await applyDescription(call, event.payload);
         } else if (event.kind === "offer" && event.payload?.type === "offer") {
@@ -961,6 +965,14 @@
       }
     }
 
+    function setCallNote(text) {
+      if (!call || call.status === "idle") return;
+      const value = String(text || "").slice(0, 1200);
+      call.callNote = value;
+      notify();
+      send(call.conversationId, call.peerId, "call_note", { text: value });
+    }
+
     async function toggleMicrophone() {
       if (!call) return;
       const settings = api.getSettings();
@@ -1027,7 +1039,7 @@
     }
 
     function getState() { return snapshot(); }
-    return { start, accept, decline, hangup, toggleMicrophone, setMicrophoneDevice, applyAudioSettings, toggleScreenSharing, refreshScreenSharing, setPushToTalk, handleSignal, getState };
+    return { start, accept, decline, hangup, toggleMicrophone, setMicrophoneDevice, applyAudioSettings, toggleScreenSharing, refreshScreenSharing, setPushToTalk, setCallNote, handleSignal, getState };
   }
 
   window.GhostChatVoice = { create: createVoiceClient };

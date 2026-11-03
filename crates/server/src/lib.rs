@@ -5440,6 +5440,11 @@ async fn relay_voice_signal(state: &AppState, sender: &PublicUser, text: &str) {
                 && signal.payload["playing"].as_bool().is_some()
                 && signal.payload["position"].as_f64().is_some_and(|value| (0.0..=86_400.0).contains(&value))
         }
+        // Notes are call-room state only: relay them, but never persist them
+        // in the chat history or account data.
+        "call_note" => signal.payload["text"]
+            .as_str()
+            .is_some_and(|value| value.len() <= 1_200),
         _ => false,
     };
     if !valid_payload {

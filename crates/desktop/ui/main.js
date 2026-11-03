@@ -78,6 +78,7 @@
   let voiceDevicePanelOpen = false;
   let voiceStageCompact = localStorage.getItem("ghostchat.voice.compact") !== "false";
   let voiceCallOpenedAt = 0;
+  let callNoteTimer = null;
   const callMusic = { open: false, queue: [], index: -1, playing: false, applyingRemote: false };
   const trText = {
     "Create account": "Hesap oluştur", "Recover": "Kurtar", "Name": "Ad", "Display name": "Görünen ad", "Profile picture": "Profil fotoğrafı", "Choose": "Seç", "Create anonymous account": "Anonim hesap oluştur", "Recover account": "Hesabı kurtar", "Recovery key": "Kurtarma anahtarı", "Your recovery key": "Kurtarma anahtarın", "Copy key": "Anahtarı kopyala", "Save backup": "Yedek kaydet", "Continue to GhostChat": "GhostChat'e devam et", "Messages": "Mesajlar", "Friends": "Arkadaşlar", "Find people": "Kişi bul", "Search messages": "Mesajlarda ara", "Settings": "Ayarlar", "Profile": "Profil", "Connection": "Bağlantı", "Appearance": "Görünüm", "Notifications": "Bildirimler", "Voice and screen sharing": "Sesli sohbet ve ekran paylaşımı", "Updates": "Güncellemeler", "Privacy and data": "Gizlilik ve veriler", "Theme": "Tema", "Text size": "Yazı boyutu", "Dark": "Koyu", "Light": "Açık", "Compact": "Küçük", "Default": "Varsayılan", "Large": "Büyük", "Windows notifications": "Windows bildirimleri", "Send test notification": "Test bildirimi gönder", "Microphone": "Mikrofon", "Speaker": "Hoparlör", "System default": "Sistem varsayılanı", "Refresh audio devices": "Ses aygıtlarını yenile", "Echo cancellation": "Yankı engelleme", "Noise suppression": "Gürültü azaltma", "Automatic microphone gain": "Otomatik mikrofon seviyesi", "Push to talk (hold Space)": "Bas-konuş (Boşluk tuşunu basılı tut)", "Share system audio with screen": "Ekranla sistem sesini paylaş", "Save settings": "Ayarları kaydet", "Check now": "Şimdi kontrol et", "Install and restart": "Yükle ve yeniden başlat", "Save profile": "Profili kaydet", "Remove photo": "Fotoğrafı kaldır", "Your quiet corner": "Sana özel alan", "A little more room to talk.": "Rahatça konuşabileceğin bir alan.", "Find someone by username, send a friend request, then start a private conversation. Your account does not need an email or phone number.": "Etiketiyle kişi bul, arkadaşlık isteği gönder ve özel sohbete başla. Hesap için e-posta veya telefon gerekmez.", "View friends": "Arkadaşları gör", "Search": "Ara", "Search by username or user ID. GhostChat does not publish a public directory.": "Kullanıcı etiketiyle veya kullanıcı kimliğiyle ara. GhostChat herkese açık bir rehber yayınlamaz.", "No conversations yet. Find a friend to start a chat.": "Henüz sohbet yok. Sohbet başlatmak için arkadaş ekle.", "No pending requests.": "Bekleyen istek yok.", "YOUR FRIENDS": "ARKADAŞLARIN", "REQUESTS": "İSTEKLER", "DIRECT MESSAGES": "ÖZEL MESAJLAR", "No friends yet. Use Find people to add someone.": "Henüz arkadaşın yok. Kişi bul bölümünden arkadaş ekleyebilirsin.", "Manage requests and start a private conversation.": "İstekleri yönet ve özel sohbet başlat.", "All friends": "Tüm arkadaşlar", "Accept": "Kabul et", "Ignore": "Yoksay", "Message": "Mesaj", "Add friend": "Arkadaş ekle", "Request sent": "İstek gönderildi", "No friend requests right now.": "Şu anda arkadaşlık isteği yok.", "No matching messages.": "Eşleşen mesaj yok.", "Edited": "Düzenlendi", "Edit": "Düzenle", "Delete": "Sil", "Write a message…": "Mesaj yaz…", "Load earlier messages": "Önceki mesajları yükle", "Call": "Ara", "End call": "Aramayı bitir", "Settings saved.": "Ayarlar kaydedildi.", "Profile saved.": "Profil kaydedildi.", "Friend request accepted.": "Arkadaşlık isteği kabul edildi.", "Request removed.": "İstek kaldırıldı.", "Choose an image file.": "Bir resim dosyası seç.", "That photo is too detailed. Choose a smaller image.": "Fotoğraf çok detaylı. Daha küçük bir görsel seç.", "Could not use that photo.": "Fotoğraf kullanılamadı.", "Checking for updates": "Güncellemeler kontrol ediliyor", "Update required": "Güncelleme gerekli", "Downloading update": "Güncelleme indiriliyor", "Update failed": "Güncelleme başarısız", "Try again": "Yeniden dene", "Getting the latest version ready…": "En yeni sürüm hazırlanıyor…", "This app version is out of date.": "Bu uygulama sürümü güncel değil.", "Preparing the update…": "Güncelleme hazırlanıyor…"
@@ -2957,6 +2958,10 @@
     const showingCallConversation = state.page === "messages" && state.active?.id === voiceConversationId;
     $("#voiceStage").classList.toggle("hidden", voice.status === "idle" || !showingCallConversation);
     $("#voiceStage").classList.toggle("has-screen-share", !groupMode && (hasRemoteVideo || hasLocalVideo));
+    const callNotesVisible = !groupMode && voice.status !== "idle";
+    $("#voiceCallNotes").classList.toggle("hidden", !callNotesVisible);
+    const noteInput = $("#voiceCallNote");
+    if (document.activeElement !== noteInput && noteInput.value !== (voice.callNote || "")) noteInput.value = voice.callNote || "";
     const dock = $("#activeCallDock");
     dock.classList.toggle("hidden", voice.status === "idle" || showingCallConversation);
     dock.dataset.conversationId = voiceConversationId || "";
@@ -3711,6 +3716,11 @@
   $("#voiceStageCompactButton").onclick = () => { voiceStageCompact = !voiceStageCompact; localStorage.setItem("ghostchat.voice.compact", String(voiceStageCompact)); renderVoiceControls(); };
   $("#voiceMusicButton").onclick = () => { callMusic.open = !callMusic.open; renderMusicPanel(); };
   $("#voiceMusicClose").onclick = () => { callMusic.open = false; renderMusicPanel(); };
+  $("#voiceCallNote").addEventListener("input", event => {
+    clearTimeout(callNoteTimer);
+    const text = event.currentTarget.value;
+    callNoteTimer = setTimeout(() => voiceClient.setCallNote(text), 240);
+  });
   $("#voiceMusicForm").addEventListener("submit", event => {
     event.preventDefault();
     try {
