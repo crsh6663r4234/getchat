@@ -5405,6 +5405,31 @@ async fn relay_typing_signal(state: &AppState, sender: &PublicUser, text: &str) 
     });
 }
 
+// Watch Party carries playback state, never media bytes. The server validates
+// the shape and relays it through the same authenticated peer/member checks as
+// call setup; it must never fetch the client-provided URL.
+fn valid_watch_party_payload(payload: &serde_json::Value) -> bool {
+    const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+    let Some(object) = payload.as_object() else { return false; };
+    if object.len() != 6 {
+        return false;
+    }
+    let valid_source = payload["source"].as_str().is_some_and(|source| {
+        source.is_empty() || (source.len() <= 2048 && reqwest::Url::parse(source).is_ok_and(|url| {
+            url.scheme() == "https"
+                && url.host_str().is_some()
+                && url.username().is_empty()
+                && url.password().is_none()
+        }))
+    });
+    valid_source
+        && payload["position"].as_f64().is_some_and(|value| (0.0..=86_400.0).contains(&value))
+        && payload["playing"].as_bool().is_some()
+        && payload["revision"].as_u64().is_some_and(|value| value <= 1_000_000_000)
+        && payload["sentAt"].as_u64().is_some_and(|value| value <= MAX_SAFE_INTEGER)
+        && payload["action"].as_str().is_some_and(|value| matches!(value, "source" | "play" | "pause" | "seek" | "request" | "state"))
+}
+
 async fn relay_voice_signal(state: &AppState, sender: &PublicUser, text: &str) {
     let Ok(signal) = serde_json::from_str::<WsVoiceSignal>(text) else {
         return;
@@ -5427,19 +5452,7 @@ async fn relay_voice_signal(state: &AppState, sender: &PublicUser, text: &str) {
             .as_str()
             .is_some_and(|candidate| !candidate.is_empty() && candidate.len() <= 4 * 1024),
         "hangup" | "screen_stopped" | "ghostshare_started" => signal.payload.is_null(),
-        "music_state" => {
-            let queue = signal.payload["queue"].as_array();
-            let valid_queue = queue.is_some_and(|items| items.len() <= 32 && items.iter().all(|item| {
-                item["id"].as_str().is_some_and(|value| !value.is_empty() && value.len() <= 64)
-                    && item["url"].as_str().is_some_and(|value| value.starts_with("https://") && value.len() <= 2048)
-                    && item["title"].as_str().is_some_and(|value| value.len() <= 160)
-                    && item["direct"].as_bool().is_some()
-            }));
-            valid_queue
-                && signal.payload["index"].as_i64().is_some_and(|value| value >= -1 && value < 32)
-                && signal.payload["playing"].as_bool().is_some()
-                && signal.payload["position"].as_f64().is_some_and(|value| (0.0..=86_400.0).contains(&value))
-        }
+        "watch_party" => valid_watch_party_payload(&signal.payload),
         // Notes are call-room state only: relay them, but never persist them
         // in the chat history or account data.
         "call_note" => signal.payload["text"]
@@ -5452,9 +5465,10 @@ async fn relay_voice_signal(state: &AppState, sender: &PublicUser, text: &str) {
     }
 
     let peer_id = match sqlx::query_scalar::<_, String>(
-        "SELECT member.user_id FROM conversation_members member JOIN conversations c ON c.id=member.conversation_id WHERE member.conversation_id=? AND member.user_id<>? AND c.kind='direct' LIMIT 1",
+        "SELECT member.user_id FROM conversation_members member JOIN conversations c ON c.id=member.conversation_id WHERE member.conversation_id=? AND member.user_id<>? AND c.kind='direct' AND EXISTS (SELECT 1 FROM conversation_members sender WHERE sender.conversation_id=c.id AND sender.user_id=?) LIMIT 1",
     )
     .bind(&signal.conversation_id)
+    .bind(&sender.id)
     .bind(&sender.id)
     .fetch_optional(&state.db)
     .await
@@ -5593,6 +5607,50 @@ pub async fn bind_default(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn watch_party_accepts_bounded_state_and_all_protocol_actions() {
+        for action in ["source", "play", "pause", "seek", "request", "state"] {
+            let payload = serde_json::json!({
+                "source": "https://media.example/movie.mp4", "position": 42.5,
+                "playing": true, "revision": 3, "sentAt": 1_793_700_000_000_u64,
+                "action": action
+            });
+            assert!(valid_watch_party_payload(&payload));
+            let mut cleared = payload;
+            cleared["source"] = serde_json::json!("");
+            assert!(valid_watch_party_payload(&cleared));
+        }
+    }
+
+    #[test]
+    fn watch_party_rejects_unsafe_urls_and_unbounded_state() {
+        let good = serde_json::json!({
+            "source": "https://media.example/movie.mp4", "position": 0,
+            "playing": false, "revision": 0, "sentAt": 0, "action": "state"
+        });
+        for source in ["http://media.example/a", "file:///C:/secret", "javascript:alert(1)", "https://user:secret@media.example/a", "https://"] {
+            let mut invalid = good.clone();
+            invalid["source"] = serde_json::json!(source);
+            assert!(!valid_watch_party_payload(&invalid), "accepted {source}");
+        }
+        for (key, value) in [
+            ("position", serde_json::json!(-1)),
+            ("position", serde_json::json!(86_401)),
+            ("revision", serde_json::json!(0.5)),
+            ("revision", serde_json::json!(-1)),
+            ("sentAt", serde_json::json!(9_007_199_254_740_992_u64)),
+            ("playing", serde_json::json!("true")),
+            ("action", serde_json::json!("fetch")),
+            ("source", serde_json::json!(format!("https://media.example/{}", "x".repeat(2048)))),
+        ] {
+            let mut invalid = good.clone(); invalid[key] = value;
+            assert!(!valid_watch_party_payload(&invalid), "accepted invalid {key}");
+        }
+        let mut missing = good;
+        missing.as_object_mut().unwrap().remove("revision");
+        assert!(!valid_watch_party_payload(&missing));
+    }
 
     #[test]
     fn recovery_secrets_are_salted_and_verified() {

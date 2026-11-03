@@ -81,7 +81,10 @@
   let screenPreviewHidden = false;
   let screenViewerGroup = false;
   let callNoteTimer = null;
-  const callMusic = { open: false, queue: [], index: -1, playing: false, applyingRemote: false };
+  let watchParty = null;
+  let watchPartyOpen = false;
+  let watchPartyLocal = null;
+  const localWatchPrefix = "https://local.watch.ghostchat.invalid/";
   const trText = {
     "Create account": "Hesap oluştur", "Recover": "Kurtar", "Name": "Ad", "Display name": "Görünen ad", "Profile picture": "Profil fotoğrafı", "Choose": "Seç", "Create anonymous account": "Anonim hesap oluştur", "Recover account": "Hesabı kurtar", "Recovery key": "Kurtarma anahtarı", "Your recovery key": "Kurtarma anahtarın", "Copy key": "Anahtarı kopyala", "Save backup": "Yedek kaydet", "Continue to GhostChat": "GhostChat'e devam et", "Messages": "Mesajlar", "Friends": "Arkadaşlar", "Find people": "Kişi bul", "Search messages": "Mesajlarda ara", "Settings": "Ayarlar", "Profile": "Profil", "Connection": "Bağlantı", "Appearance": "Görünüm", "Notifications": "Bildirimler", "Voice and screen sharing": "Sesli sohbet ve ekran paylaşımı", "Updates": "Güncellemeler", "Privacy and data": "Gizlilik ve veriler", "Theme": "Tema", "Text size": "Yazı boyutu", "Dark": "Koyu", "Light": "Açık", "Compact": "Küçük", "Default": "Varsayılan", "Large": "Büyük", "Windows notifications": "Windows bildirimleri", "Send test notification": "Test bildirimi gönder", "Microphone": "Mikrofon", "Speaker": "Hoparlör", "System default": "Sistem varsayılanı", "Refresh audio devices": "Ses aygıtlarını yenile", "Echo cancellation": "Yankı engelleme", "Noise suppression": "Gürültü azaltma", "Automatic microphone gain": "Otomatik mikrofon seviyesi", "Push to talk (hold Space)": "Bas-konuş (Boşluk tuşunu basılı tut)", "Share system audio with screen": "Ekranla sistem sesini paylaş", "Save settings": "Ayarları kaydet", "Check now": "Şimdi kontrol et", "Install and restart": "Yükle ve yeniden başlat", "Save profile": "Profili kaydet", "Remove photo": "Fotoğrafı kaldır", "Your quiet corner": "Sana özel alan", "A little more room to talk.": "Rahatça konuşabileceğin bir alan.", "Find someone by username, send a friend request, then start a private conversation. Your account does not need an email or phone number.": "Etiketiyle kişi bul, arkadaşlık isteği gönder ve özel sohbete başla. Hesap için e-posta veya telefon gerekmez.", "View friends": "Arkadaşları gör", "Search": "Ara", "Search by username or user ID. GhostChat does not publish a public directory.": "Kullanıcı etiketiyle veya kullanıcı kimliğiyle ara. GhostChat herkese açık bir rehber yayınlamaz.", "No conversations yet. Find a friend to start a chat.": "Henüz sohbet yok. Sohbet başlatmak için arkadaş ekle.", "No pending requests.": "Bekleyen istek yok.", "YOUR FRIENDS": "ARKADAŞLARIN", "REQUESTS": "İSTEKLER", "DIRECT MESSAGES": "ÖZEL MESAJLAR", "No friends yet. Use Find people to add someone.": "Henüz arkadaşın yok. Kişi bul bölümünden arkadaş ekleyebilirsin.", "Manage requests and start a private conversation.": "İstekleri yönet ve özel sohbet başlat.", "All friends": "Tüm arkadaşlar", "Accept": "Kabul et", "Ignore": "Yoksay", "Message": "Mesaj", "Add friend": "Arkadaş ekle", "Request sent": "İstek gönderildi", "No friend requests right now.": "Şu anda arkadaşlık isteği yok.", "No matching messages.": "Eşleşen mesaj yok.", "Edited": "Düzenlendi", "Edit": "Düzenle", "Delete": "Sil", "Write a message…": "Mesaj yaz…", "Load earlier messages": "Önceki mesajları yükle", "Call": "Ara", "End call": "Aramayı bitir", "Settings saved.": "Ayarlar kaydedildi.", "Profile saved.": "Profil kaydedildi.", "Friend request accepted.": "Arkadaşlık isteği kabul edildi.", "Request removed.": "İstek kaldırıldı.", "Choose an image file.": "Bir resim dosyası seç.", "That photo is too detailed. Choose a smaller image.": "Fotoğraf çok detaylı. Daha küçük bir görsel seç.", "Could not use that photo.": "Fotoğraf kullanılamadı.", "Checking for updates": "Güncellemeler kontrol ediliyor", "Update required": "Güncelleme gerekli", "Downloading update": "Güncelleme indiriliyor", "Update failed": "Güncelleme başarısız", "Try again": "Yeniden dene", "Getting the latest version ready…": "En yeni sürüm hazırlanıyor…", "This app version is out of date.": "Bu uygulama sürümü güncel değil.", "Preparing the update…": "Güncelleme hazırlanıyor…"
   };
@@ -416,44 +419,38 @@
     target.textContent = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
     target.classList.remove("hidden");
   }
-  function musicProvider(url) { try { const host = new URL(url).hostname.replace(/^www\./, ""); return host.includes("spotify") ? "Spotify" : host.includes("youtube") || host.includes("youtu.be") ? "YouTube" : host.includes("music.apple") ? "Apple Music" : host.includes("soundcloud") ? "SoundCloud" : host.includes("deezer") ? "Deezer" : host.includes("tidal") ? "TIDAL" : host; } catch { return "Music"; } }
-  function isDirectMusicUrl(url) { return /\.(mp3|m4a|aac|ogg|opus|wav|flac)(?:[?#].*)?$/i.test(url); }
-  function musicPeer() { const voice = voiceClient?.getState?.(); return voice?.status !== "idle" ? { conversationId: voice.conversationId, peerId: voice.peerId } : null; }
-  function broadcastMusicState() {
-    const peer = musicPeer(); if (!peer || !state.socket || state.socket.readyState !== WebSocket.OPEN) return;
-    const audio = $("#voiceMusicAudio");
-    state.socket.send(JSON.stringify({ type: "voice_signal", conversation_id: peer.conversationId, to_user_id: peer.peerId, kind: "music_state", payload: { queue: callMusic.queue, index: callMusic.index, playing: callMusic.playing, position: Number(audio.currentTime || 0) } }));
-  }
-  function renderMusicPanel() {
-    const active = !!musicPeer();
-    $("#voiceMusicButton").classList.toggle("hidden", !active);
-    $("#voiceMusicButton").setAttribute("aria-expanded", String(callMusic.open));
-    $("#voiceMusicPanel").classList.toggle("hidden", !active || !callMusic.open);
-    const queue = $("#voiceMusicQueue"); queue.replaceChildren();
-    if (!callMusic.queue.length) { queue.append(create("p", "voice-music-empty", state.language === "tr" ? "Liste boş. Bir müzik bağlantısı ekle." : "The playlist is empty. Add a music link.")); return; }
-    for (const [index, item] of callMusic.queue.entries()) {
-      const row = create("div", `voice-music-track${index === callMusic.index ? " active" : ""}`);
-      const copy = create("div", "voice-music-copy"); copy.append(create("strong", "", item.title), create("span", "", item.direct ? (state.language === "tr" ? "Senkron ses" : "Synced audio") : `${musicProvider(item.url)} · ${state.language === "tr" ? "Kaynakta açılır" : "Opens at source"}`)); row.append(copy);
-      const play = create("button", "icon-button", item.direct ? (index === callMusic.index && callMusic.playing ? "Ⅱ" : "▶") : "↗"); play.type = "button"; play.title = item.direct ? (state.language === "tr" ? "Çal" : "Play") : (state.language === "tr" ? "Kaynakta aç" : "Open source"); play.onclick = () => item.direct ? playMusicIndex(index, true) : openExternalLink(item.url); row.append(play);
-      const remove = create("button", "icon-button", "×"); remove.type = "button"; remove.title = state.language === "tr" ? "Listeden çıkar" : "Remove"; remove.onclick = () => { callMusic.queue.splice(index, 1); if (callMusic.index >= callMusic.queue.length) callMusic.index = callMusic.queue.length - 1; renderMusicPanel(); broadcastMusicState(); }; row.append(remove); queue.append(row);
-    }
-  }
-  async function playMusicIndex(index, broadcast = false) {
-    const item = callMusic.queue[index]; if (!item?.direct) return;
-    const audio = $("#voiceMusicAudio"); const previousIndex = callMusic.index; callMusic.index = index;
-    if (audio.src !== item.url) { audio.src = item.url; audio.currentTime = 0; }
-    if (callMusic.playing && index === previousIndex && !audio.paused) { audio.pause(); callMusic.playing = false; }
-    else { callMusic.playing = true; try { await audio.play(); } catch { callMusic.playing = false; toast(state.language === "tr" ? "Bu ses bağlantısı oynatılamadı." : "This audio link could not be played.", true); } }
-    renderMusicPanel(); if (broadcast) broadcastMusicState();
-  }
-  function applyMusicState(payload) {
-    if (!Array.isArray(payload?.queue)) return;
-    callMusic.applyingRemote = true; callMusic.queue = payload.queue.filter(item => item && typeof item.id === "string" && typeof item.url === "string" && typeof item.title === "string" && typeof item.direct === "boolean").slice(0, 32); callMusic.index = Math.max(-1, Math.min(Number(payload.index) || -1, callMusic.queue.length - 1)); callMusic.playing = !!payload.playing;
-    const item = callMusic.queue[callMusic.index]; const audio = $("#voiceMusicAudio");
-    if (item?.direct) { if (audio.src !== item.url) audio.src = item.url; const position = Math.max(0, Number(payload.position) || 0); if (Math.abs(audio.currentTime - position) > 2) audio.currentTime = position; if (callMusic.playing) void audio.play().catch(() => {}); else audio.pause(); }
-    renderMusicPanel(); callMusic.applyingRemote = false;
-  }
 
+  function renderWatchParty() {
+    const call = voiceClient?.getState();
+    const available = !!call && ["connected", "reconnecting"].includes(call.status);
+    $("#voiceWatchButton").classList.toggle("hidden", !available);
+    $("#voiceWatchButton").setAttribute("aria-expanded", String(watchPartyOpen));
+    $("#watchPartyPanel").classList.toggle("hidden", !available || !watchPartyOpen);
+    const value = watchParty?.getState();
+    const video = $("#watchPartyVideo");
+    if (!value?.source || !available) {
+      video.pause();
+      if (video.hasAttribute("src")) { video.removeAttribute("src"); video.load(); }
+      if (!available && watchPartyLocal) { URL.revokeObjectURL(watchPartyLocal.url); watchPartyLocal = null; }
+      return;
+    }
+    if (!watchPartyOpen && (!video.hasAttribute("src") || video.dataset.partySource !== value.source)) {
+      video.pause(); video.removeAttribute("src"); return;
+    }
+    const local = value.source.startsWith(localWatchPrefix);
+    if (local && watchPartyLocal?.key !== value.source) {
+      video.pause(); video.removeAttribute("src");
+      $("#watchPartyStatus").textContent = tr() ? "Arkadaşın yerel video seçti. Senkron izlemek için aynı video dosyasını seç." : "Your friend selected a local video. Select the same file to watch in sync.";
+      return;
+    }
+    const url = local ? watchPartyLocal.url : value.source;
+    video.dataset.partySource = value.source;
+    if (video.getAttribute("src") !== url) { video.src = url; video.load(); }
+    if (video.readyState > 0 && Math.abs(video.currentTime - value.position) > 1.1) video.currentTime = Math.min(value.position, Number.isFinite(video.duration) ? video.duration : value.position);
+    if (value.playing) void video.play().catch(() => { $("#watchPartyStatus").textContent = tr() ? "İzlemeye katılmak için Oynat'a bas." : "Press Play to join playback."; });
+    else video.pause();
+    $("#watchPartyStatus").textContent = local ? (tr() ? "Yerel video · senkron izleme" : "Local video · synchronized") : (tr() ? "Ortak video · oynat, duraklat ve sar" : "Shared video · play, pause and seek");
+  }
   function closeVoiceParticipantMenu({ restoreFocus = false } = {}) {
     $("#voiceParticipantMenu").classList.add("hidden");
     renderPeerMuteState();
@@ -2818,7 +2815,7 @@
         }
       }
       else if (data.type === "voice_signal") {
-        if (data.kind === "music_state") applyMusicState(data.payload);
+        if (data.kind === "watch_party") watchParty?.handleSignal(data);
         else void voiceClient?.handleSignal(data);
       }
       else if (data.type === "deleted" || data.type === "refresh") { if (state.active) loadMessages(false); }
@@ -2838,7 +2835,6 @@
     share: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 22h8M12 17v5M12 13V7m-3 3 3-3 3 3"/>',
     stop: '<rect x="5" y="5" width="14" height="14" rx="2"/>',
     device: '<path d="M4 14v-3a8 8 0 0 1 16 0v3M4 12H2v7h4v-7H4ZM20 12h2v7h-4v-7h2Z"/>',
-    music: '<path d="M9 18V5l12-3v13M9 8l12-3"/><ellipse cx="6" cy="18" rx="3" ry="3"/><ellipse cx="18" cy="15" rx="3" ry="3"/>',
     refresh: '<path d="M20 7v5h-5M4 17v-5h5M5.5 7a7 7 0 0 1 12-2L20 8M4 16l2.5 3a7 7 0 0 0 12-2"/>',
     preview: '<rect x="2" y="4" width="20" height="16" rx="2"/><rect x="12" y="11" width="7" height="6" rx="1"/>',
     end: '<path d="M3 15v-4c5-5 13-5 18 0v4l-5-1v-3a13 13 0 0 0-8 0v3l-5 1Z"/>'
@@ -2899,10 +2895,7 @@
     if (activeCall && !voiceCallOpenedAt) voiceCallOpenedAt = Date.now();
     if (!activeCall) {
       voiceCallOpenedAt = 0; voiceDevicePanelOpen = false;
-      if (callMusic.queue.length || callMusic.playing) {
-        callMusic.open = false; callMusic.queue = []; callMusic.index = -1; callMusic.playing = false;
-        const audio = $("#voiceMusicAudio"); audio.pause(); audio.removeAttribute("src"); audio.load();
-      }
+      if (voice.status === "idle") { watchPartyOpen = false; watchParty?.reset(); }
     }
     updateVoiceCallDuration();
     const qualityLabels = state.language === "tr"
@@ -2919,7 +2912,7 @@
     $("#voiceDeviceRow").classList.toggle("hidden", !activeCall || !voiceDevicePanelOpen);
     $("#voiceDeviceButton").classList.toggle("hidden", !activeCall);
     $("#voiceDeviceButton").setAttribute("aria-expanded", String(voiceDevicePanelOpen));
-    renderMusicPanel();
+    renderWatchParty();
     $("#voiceStageMicButton").classList.toggle("hidden", !activeCall);
     $("#voiceStageMicButton").classList.toggle("is-muted", voice.micMuted && (!pushToTalk || voice.micManuallyMuted || !voice.micAvailable));
     $("#voiceStageMicButton").setAttribute("aria-pressed", String(voice.micMuted));
@@ -2931,7 +2924,7 @@
     $("#voiceOutputButton").setAttribute("aria-pressed", String(voice.speakerMuted));
     setVoiceRoomIcon("#voiceOutputIcon", voice.speakerMuted ? "soundOff" : "sound");
     setVoiceRoomIcon("#voiceDeviceButton .voice-control-icon", "device");
-    setVoiceRoomIcon("#voiceMusicButton .voice-control-icon", "music");
+    setVoiceRoomIcon("#voiceWatchButton .voice-control-icon", "share");
     setVoiceRoomIcon("#voiceRefreshScreenButton .voice-control-icon", "refresh");
     setVoiceRoomIcon("#voicePreviewButton .voice-control-icon", "preview");
     setVoiceRoomIcon("#voiceHangupButton .voice-control-icon", "end");
@@ -2983,7 +2976,7 @@
     $(".voice-encryption-note").textContent = groupMode ? translate("RELAYED · NOT END-TO-END ENCRYPTED") : "LIVE · AUDIO";
     const hasRemoteVideo = !!voice.remoteVideoStream?.getVideoTracks().some(track => track.readyState === "live" && !track.muted);
     const hasLocalVideo = !!voice.localScreenStream?.getVideoTracks().some(track => track.readyState === "live" && !track.muted);
-    const compactCall = activeCall && voiceStageCompact && !hasRemoteVideo && !hasLocalVideo && !voiceDevicePanelOpen && !callMusic.open;
+    const compactCall = activeCall && voiceStageCompact && !hasRemoteVideo && !hasLocalVideo && !voiceDevicePanelOpen && !watchPartyOpen;
     $("#voiceStage").classList.toggle("is-compact", compactCall);
     $("#voiceStageCompactButton").classList.toggle("hidden", !activeCall || hasRemoteVideo || hasLocalVideo);
     $("#voiceStageCompactButton").setAttribute("aria-expanded", String(!compactCall));
@@ -3086,6 +3079,17 @@
   }
 
   function setupVoiceClient() {
+    watchParty = window.GhostChatWatchParty.create({
+      getCall: () => voiceClient?.getState(), getUserId: () => state.user?.id,
+      sendSignal: ({ conversationId, peerId, kind, payload }) => {
+        if (state.socket?.readyState !== WebSocket.OPEN) throw new Error(tr() ? "Sunucu bağlantısı yok." : "Server disconnected.");
+        state.socket.send(JSON.stringify({ type: "voice_signal", conversation_id: conversationId, to_user_id: peerId, kind, payload }));
+      },
+      onChange: value => {
+        renderWatchParty();
+        if (value.remote && value.action === "source" && !watchPartyOpen) toast(tr() ? "Arkadaşın Watch Party başlattı. Arama panelinden katılabilirsin." : "Your friend started Watch Party. Join from the call panel.");
+      }
+    });
     voiceClient = window.GhostChatVoice.create({
       getSettings: voiceSettings,
       getUserId: () => state.user?.id || "",
@@ -3763,33 +3767,93 @@
   };
   $("#voiceDeviceButton").onclick = () => { voiceDevicePanelOpen = !voiceDevicePanelOpen; renderVoiceControls(); };
   $("#voiceStageCompactButton").onclick = () => { voiceStageCompact = !voiceStageCompact; localStorage.setItem("ghostchat.voice.roomCompact", String(voiceStageCompact)); renderVoiceControls(); };
-  $("#voiceMusicButton").onclick = () => { callMusic.open = !callMusic.open; renderMusicPanel(); };
-  $("#voiceMusicClose").onclick = () => { callMusic.open = false; renderMusicPanel(); };
+  $("#voiceWatchButton").onclick = () => {
+    watchPartyOpen = !watchPartyOpen;
+    if (watchPartyOpen) { try { watchParty.requestState(); } catch (error) { toast(error.message, true); } }
+    renderWatchParty(); renderVoiceControls();
+  };
+  $("#watchPartyClose").onclick = () => { watchPartyOpen = false; renderWatchParty(); };
+  $("#watchPartyForm").onsubmit = event => {
+    event.preventDefault();
+    try { watchParty.setSource($("#watchPartyUrl").value.trim()); }
+    catch (error) { toast(error.message, true); }
+  };
+  $("#watchPartyFileButton").onclick = () => $("#watchPartyFile").click();
+  $("#watchPartyFile").onchange = async event => {
+    const file = event.currentTarget.files?.[0];
+    if (!file) return;
+    try {
+      if (!file.type.startsWith("video/")) throw new Error(tr() ? "Video dosyası seç." : "Choose a video file.");
+      const sample = await file.slice(0, 65536).arrayBuffer();
+      const fingerprint = new Uint8Array(await crypto.subtle.digest("SHA-256", sample));
+      const hash = [...fingerprint].map(byte => byte.toString(16).padStart(2, "0")).join("");
+      const key = `${localWatchPrefix}${file.size}-${hash}.mp4`;
+      if (watchPartyLocal) URL.revokeObjectURL(watchPartyLocal.url);
+      watchPartyLocal = { key, url: URL.createObjectURL(file) };
+      if (watchParty.getState().source !== key) watchParty.setSource(key);
+      else { watchParty.requestState(); renderWatchParty(); }
+    } catch (error) { toast(error.message, true); }
+  };
+  $("#watchPartyPlay").onclick = () => {
+    try {
+      const video = $("#watchPartyVideo");
+      if (!video.hasAttribute("src")) throw new Error(tr() ? "Önce videoyu seç." : "Choose the video first.");
+      if (video.paused) watchParty.play(video.currentTime); else watchParty.pause(video.currentTime);
+    } catch (error) { toast(error.message, true); }
+  };
+  $("#watchPartySeek").onchange = event => {
+    const video = $("#watchPartyVideo");
+    if (Number.isFinite(video.duration)) { try { watchParty.seek(Number(event.currentTarget.value) / 100 * video.duration); } catch (error) { toast(error.message, true); } }
+  };
+  $("#watchPartyStop").onclick = () => {
+    try { watchParty.stop(); }
+    catch (error) { toast(error.message, true); }
+  };
+  $("#watchPartyVideo").addEventListener("loadedmetadata", renderWatchParty);
+  $("#watchPartyVideo").addEventListener("timeupdate", event => {
+    const video = event.currentTarget;
+    $("#watchPartySeek").value = Number.isFinite(video.duration) && video.duration > 0 ? video.currentTime / video.duration * 100 : 0;
+    $("#watchPartyTime").textContent = `${Math.floor(video.currentTime / 60)}:${String(Math.floor(video.currentTime % 60)).padStart(2, "0")}`;
+  });
+  $("#watchPartyVideo").addEventListener("error", () => { $("#watchPartyStatus").textContent = tr() ? "Video açılamadı. Dosya biçimini veya bağlantıyı kontrol et." : "Could not play the video. Check the format or link."; });
+  $("#watchPartyVideo").addEventListener("ended", () => {
+    if (watchParty?.getState().actor === state.user?.id) {
+      try { watchParty.pause($("#watchPartyVideo").currentTime); } catch {}
+    }
+  });
+  // The last person to control playback publishes a periodic actual position.
+  // Receivers only apply it, so buffering correction never becomes an echo loop.
+  setInterval(() => {
+    const value = watchParty?.getState();
+    const video = $("#watchPartyVideo");
+    if (!value?.source || !video.hasAttribute("src") || voiceClient?.getState().status !== "connected") return;
+    if (value.actor === state.user?.id && video.readyState >= 2) {
+      try { watchParty.update({ position: video.currentTime, playing: !video.paused && !video.ended }); } catch {}
+    } else renderWatchParty();
+  }, 4000);
+  $("#watchPartyApp").onclick = () => {
+    if (voiceClient.getState().screenSharing) { toast(tr() ? "Paylaşım zaten açık. Pencereyi değiştirmek için Paylaşımı yenile'ye bas." : "Already sharing. Use Refresh share to choose another window."); return; }
+    $("#voiceStageShareButton").click();
+  };
   $("#voiceCallNote").addEventListener("input", event => {
     clearTimeout(callNoteTimer);
     const text = event.currentTarget.value;
     callNoteTimer = setTimeout(() => voiceClient.setCallNote(text), 240);
   });
-  $("#voiceMusicForm").addEventListener("submit", event => {
-    event.preventDefault();
-    try {
-      const parsed = new URL($("#voiceMusicUrl").value.trim());
-      if (parsed.protocol !== "https:") throw new Error(state.language === "tr" ? "Yalnızca güvenli HTTPS müzik bağlantıları eklenebilir." : "Only secure HTTPS music links can be added.");
-      if (callMusic.queue.length >= 32) throw new Error(state.language === "tr" ? "Çalma listesi en fazla 32 bağlantı içerir." : "The playlist can contain up to 32 links.");
-      const provider = musicProvider(parsed.href);
-      const pathName = parsed.pathname.split("/").filter(Boolean).pop();
-      const item = { id: crypto.randomUUID(), url: parsed.href, title: `${provider}${pathName ? ` · ${decodeURIComponent(pathName).slice(0, 120)}` : ""}`.slice(0, 160), direct: isDirectMusicUrl(parsed.href) };
-      callMusic.queue.push(item); $("#voiceMusicUrl").value = "";
-      if (callMusic.index < 0 && item.direct) void playMusicIndex(callMusic.queue.length - 1, true);
-      else { renderMusicPanel(); broadcastMusicState(); }
-    } catch (error) { toast(error.message || (state.language === "tr" ? "Geçerli bir müzik bağlantısı gir." : "Enter a valid music link."), true); }
-  });
-  $("#voiceMusicAudio").addEventListener("ended", () => {
-    const next = callMusic.queue.findIndex((item, index) => index > callMusic.index && item.direct);
-    if (next >= 0) void playMusicIndex(next, true);
-    else { callMusic.playing = false; renderMusicPanel(); broadcastMusicState(); }
-  });
   $("#voiceStageShareButton").onclick = () => {
+    const current = groupVoiceUiState.status !== "idle" ? groupVoiceClient.getState() : voiceClient.getState();
+    if (!current.screenSharing) {
+      $("#ghostShareQuality").value = voiceSettings().shareQuality;
+      $("#ghostShareAudio").checked = voiceSettings().shareSystemAudio;
+      openOverlayDialog($("#ghostShareSetupDialog")); return;
+    }
+    const action = groupVoiceUiState.status !== "idle" ? groupVoiceClient.toggleScreenSharing() : voiceClient.toggleScreenSharing();
+    void action.catch(error => toast(error.message, true));
+  };
+  $("#ghostShareStart").onclick = () => {
+    localStorage.setItem("ghostchat.share.quality", $("#ghostShareQuality").value);
+    localStorage.setItem("ghostchat.voice.systemAudio", String($("#ghostShareAudio").checked));
+    $("#ghostShareSetupDialog").close();
     const action = groupVoiceUiState.status !== "idle" ? groupVoiceClient.toggleScreenSharing() : voiceClient.toggleScreenSharing();
     void action.catch(error => toast(error.message, true));
   };
