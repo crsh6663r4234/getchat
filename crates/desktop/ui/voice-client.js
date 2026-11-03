@@ -318,6 +318,38 @@
       if (activeCall) activeCall.shareMonitor = null;
     }
 
+    // Stop the direct compatibility publisher in one place.  Source tracks
+    // emit `ended` while the user is stopping a share, and calling the old
+    // toggle function from that event could race a new share/refresh.  Clear
+    // state first, then detach every sender so receivers never retain a frame.
+    async function stopDirectScreenShare(activeCall, { notifyPeer = true } = {}) {
+      if (!activeCall?.screenStream) return;
+      if (activeCall.stopScreenPromise) return activeCall.stopScreenPromise;
+      const stream = activeCall.screenStream;
+      activeCall.screenStream = null;
+      stopShareMonitor(activeCall);
+      activeCall.screenQuality = null;
+      const task = (async () => {
+        for (const track of stream.getTracks()) {
+          const sender = activeCall.pc?.getSenders().find(item => item.track === track);
+          if (sender && track.kind === "video" && sender === findVideoTransceiver(activeCall)?.sender) {
+            await sender.replaceTrack(null);
+          } else if (sender) {
+            activeCall.pc?.removeTrack(sender);
+          }
+          track.onended = null;
+          track.stop();
+        }
+        if (notifyPeer && call === activeCall) send(activeCall.conversationId, activeCall.peerId, "screen_stopped", null);
+      })();
+      activeCall.stopScreenPromise = task;
+      try { await task; }
+      finally {
+        if (activeCall.stopScreenPromise === task) activeCall.stopScreenPromise = null;
+        if (call === activeCall) notify();
+      }
+    }
+
     async function setShareLevel(activeCall, track, nextLevel, reason = "stable") {
       const profiles = activeCall.shareProfiles || shareProfiles();
       const level = Math.max(0, Math.min(profiles.length - 1, nextLevel));
@@ -773,23 +805,7 @@
         }
       }
       if (call.screenStream) {
-        const stream = call.screenStream;
-        call.screenStream = null;
-        stopShareMonitor(call);
-        call.screenQuality = null;
-        for (const track of stream.getTracks()) {
-          const sender = call.pc.getSenders().find(item => item.track === track);
-          if (sender && track.kind === "video" && sender === findVideoTransceiver(call)?.sender) {
-            await sender.replaceTrack(null);
-          } else if (sender) {
-            call.pc.removeTrack(sender);
-          }
-          track.onended = null;
-          track.stop();
-        }
-        send(call.conversationId, call.peerId, "screen_stopped", null);
-        notify();
-        return;
+        return stopDirectScreenShare(call);
       }
       const settings = api.getSettings();
       const activeCall = call;
@@ -801,7 +817,11 @@
         if (!call || call !== activeCall) { stream.getTracks().forEach(track => track.stop()); return; }
         call.screenStream = stream;
         for (const track of stream.getTracks()) {
-          track.onended = () => { if (call?.screenStream === stream) void toggleScreenSharing(); };
+          track.onended = () => {
+            if (call === activeCall && activeCall.screenStream === stream) {
+              void stopDirectScreenShare(activeCall).catch(error => console.debug("Could not stop the ended screen share.", error));
+            }
+          };
           if (track.kind === "video") {
             let transceiver = findVideoTransceiver(call);
             if (!transceiver) {
@@ -877,7 +897,11 @@
             if (transceiver) await transceiver.sender.replaceTrack(track);
             else call.pc.addTrack(track, nextStream);
           } else if (!usedTracks.has(track)) call.pc.addTrack(track, nextStream);
-          track.onended = () => { if (call?.screenStream === nextStream) void toggleScreenSharing(); };
+          track.onended = () => {
+            if (call === activeCall && activeCall.screenStream === nextStream) {
+              void stopDirectScreenShare(activeCall).catch(error => console.debug("Could not stop the ended refreshed screen share.", error));
+            }
+          };
         }
         call.screenStream = nextStream;
         const videoTrack = nextStream.getVideoTracks()[0];

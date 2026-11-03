@@ -85,6 +85,10 @@
       const screen = screenElements.get(sid);
       if (screen) {
         track.detach(screen.video);
+        try { screen.video.pause(); } catch {}
+        screen.video.srcObject = null;
+        screen.video.removeAttribute("src");
+        try { screen.video.load(); } catch {}
         screen.tile.remove();
         screenElements.delete(sid);
       }

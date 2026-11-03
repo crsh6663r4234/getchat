@@ -10,12 +10,22 @@
     let conversationId = null;
     let localStream = null;
     let remoteStream = null;
+    let remoteTrack = null;
+    let remoteMuteTimer = null;
 
     function emit() {
       api.onState?.({ connected: !!room, sharing: !!room?.localParticipant?.isScreenShareEnabled });
     }
 
     function clearRemote() {
+      if (remoteMuteTimer) clearTimeout(remoteMuteTimer);
+      remoteMuteTimer = null;
+      if (remoteTrack) {
+        remoteTrack.onended = null;
+        remoteTrack.onmute = null;
+        remoteTrack.onunmute = null;
+      }
+      remoteTrack = null;
       remoteStream = null;
       api.onRemoteStream?.(null);
     }
@@ -25,9 +35,23 @@
       activeRoom
         .on(E.TrackSubscribed, (track) => {
           if (track.kind !== LK.Track.Kind.Video || track.source !== LK.Track.Source.ScreenShare) return;
+          clearRemote();
+          remoteTrack = track.mediaStreamTrack;
           remoteStream = new MediaStream([track.mediaStreamTrack]);
           track.mediaStreamTrack.onended = clearRemote;
-          track.mediaStreamTrack.onmute = clearRemote;
+          // A transient mute happens during an SFU layer switch.  Do not blank
+          // the share immediately, but remove a genuinely stopped source soon
+          // enough that WebView2 cannot keep a frozen final frame.
+          track.mediaStreamTrack.onmute = () => {
+            if (remoteMuteTimer) clearTimeout(remoteMuteTimer);
+            remoteMuteTimer = setTimeout(() => {
+              if (track.mediaStreamTrack.muted) clearRemote();
+            }, 1200);
+          };
+          track.mediaStreamTrack.onunmute = () => {
+            if (remoteMuteTimer) clearTimeout(remoteMuteTimer);
+            remoteMuteTimer = null;
+          };
           api.onRemoteStream?.(remoteStream);
         })
         .on(E.TrackUnsubscribed, track => {

@@ -2965,8 +2965,8 @@
       closeVoiceParticipantMenu();
       if (!groupMode) {
         $("#remoteAudio").srcObject = null;
-        $("#remoteScreen").srcObject = null;
-        $("#localScreen").srcObject = null;
+        clearVideoElement($("#remoteScreen"));
+        clearVideoElement($("#localScreen"));
         $("#enableCallAudio").classList.add("hidden");
       }
     }
@@ -3002,15 +3002,31 @@
     }
     const remoteScreenStream = voice.remoteVideoStream?.getVideoTracks().some(track => track.readyState === "live" && !track.muted) ? voice.remoteVideoStream : null;
     const localScreenStream = voice.localScreenStream?.getVideoTracks().some(track => track.readyState === "live" && !track.muted) ? voice.localScreenStream : null;
-    if (video.srcObject !== remoteScreenStream) {
-      video.srcObject = remoteScreenStream;
-      if (remoteScreenStream) void video.play().catch(() => {});
-    }
-    if (localVideo.srcObject !== localScreenStream) {
-      localVideo.srcObject = localScreenStream;
-      if (localScreenStream) void localVideo.play().catch(() => {});
-    }
+    setVideoStream(video, remoteScreenStream);
+    setVideoStream(localVideo, localScreenStream);
     void applyPlaybackSettings();
+  }
+
+  // WebView2 can paint the final decoded video frame after srcObject becomes
+  // null. Pausing, clearing the source and reloading the element makes the
+  // visual state match the actual screen-share state every time.
+  function clearVideoElement(video) {
+    if (!video) return;
+    try { video.pause(); } catch {}
+    video.srcObject = null;
+    video.removeAttribute("src");
+    try { video.load(); } catch {}
+  }
+
+  function setVideoStream(video, stream) {
+    if (!video || video.srcObject === stream) return;
+    if (!stream) {
+      clearVideoElement(video);
+      return;
+    }
+    clearVideoElement(video);
+    video.srcObject = stream;
+    void video.play().catch(() => {});
   }
 
   function setupVoiceClient() {
