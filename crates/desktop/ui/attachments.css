@@ -49,6 +49,13 @@
   grid-row: 2;
 }
 
+.composer.is-dragging-media,
+.messages.is-dragging-media {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
 .message-attachment {
   display: grid;
   justify-items: start;
@@ -112,6 +119,17 @@
 .attachment-download.unavailable {
   color: var(--muted);
 }
+
+.attachment-preview {
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 10px;
+}
+
+.attachment-preview:hover { border-color: var(--accent); }
 
 .attachment-filename {
   max-width: 100%;

@@ -6,6 +6,66 @@
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
   const invoke = window.__TAURI__?.core?.invoke;
+  // Modal dialogs must live directly under <body>. Keeping them inside the
+  // collapsible call area made WebView create the modal (Escape closed it),
+  // while the hidden ancestor prevented it from being painted.
+  function mountOverlayDialogs() {
+    for (const id of ["profilePreviewDialog", "mediaPreviewDialog", "quickProfileDialog", "appDecisionDialog"]) {
+      const dialog = $(`#${id}`);
+      if (dialog && dialog.parentElement !== document.body) document.body.append(dialog);
+    }
+  }
+  function openOverlayDialog(dialog) {
+    if (!dialog) return;
+    if (dialog.open) {
+      dialog.focus();
+      return;
+    }
+    try {
+      dialog.showModal();
+    } catch (error) {
+      // A WebView can briefly retain a closed dialog in its top-layer state.
+      // Retrying on the next frame makes profile/media viewing reliable.
+      requestAnimationFrame(() => {
+        if (!dialog.open) {
+          try { dialog.showModal(); } catch { toast(translate("Could not open preview."), true); }
+        }
+      });
+    }
+  }
+  mountOverlayDialogs();
+  function askUser({ title, message, confirmText, dangerous = false, input = null }) {
+    const dialog = $("#appDecisionDialog");
+    const inputRow = $("#appDecisionInputRow");
+    const inputNode = $("#appDecisionInput");
+    const confirmButton = $("#appDecisionConfirm");
+    return new Promise(resolve => {
+      let settled = false;
+      const finish = value => {
+        if (settled) return;
+        settled = true;
+        dialog.oncancel = null;
+        dialog.close();
+        resolve(value);
+      };
+      $("#appDecisionTitle").textContent = title || translate("Continue?");
+      $("#appDecisionMessage").textContent = message || "";
+      $("#appDecisionInputLabel").textContent = input?.label || "";
+      inputRow.classList.toggle("hidden", !input);
+      inputNode.value = input?.value || "";
+      inputNode.placeholder = input?.placeholder || "";
+      confirmButton.textContent = confirmText || translate("Continue");
+      confirmButton.classList.toggle("danger", dangerous);
+      confirmButton.classList.toggle("primary", !dangerous);
+      $("#appDecisionClose").onclick = () => finish(null);
+      $("#appDecisionCancel").onclick = () => finish(null);
+      confirmButton.onclick = () => finish(input ? inputNode.value : true);
+      dialog.oncancel = event => { event.preventDefault(); finish(null); };
+      openOverlayDialog(dialog);
+      setTimeout(() => (input ? inputNode : confirmButton).focus(), 0);
+    });
+  }
+  const askConfirm = options => askUser(options).then(value => value === true);
   const state = { localBase: "", base: "", token: "", user: null, presence: new Map(), presenceMode: "online", pendingRecovery: "", recoveryKey: "", pendingGroupInviteCode: null, page: "messages", conversations: [], friends: [], pending: [], blockedUserIds: new Set(), attachmentObserver: null, attachmentObjectUrls: [], seenFriendRequestIds: new Set(), active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null, cryptoDevice: null, cryptoEnabled: new Set(), cryptoLocked: new Set(), cryptoSetupComplete: new Set(), cryptoCanManage: new Set(), cryptoPeerFingerprints: new Map(), cryptoSyncing: new Map(), cryptoMessageDecoding: new Map(), cryptoMemberIds: new Map(), cryptoMembershipPending: new Set(), cryptoMembershipOperations: new Map(), replyingTo: null, lastReadSequence: new Map(), typingUsers: new Map(), typingTimers: new Map(), typingActive: false, typingStopTimer: null, typingSentAt: 0, groupInviteCodes: new Map(), groupVoiceAvailable: null };
   function resetCryptoViewState() {
     state.cryptoEnabled.clear(); state.cryptoLocked.clear(); state.cryptoSetupComplete.clear(); state.cryptoCanManage.clear(); state.cryptoPeerFingerprints.clear(); state.cryptoMembershipPending.clear();
@@ -13,6 +73,7 @@
   }
   let signupAvatarData = null;
   let profileAvatarData = null;
+  let quickProfileAvatarData = null;
   let settingsRecoveryStatusKey = "";
   let voiceDevicePanelOpen = false;
   let voiceStageCompact = localStorage.getItem("ghostchat.voice.compact") !== "false";
@@ -252,7 +313,7 @@
     $("#profilePreviewPresence").textContent = presenceLabel(user.id);
     $("#profilePreviewPresence").className = `presence-copy ${presenceFor(user.id)}`;
     setAvatar($("#profilePreviewAvatar"), user.display_name, user.avatar_data);
-    $("#profilePreviewDialog").showModal();
+    openOverlayDialog($("#profilePreviewDialog"));
   }
 
   function groupPeerMuteKey(conversationId, accountId) {
@@ -1340,7 +1401,7 @@
   async function removeFriend(friend) {
     const name = friend.display_name || friend.username || "this person";
     const question = state.language === "tr" ? `${name} kişisini arkadaşlıktan çıkarmak istiyor musun?` : `Remove ${name} from your friends?`;
-    if (!confirm(question)) return;
+    if (!await askConfirm({ title: translate("Remove friend"), message: question, confirmText: state.language === "tr" ? "Arkadaşlıktan çıkar" : "Remove friend", dangerous: true })) return;
     try {
       await request(`/v1/friends/${encodeURIComponent(friend.id)}`, { method: "DELETE" });
       await refreshFriends({ notifyNew: false });
@@ -1416,7 +1477,7 @@
           for (const optionValue of options) { const option = create("option", "", translate(optionValue === "owner" ? "Owner" : optionValue === "admin" ? "Admin" : "Member")); option.value = optionValue; role.append(option); }
           role.value = member.role;
           role.onchange = async () => {
-            if (role.value === "owner" && !confirm(translate("Transfer group ownership to this person? You will become an admin."))) { role.value = member.role; return; }
+            if (role.value === "owner" && !await askConfirm({ title: translate("Transfer group ownership"), message: translate("Transfer group ownership to this person? You will become an admin."), confirmText: state.language === "tr" ? "Sahipliği devret" : "Transfer ownership", dangerous: true })) { role.value = member.role; return; }
             role.disabled = true;
             try {
               await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/members/${encodeURIComponent(member.id)}`, { method: "PATCH", body: JSON.stringify({ role: role.value }) });
@@ -1436,7 +1497,7 @@
             remove.disabled = true;
             try {
               if (encryptedLocked && member.id === state.user.id) {
-                if (!confirm(translate("Leave this encrypted group? The request will be sent to the owner. You will stay in the group until the owner commits the MLS update. Owners must transfer ownership before leaving."))) return;
+                if (!await askConfirm({ title: translate("Leave group"), message: translate("Leave this encrypted group? The request will be sent to the owner. You will stay in the group until the owner commits the MLS update. Owners must transfer ownership before leaving."), confirmText: state.language === "tr" ? "Ayrıl" : "Leave group", dangerous: true })) return;
                 const pending = await invoke("crypto_get_pending_group_membership_update", { userId: state.user.id, conversationId: conversation.id });
                 let leaveRequest = pending;
                 if (pending && pending.action !== "leave_request") {
@@ -1452,7 +1513,7 @@
                 $("#groupManageDialog").close();
                 toast(translate("Leave request sent. You will remain in the group until its owner approves the encrypted update."));
               } else if (encryptedLocked) {
-                if (!confirm(translate("Remove this member from the encrypted group? GhostChat will send a signed MLS Commit to remaining members and they will need to verify the changed group security code."))) return;
+                if (!await askConfirm({ title: translate("Remove from group"), message: translate("Remove this member from the encrypted group? GhostChat will send a signed MLS Commit to remaining members and they will need to verify the changed group security code."), confirmText: state.language === "tr" ? "Üyeyi çıkar" : "Remove member", dangerous: true })) return;
                 const pending = await invoke("crypto_get_pending_group_membership_update", { userId: state.user.id, conversationId: conversation.id });
                 if (pending) {
                   if (pending.action !== "remove" || pending.memberIds?.length !== 1 || pending.memberIds[0] !== member.id) {
@@ -1586,7 +1647,7 @@
         : "The encrypted identity is not verified. Compare this code with your friend before sending private messages.");
     status.classList.toggle("warning", !trusted);
   }
-  function verifyPeerFingerprint(conversationId, fingerprint) {
+  async function verifyPeerFingerprint(conversationId, fingerprint) {
     if (!fingerprint) return false;
     const trusted = localStorage.getItem(cryptoTrustedFingerprintKey(conversationId));
     state.cryptoPeerFingerprints.set(conversationId, fingerprint);
@@ -1601,7 +1662,7 @@
     const prompt = trusted
       ? `${promptText}\n\n${translate("Previous verified code")}\n${trusted}\n\n${translate("Current security code")}\n${fingerprint}`
       : `${promptText}\n\n${fingerprint}`;
-    if (!confirm(prompt)) return false;
+    if (!await askConfirm({ title: state.language === "tr" ? "Güvenlik kodunu doğrula" : "Verify security code", message: prompt, confirmText: state.language === "tr" ? "Doğruladım" : "I verified it" })) return false;
     localStorage.setItem(cryptoTrustedFingerprintKey(conversationId), fingerprint);
     return true;
   }
@@ -1654,7 +1715,7 @@
             }
             if (result.kind === "welcome" && result.peerIdentityFingerprint) {
               state.cryptoEnabled.add(conversationId);
-              verifyPeerFingerprint(conversationId, result.peerIdentityFingerprint);
+              await verifyPeerFingerprint(conversationId, result.peerIdentityFingerprint);
               updateCryptoStatus(state.active?.id === conversationId ? state.active : { id: conversationId, kind: conversationIsGroup ? "group" : "direct" });
               if (!cryptoIdentityTrusted(conversationId)) holdForVerification = true;
             } else if (result.kind === "commit") {
@@ -1938,7 +1999,7 @@
     if (!conversation || !["direct", "group"].includes(conversation.kind) || !state.user) return;
     if (state.cryptoEnabled.has(conversation.id)) {
       const fingerprint = currentCryptoFingerprint(conversation.id);
-      const verified = fingerprint ? verifyPeerFingerprint(conversation.id, fingerprint) : false;
+      const verified = fingerprint ? await verifyPeerFingerprint(conversation.id, fingerprint) : false;
       updateCryptoStatus(conversation);
       if (verified) await syncCryptoEvents(conversation.id);
       return;
@@ -1970,7 +2031,7 @@
           keyPackages.push({ userId: peer.id, deviceId: claimed.device_id, payload: claimed.payload });
           deviceCodes.push(`${peer.display_name} (@${peer.username})\n${inspected.identityFingerprint}`);
         }
-        const approved = confirm(`${translate("Verify the full group security code with every member through another trusted channel before continuing. The list below shows each member's device code.")}\n\n${deviceCodes.join("\n\n")}`);
+        const approved = await askConfirm({ title: state.language === "tr" ? "Grup güvenlik kodları" : "Group security codes", message: `${translate("Verify the full group security code with every member through another trusted channel before continuing. The list below shows each member's device code.")}\n\n${deviceCodes.join("\n\n")}`, confirmText: state.language === "tr" ? "Doğruladım" : "I verified them" });
         if (!approved) { toast(translate("Encryption setup was cancelled. The one-time key packages were already claimed; members may need to publish fresh packages.")); return; }
         const roster = members.map(member => member.id).sort();
         await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/crypto-lock`, {
@@ -1991,7 +2052,7 @@
         const inspected = await invoke("crypto_inspect_key_package", {
           peerUserId: conversation.peer_id, peerDeviceId: claimed.device_id, payload: claimed.payload,
         });
-        const approved = confirm(`${translate("Compare this security code with your friend through another trusted channel before continuing. Continue only if the codes match.")}\n\n${inspected.identityFingerprint}`);
+        const approved = await askConfirm({ title: state.language === "tr" ? "Güvenlik kodu" : "Security code", message: `${translate("Compare this security code with your friend through another trusted channel before continuing. Continue only if the codes match.")}\n\n${inspected.identityFingerprint}`, confirmText: state.language === "tr" ? "Kodlar eşleşiyor" : "Codes match" });
         if (!approved) {
           toast(translate("Your friend needs to prepare an encryption device first."));
           return;
@@ -2181,7 +2242,7 @@
     }
     if (cursor < content.length) node.append(document.createTextNode(content.slice(cursor)));
   }
-  function openExternalLink(url) {
+  async function openExternalLink(url) {
     let parsed;
     try {
       parsed = new URL(url);
@@ -2190,7 +2251,7 @@
       toast(translate("This link is invalid."), true);
       return;
     }
-    if (!confirm(`${translate("Open external link?")}\n${parsed.href}`)) return;
+    if (!await askConfirm({ title: translate("Open external link?"), message: parsed.href, confirmText: state.language === "tr" ? "Bağlantıyı aç" : "Open link" })) return;
     const anchor = document.createElement("a");
     anchor.href = parsed.href;
     anchor.target = "_blank";
@@ -2402,12 +2463,12 @@
     catch (error) { toast(error.message, true); }
   }
   async function editMessage(message) {
-    const content = prompt("Edit message", message.content); if (content === null || content.trim() === message.content) return;
+    const content = await askUser({ title: translate("Edit message"), message: state.language === "tr" ? "Mesajını düzenle." : "Edit your message.", confirmText: state.language === "tr" ? "Kaydet" : "Save", input: { label: state.language === "tr" ? "Mesaj" : "Message", value: message.content } }); if (content === null || content.trim() === message.content) return;
     try { await request(`/v1/messages/${encodeURIComponent(message.id)}`, { method: "PATCH", body: JSON.stringify({ content }) }); await loadMessages(false); }
     catch (error) { toast(error.message, true); }
   }
   async function deleteMessage(id) {
-    if (!confirm("Delete this message?")) return;
+    if (!await askConfirm({ title: translate("Delete message"), message: state.language === "tr" ? "Bu mesaj kalıcı olarak silinecek." : "This message will be permanently deleted.", confirmText: state.language === "tr" ? "Mesajı sil" : "Delete message", dangerous: true })) return;
     try { await request(`/v1/messages/${encodeURIComponent(id)}`, { method: "DELETE" }); $(`[data-message-id="${CSS.escape(id)}"]`)?.remove(); await refreshConversations(); }
     catch (error) { toast(error.message, true); }
   }
@@ -2431,7 +2492,7 @@
       image.src = url; image.alt = filename || translate("Shared image");
       content.append(image);
     }
-    if (!dialog.open) dialog.showModal();
+    openOverlayDialog(dialog);
   }
   const DEFAULT_REACTIONS = ["👍", "❤️", "😂", "👀", "🎉"];
   function reactionUsageKey(conversationId) { return `ghostchat.reactionUsage.${state.base || "local"}.${state.user?.id || "guest"}.${conversationId}`; }
@@ -2485,7 +2546,23 @@
         container.append(image);
         container.append(create("span", "attachment-filename", filename));
       } else if (attachment.content_type?.startsWith("video/")) {
-        const video = create("video", "message-video"); video.src = url; video.controls = true; video.preload = "metadata"; video.playsInline = true; video.title = translate("Open preview"); video.ondblclick = () => openMediaPreview({ url, filename, type: "video" }); container.append(video);
+        const loading = create("span", "attachment-loading", state.language === "tr" ? "Video hazırlanıyor…" : "Preparing video…"); container.append(loading);
+        let previewUrl = url;
+        try {
+          const downloadUrl = new URL(`/v1/attachments/${encodeURIComponent(attachmentId)}`, activeBase());
+          const response = await fetch(downloadUrl, { headers: { Authorization: `Bearer ${state.token}` } });
+          if (!response.ok) throw new Error("Video download failed");
+          const blob = await response.blob();
+          previewUrl = URL.createObjectURL(blob);
+          state.attachmentObjectUrls.push(previewUrl);
+        } catch (error) { console.warn("Using attachment video link", error); }
+        if (!container.isConnected || !messageRow?.isConnected) return;
+        const video = create("video", "message-video"); video.src = previewUrl; video.controls = true; video.preload = "metadata"; video.playsInline = true; video.title = translate("Open preview");
+        video.onloadeddata = () => loading.remove();
+        video.onerror = () => { loading.remove(); video.remove(); const fallback = create("a", "attachment-download", `⇩  ${filename}`); fallback.href = url; fallback.download = filename; container.prepend(fallback); };
+        video.onclick = event => { if (event.detail >= 2) openMediaPreview({ url: previewUrl, filename, type: "video" }); };
+        const openPlayer = create("button", "attachment-preview", state.language === "tr" ? "Tam oynatıcıyı aç" : "Open full player"); openPlayer.type = "button"; openPlayer.onclick = () => openMediaPreview({ url: previewUrl, filename, type: "video" });
+        container.append(video, openPlayer);
         container.append(create("span", "attachment-filename", filename));
       } else {
         const link = create("a", "attachment-download", `⇩  ${filename}`); link.href = url; link.download = filename; container.append(link);
@@ -2585,6 +2662,15 @@
       await refreshConversations(); toast(translate("File sent."));
     } catch (error) { toast(error.message || "Could not reach the selected server. Check its address and connection.", true); }
     finally { button.disabled = false; $("#attachmentInput").value = ""; }
+  }
+  async function uploadFiles(files) {
+    const queue = [...(files || [])].filter(file => file instanceof File);
+    if (!queue.length || !state.active) return;
+    if (state.cryptoEnabled.has(state.active.id) || state.cryptoLocked.has(state.active.id)) {
+      toast(state.language === "tr" ? "Şifreli sohbetlerde dosya seçmek için ekle düğmesini kullan." : "Use the attach button to select a file in encrypted chats.", true);
+      return;
+    }
+    for (const file of queue) await uploadAttachment(file);
   }
   async function uploadEncryptedAttachment() {
     const conversation = state.active;
@@ -3092,7 +3178,7 @@
             keyPackages.push({ userId: friend.id, deviceId: claimed.device_id, payload: claimed.payload });
             deviceCodes.push(`${friend.display_name} (@${friend.username})\n${inspected.identityFingerprint}`);
           }
-          const approved = confirm(`${translate("Verify each selected friend's full security code through another trusted channel before adding them to this encrypted group.")}\n\n${deviceCodes.join("\n\n")}`);
+          const approved = await askConfirm({ title: state.language === "tr" ? "Üye güvenlik kodları" : "Member security codes", message: `${translate("Verify each selected friend's full security code through another trusted channel before adding them to this encrypted group.")}\n\n${deviceCodes.join("\n\n")}`, confirmText: state.language === "tr" ? "Doğruladım" : "I verified them" });
           if (!approved) {
             $("#groupManageStatus").textContent = "";
             toast(translate("Encryption update cancelled. The one-time key packages were already claimed; the selected friends may need to publish fresh packages."));
@@ -3187,11 +3273,23 @@
     if (state.active && state.cryptoEnabled.has(state.active.id)) void uploadEncryptedAttachment();
     else $("#attachmentInput").click();
   };
-  $("#attachmentInput").addEventListener("change", event => { const file = event.target.files?.[0]; if (file) void uploadAttachment(file); });
+  $("#attachmentInput").addEventListener("change", event => { const files = event.target.files; if (files?.length) void uploadFiles(files); });
   $("#messageInput").addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("#composer").requestSubmit(); } });
   $("#messageInput").addEventListener("input", event => { event.target.style.height = "auto"; event.target.style.height = `${Math.min(event.target.scrollHeight, 180)}px`; sendTyping(!!event.target.value.trim()); });
-  window.addEventListener("focus", () => { if (state.active) void loadMessages(false); });
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && state.active) void loadMessages(false); });
+  const mediaDropTargets = [$("#composer"), $("#messages")];
+  for (const target of mediaDropTargets) {
+    target.addEventListener("dragover", event => { if (event.dataTransfer?.types.includes("Files")) { event.preventDefault(); target.classList.add("is-dragging-media"); } });
+    target.addEventListener("dragleave", event => { if (!target.contains(event.relatedTarget)) target.classList.remove("is-dragging-media"); });
+    target.addEventListener("drop", event => { target.classList.remove("is-dragging-media"); const files = event.dataTransfer?.files; if (!files?.length) return; event.preventDefault(); void uploadFiles(files); });
+  }
+  $("#messageInput").addEventListener("paste", event => {
+    const files = event.clipboardData?.files;
+    if (!files?.length) return;
+    event.preventDefault();
+    void uploadFiles(files);
+  });
+  window.addEventListener("focus", () => { if (state.active) { void refreshConversations(); void refreshPresence(); } });
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && state.active) { void refreshConversations(); void refreshPresence(); } });
   $("#loadOlder").onclick = () => loadMessages(true);
   function resetSettingsRecoveryKey(secret) {
     state.recoveryKey = secret || "";
@@ -3234,13 +3332,36 @@
       $("#cryptoDeviceStatus").textContent = translate("A local device identity is saved. Publish a fresh one-time key package when needed.");
     }
   }
+  function openQuickProfile() {
+    if (!state.user) return;
+    quickProfileAvatarData = state.user.avatar_data || null;
+    $("#quickProfileName").value = state.user.display_name || "";
+    $("#quickProfileUsername").value = state.user.username || "";
+    $("#quickPresenceMode").value = state.presenceMode || "online";
+    setAvatar($("#quickProfileAvatarPreview"), state.user.display_name, quickProfileAvatarData);
+    openOverlayDialog($("#quickProfileDialog"));
+  }
   $("#settingsButton").onclick = () => { closeMobileSidebar(); openSettings(); };
   $("#serverSettings").onclick = () => {
     openSettings();
     $("#serverAddressInput").focus({ preventScroll: true });
     $("#serverAddressInput").scrollIntoView({ block: "center", behavior: "smooth" });
   };
-  $("#profileButton").onclick = openSettings;
+  $("#profileButton").onclick = openQuickProfile;
+  $("#accountAvatar").onclick = openQuickProfile;
+  $("#accountProfileButton").onclick = openQuickProfile;
+  $("#quickProfileAvatar").addEventListener("change", event => { void handleAvatarFile(event.currentTarget, "#quickProfileAvatarPreview", value => { quickProfileAvatarData = value; }); });
+  $("#quickProfileMore").onclick = () => { $("#quickProfileDialog").close(); void openSettings(); };
+  $("#quickProfileSave").onclick = async event => {
+    const button = event.currentTarget; button.disabled = true;
+    try {
+      state.user = await request("/v1/me/profile", { method: "PATCH", body: JSON.stringify({ display_name: $("#quickProfileName").value, username: $("#quickProfileUsername").value, avatar_data: quickProfileAvatarData }) });
+      await setPresence($("#quickPresenceMode").value);
+      updateIdentity(); renderVoiceControls(); await refreshFriends({ notifyNew: false }); await refreshConversations();
+      $("#quickProfileDialog").close(); toast(translate("Profile saved."));
+    } catch (error) { toast(translate(error.message), true); }
+    finally { button.disabled = false; }
+  };
   for (const selector of ["#languageSelect", "#authLanguageSelect"]) $(selector).onchange = event => { localStorage.setItem("ghostchat.language", event.target.value); applyLanguage(); renderSidebar(); if (["friends", "search", "searchMessages"].includes(state.page)) renderPage(); else if (!state.active) showWelcome(); renderVoiceControls(); };
   for (const selector of ["#themeSelect", "#textSize", "#motionSelect"]) $(selector).onchange = () => applyAppearance({ persist: true });
   $("#presenceMode").onchange = event => { void setPresence(event.target.value); };
@@ -3282,7 +3403,7 @@
     const link = create("a"); link.href = url; link.download = "ghostchat-recovery.txt"; link.click(); URL.revokeObjectURL(url);
   };
   $("#generateRecoveryKey").onclick = async event => {
-    if (!confirm(translate("Create a replacement recovery key? Your old key will stop working immediately."))) return;
+    if (!await askConfirm({ title: translate("Recovery key"), message: translate("Create a replacement recovery key? Your old key will stop working immediately."), confirmText: state.language === "tr" ? "Yeni anahtar oluştur" : "Create replacement", dangerous: true })) return;
     const button = event.currentTarget; button.disabled = true;
     try {
       const reply = await request("/v1/me/recovery-key", { method: "POST" });
@@ -3352,7 +3473,7 @@
           const revoke = create("button", "button danger crypto-device-revoke", "Revoke device");
           revoke.type = "button";
           revoke.onclick = async () => {
-            if (!confirm(translate("Revoke this encryption device ID? It will not be able to claim unclaimed key packages on this server. Its app sessions and account access remain active, packages already claimed stay valid, and existing encrypted-group membership is unchanged."))) return;
+            if (!await askConfirm({ title: translate("Revoke device"), message: translate("Revoke this encryption device ID? It will not be able to claim unclaimed key packages on this server. Its app sessions and account access remain active, packages already claimed stay valid, and existing encrypted-group membership is unchanged."), confirmText: state.language === "tr" ? "Cihazı iptal et" : "Revoke device", dangerous: true })) return;
             revoke.disabled = true;
             try {
               await request(`/v1/me/crypto/devices/${encodeURIComponent(device.id)}`, { method: "DELETE" });
@@ -3620,7 +3741,7 @@
   };
   $("#exportAccount").onclick = async () => { try { const data = await request("/v1/data/export"); downloadBlob(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }), "ghostchat-account-export.json"); toast(translate("Account data exported.")); } catch (error) { toast(error.message, true); } };
   $("#revokeOtherSessions").onclick = async event => {
-    if (!confirm(translate("Sign out every other GhostChat session? This device will stay signed in."))) return;
+    if (!await askConfirm({ title: translate("Signed-in sessions"), message: translate("Sign out every other GhostChat session? This device will stay signed in."), confirmText: state.language === "tr" ? "Oturumları kapat" : "Sign out sessions", dangerous: true })) return;
     const button = event.currentTarget;
     button.disabled = true;
     try {
@@ -3632,7 +3753,7 @@
       button.disabled = false;
     }
   };
-  $("#deleteAccount").onclick = async () => { if (!confirm("This permanently deletes your account, sessions, friend links, conversations, and stored messages. This cannot be undone.")) return; if (prompt('Type DELETE to permanently erase this account:') !== "DELETE") return; try { await request("/v1/me/account", { method: "DELETE" }); voiceClient?.hangup(); await groupVoiceClient?.leave(); if (state.socket) state.socket.close(); await clearToken(); await clearPendingRecovery(); try { await invoke("credential_delete_recovery", { serverKey: await serverKey(activeBase()) }); } catch {} state.recoveryKey = ""; state.cryptoDevice = null; state.user = null; state.blockedUserIds.clear(); state.active = null; state.friends = []; state.conversations = []; resetCryptoViewState(); $("#settingsDialog").close(); show("authView"); toast("Account and data deleted."); } catch (error) { toast(error.message, true); } };
+  $("#deleteAccount").onclick = async () => { if (!await askConfirm({ title: state.language === "tr" ? "Hesabı sil" : "Delete account", message: state.language === "tr" ? "Hesabın, oturumların, arkadaşlıkların, sohbetlerin ve kayıtlı mesajların kalıcı olarak silinecek." : "Your account, sessions, friends, conversations, and stored messages will be permanently deleted.", confirmText: state.language === "tr" ? "Devam et" : "Continue", dangerous: true })) return; if ((await askUser({ title: state.language === "tr" ? "Son onay" : "Final confirmation", message: state.language === "tr" ? "Hesabı kalıcı olarak silmek için DELETE yaz." : "Type DELETE to permanently erase this account.", confirmText: state.language === "tr" ? "Hesabı sil" : "Delete account", dangerous: true, input: { label: "DELETE", placeholder: "DELETE" } })) !== "DELETE") return; try { await request("/v1/me/account", { method: "DELETE" }); voiceClient?.hangup(); await groupVoiceClient?.leave(); if (state.socket) state.socket.close(); await clearToken(); await clearPendingRecovery(); try { await invoke("credential_delete_recovery", { serverKey: await serverKey(activeBase()) }); } catch {} state.recoveryKey = ""; state.cryptoDevice = null; state.user = null; state.blockedUserIds.clear(); state.active = null; state.friends = []; state.conversations = []; resetCryptoViewState(); $("#settingsDialog").close(); show("authView"); toast("Account and data deleted."); } catch (error) { toast(error.message, true); } };
   $("#logoutButton").onclick = async () => { try { await request("/v1/sessions", { method: "DELETE" }); } catch {} voiceClient?.hangup(); await groupVoiceClient?.leave(); if (state.socket) state.socket.close(); await clearToken(); state.recoveryKey = ""; state.cryptoDevice = null; state.user = null; state.blockedUserIds.clear(); state.active = null; state.conversations = []; resetCryptoViewState(); show("authView"); toast("You are logged out."); };
   $("#checkUpdates").onclick = () => checkForUpdates(false);
   $("#installUpdate").onclick = installUpdate;
