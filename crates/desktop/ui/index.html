@@ -129,6 +129,7 @@
             <div id="groupVoiceMedia" class="group-voice-media hidden"></div>
             <div id="remoteScreenPanel" class="screen-share-panel remote-screen-panel hidden">
               <span class="screen-share-badge" data-en="FRIEND'S SCREEN" data-tr="ARKADAŞININ EKRANI">FRIEND'S SCREEN</span>
+              <button id="expandRemoteScreen" class="screen-expand-button" type="button" data-en="Expand" data-tr="Büyüt">Expand</button>
               <video id="remoteScreen" class="remote-screen" autoplay playsinline muted></video>
             </div>
             <div id="localScreenPanel" class="screen-share-panel local-screen-panel hidden">
@@ -151,6 +152,7 @@
                 <button id="voiceMusicButton" class="voice-control-button" type="button" aria-expanded="false"><span class="voice-control-icon" aria-hidden="true">♫</span><span data-en="Music" data-tr="Müzik">Music</span></button>
                 <button id="voiceStageShareButton" class="voice-control-button hidden" type="button"><span id="voiceStageShareIcon" class="voice-control-icon" aria-hidden="true">▣</span><span id="voiceStageShareLabel">Share screen</span></button>
                 <button id="voiceRefreshScreenButton" class="voice-control-button hidden" type="button" title="Refresh screen share" data-en-title="Refresh screen share" data-tr-title="Ekran paylaşımını yenile"><span class="voice-control-icon" aria-hidden="true">↻</span><span data-en="Refresh share" data-tr="Paylaşımı yenile">Refresh share</span></button>
+                <button id="voicePreviewButton" class="voice-control-button hidden" type="button" aria-pressed="false"><span class="voice-control-icon" aria-hidden="true">◧</span><span data-en="Hide preview" data-tr="Önizlemeyi gizle">Hide preview</span></button>
               </div>
               <div class="voice-control-group voice-call-actions">
                 <button id="voiceStageAccept" class="button primary hidden" type="button">Join call</button>
@@ -359,6 +361,8 @@
       </section>
     </div>
   </dialog>
+
+  <dialog id="screenViewerDialog" class="dialog screen-viewer-dialog" aria-labelledby="screenViewerTitle"><form method="dialog" class="dialog-top"><h2 id="screenViewerTitle" data-en="Live screen share" data-tr="Canlı ekran paylaşımı">Live screen share</h2><button class="icon-button" aria-label="Close" data-en-title="Close" data-tr-title="Kapat">×</button></form><video id="screenViewerVideo" autoplay playsinline muted></video><p class="fine-print" data-en="Press Escape to return to chat." data-tr="Sohbete dönmek için Escape tuşuna bas.">Press Escape to return to chat.</p></dialog>
 
   <dialog id="quickProfileDialog" class="dialog quick-profile-dialog" aria-labelledby="quickProfileTitle">
     <form method="dialog" class="dialog-top"><div><p class="eyebrow" data-en="YOUR PROFILE" data-tr="PROFİLİN">YOUR PROFILE</p><h2 id="quickProfileTitle" data-en="Quick profile" data-tr="Hızlı profil">Quick profile</h2></div><button class="icon-button" aria-label="Close" data-en-title="Close" data-tr-title="Kapat">×</button></form>

@@ -78,6 +78,7 @@
   let voiceDevicePanelOpen = false;
   let voiceStageCompact = localStorage.getItem("ghostchat.voice.compact") !== "false";
   let voiceCallOpenedAt = 0;
+  let screenPreviewHidden = false;
   let callNoteTimer = null;
   const callMusic = { open: false, queue: [], index: -1, playing: false, applyingRemote: false };
   const trText = {
@@ -2912,6 +2913,11 @@
     $("#voiceStageShareButton").classList.toggle("hidden", !activeCall || !["connected", "reconnecting"].includes(voice.status));
     $("#voiceRefreshScreenButton").classList.toggle("hidden", !activeCall || !voice.screenSharing);
     $("#voiceRefreshScreenButton").disabled = !!voice.screenStarting;
+    $("#voicePreviewButton").classList.toggle("hidden", groupMode || !activeCall || !voice.screenSharing);
+    $("#voicePreviewButton").setAttribute("aria-pressed", String(screenPreviewHidden));
+    $("#voicePreviewButton span:last-child").textContent = state.language === "tr"
+      ? (screenPreviewHidden ? "Önizlemeyi göster" : "Önizlemeyi gizle")
+      : (screenPreviewHidden ? "Show preview" : "Hide preview");
     $("#voiceStageShareIcon").textContent = voice.screenSharing ? "■" : "▣";
     $("#voiceStageShareLabel").textContent = translate(voice.screenStarting ? "Starting…" : (voice.screenSharing ? "Stop sharing" : "Share screen"));
     $("#voiceStageShareButton").disabled = !!voice.screenStarting;
@@ -2954,7 +2960,7 @@
     $("#voiceStageCompactButton").textContent = compactCall ? "⌄" : "⌃";
     $("#voiceStageCompactButton").title = compactCall ? translate("Expand call view") : translate("Compact call view");
     $("#remoteScreenPanel").classList.toggle("hidden", groupMode || !hasRemoteVideo);
-    $("#localScreenPanel").classList.toggle("hidden", groupMode || !voice.screenSharing || !hasLocalVideo);
+    $("#localScreenPanel").classList.toggle("hidden", groupMode || !voice.screenSharing || !hasLocalVideo || screenPreviewHidden);
     $("#groupVoiceMedia").classList.toggle("hidden", !groupMode || !$("#groupVoiceMedia .group-screen-tile"));
     $("#screenShareLayout").classList.toggle("has-remote", hasRemoteVideo);
     $("#screenShareLayout").classList.toggle("is-group", groupMode);
@@ -3020,6 +3026,10 @@
     const localScreenStream = voice.localScreenStream?.getVideoTracks().some(track => track.readyState === "live" && !track.muted) ? voice.localScreenStream : null;
     setVideoStream(video, remoteScreenStream);
     setVideoStream(localVideo, localScreenStream);
+    if ($("#screenViewerDialog").open) {
+      if (remoteScreenStream) setVideoStream($("#screenViewerVideo"), remoteScreenStream);
+      else $("#screenViewerDialog").close();
+    }
     void applyPlaybackSettings();
   }
 
@@ -3747,6 +3757,18 @@
     const action = groupVoiceUiState.status !== "idle" ? groupVoiceClient.toggleScreenSharing() : voiceClient.toggleScreenSharing();
     void action.catch(error => toast(error.message, true));
   };
+  $("#voicePreviewButton").onclick = () => {
+    screenPreviewHidden = !screenPreviewHidden;
+    renderVoiceControls();
+  };
+  $("#expandRemoteScreen").onclick = () => {
+    const stream = voiceClient.getState().remoteVideoStream;
+    if (!stream?.getVideoTracks().some(track => track.readyState === "live")) return;
+    openOverlayDialog($("#screenViewerDialog"));
+    setVideoStream($("#screenViewerVideo"), stream);
+  };
+  $("#remoteScreen").addEventListener("dblclick", () => $("#expandRemoteScreen").click());
+  $("#screenViewerDialog").addEventListener("close", () => clearVideoElement($("#screenViewerVideo")));
   $("#voiceRefreshScreenButton").onclick = () => {
     const action = groupVoiceUiState.status !== "idle" ? groupVoiceClient.refreshScreenSharing() : voiceClient.refreshScreenSharing();
     void action.catch(error => toast(error.message, true));

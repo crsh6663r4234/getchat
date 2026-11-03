@@ -1309,6 +1309,7 @@ body[data-special-day="new-year"] .brand-mark::after { content: "✦"; backgroun
 }
 
 /* Keep room for chat while sharing, with independently scrollable call tools. */
+.screen-expand-button{position:absolute;right:10px;top:10px;z-index:3;padding:7px 11px;border:1px solid #ffffff30;border-radius:8px;background:#12151ee6;color:#fff;font-size:11px;cursor:pointer}.screen-expand-button:hover{background:#39304f}.screen-viewer-dialog{width:calc(100vw - 32px);max-width:1500px;max-height:calc(100dvh - 32px);padding:0;background:#0a0c11}.screen-viewer-dialog .dialog-top{align-items:center;padding:10px 16px}.screen-viewer-dialog h2{font-size:14px}.screen-viewer-dialog video{display:block;width:100%;min-height:0;max-height:calc(100dvh - 140px);object-fit:contain;background:#000}.screen-viewer-dialog .fine-print{padding:8px}.remote-screen-panel video{cursor:zoom-in}
 .voice-stage.has-screen-share { max-height: min(56dvh, 520px); min-height: 0; }
 .voice-stage.has-screen-share .voice-participants { display: none; }
 .voice-stage .screen-share-panel { max-height: 30dvh; }
