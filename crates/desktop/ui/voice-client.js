@@ -512,7 +512,9 @@
     async function watchGhostShare(activeCall) {
       if (!activeCall.ghostShareAvailable) return;
       try { await ensureGhostShare(activeCall).watch(activeCall.conversationId); }
-      catch (error) { console.debug("GhostShare viewer could not join; keeping direct-share compatibility.", error); }
+      catch (error) {
+        if (call === activeCall) api.onError("GhostShare could not establish its required relay connection. Check the media server's TURN configuration.");
+      }
     }
 
     async function attachMicrophone(activeCall, rawStream, { keepMuted = false } = {}) {
@@ -601,25 +603,29 @@
 
     async function loadIceConfiguration(settings) {
       const config = await api.getIceConfiguration();
-      const iceServers = Array.isArray(config?.ice_servers) ? config.ice_servers : [];
-      if (!iceServers.length) throw new Error("The server did not provide an ICE server. Update the GhostChat server and try again.");
-      if (settings.relayOnly && !config.turn_available) {
-        throw new Error("Relay-only privacy needs a TURN server. Ask the server owner to configure coturn first.");
+      const iceServers = (Array.isArray(config?.ice_servers) ? config.ice_servers : []).flatMap(server => {
+        if (!server || typeof server.username !== "string" || !server.username.trim() || typeof server.credential !== "string" || !server.credential) return [];
+        const urls = (Array.isArray(server.urls) ? server.urls : [server.urls]).filter(url => typeof url === "string" && /^turns?:[^\s]+$/i.test(url));
+        return urls.length ? [{ urls, username: server.username, credential: server.credential }] : [];
+      });
+      if (!config?.turn_available || !iceServers.length) {
+        throw new Error("Calls require an authenticated TURN relay. The server has no usable TURN configuration; media was not started.");
       }
       return {
         iceServers,
         ghostShareAvailable: !!config.group_voice_available,
-        iceTransportPolicy: settings.relayOnly ? "relay" : "all",
+        iceTransportPolicy: "relay",
         bundlePolicy: "max-bundle",
         rtcpMuxPolicy: "require",
       };
     }
 
     function makePeer(activeCall, configuration) {
-      const pc = new RTCPeerConnection(configuration);
+      const pc = new RTCPeerConnection({ ...configuration, iceTransportPolicy: "relay" });
       activeCall.pc = pc;
       pc.onicecandidate = event => {
         if (call !== activeCall || !event.candidate) return;
+        if (event.candidate.type !== "relay" && !/\btyp relay(?:\s|$)/.test(event.candidate.candidate || "")) return;
         const candidate = event.candidate.toJSON();
         try {
           if (activeCall.signalReady) send(activeCall.conversationId, activeCall.peerId, "ice", candidate);
@@ -650,7 +656,7 @@
         }
         else if (pc.connectionState === "disconnected") activeCall.status = "reconnecting";
         else if (pc.connectionState === "failed") {
-          closeCall({ message: "The call could not cross this network. A TURN server may be needed." });
+          closeCall({ message: "The required TURN relay connection failed. Check the relay service and network, then call again." });
           return;
         }
         notify();
@@ -870,12 +876,14 @@
       if (!call || call.status === "calling") throw new Error("Wait until the call is connected before sharing your screen.");
       if (call.screenStarting) return;
       if (call.ghostShareAvailable) {
-        try { return await toggleGhostShare(call); }
+        const activeCall = call;
+        try { return await toggleGhostShare(activeCall); }
         catch (error) {
-          // A self-hosted SFU can be temporarily unavailable. Direct sharing
-          // stays as a compatibility fallback instead of blocking the call.
-          console.debug("GhostShare unavailable; using direct adaptive sharing.", error);
-          call.ghostShare = null;
+          if (error?.name === "NotAllowedError" || error?.name === "AbortError") return;
+          const failedShare = activeCall.ghostShare;
+          activeCall.ghostShare = null;
+          try { await failedShare?.leave?.(); } catch {}
+          throw new Error("GhostShare could not establish its required relay connection. Check the media server's TURN configuration; no direct fallback was started.");
         }
       }
       if (call.screenStream) {

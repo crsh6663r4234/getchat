@@ -18,6 +18,8 @@ base64.workspace = true
 hmac = "0.12.1"
 futures-util = "0.3.31"
 rand.workspace = true
+redis = { version = "0.32.7", default-features = false, features = ["tokio-comp", "script", "cluster-async"] }
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["std"] }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

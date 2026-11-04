@@ -5,9 +5,9 @@ const rooms = [];
 class Room {
   events = new Map();
   localParticipant = { isScreenShareEnabled: false };
-  constructor() { rooms.push(this); }
+  constructor(options) { this.options = options; rooms.push(this); }
   on(event, handler) { this.events.set(event, handler); return this; }
-  async connect() {}
+  async connect(url, token, options) { this.connectOptions = options; }
   async disconnect() { this.events.get('Disconnected')?.(); }
   emit(event, ...args) { this.events.get(event)?.(...args); }
 }
@@ -23,6 +23,7 @@ const track = () => ({ kind: 'video', source: 'screen', mediaStreamTrack: { mute
 (async () => {
   const share = window.GhostChatShare.create({ getToken: async () => ({ url: 'wss://fixture', token: 'fixture' }), onRemoteStream: stream => { current = stream; } });
   await share.watch('conversation');
+  assert.equal(rooms[0].connectOptions.rtcConfig.iceTransportPolicy, 'relay', 'SFU viewers must use relay-only RTC configuration');
   const firstRoom = rooms[0]; const first = track();
   firstRoom.emit('TrackSubscribed', first);
   const firstStream = current;
@@ -35,6 +36,7 @@ const track = () => ({ kind: 'video', source: 'screen', mediaStreamTrack: { mute
   firstRoom.emit('TrackUnsubscribed', first);
   assert.equal(current, replacementStream, 'Late old unsubscribe cannot remove the new share');
   await share.leave(); await share.watch('next-conversation');
+  assert.equal(rooms[1].connectOptions.rtcConfig.iceTransportPolicy, 'relay', 'A replacement room must retain relay policy');
   rooms[1].emit('TrackSubscribed', track()); const nextStream = current;
   firstRoom.emit('TrackSubscribed', track());
   assert.equal(current, nextStream, 'Events from a disconnected room must be ignored');

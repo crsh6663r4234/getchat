@@ -136,6 +136,17 @@ async fn prepare_crypto_storage(db: &SqlitePool) -> Result<(), String> {
     .await
     .map_err(|_| "GhostChat could not prepare its encrypted message cache.".to_string())?;
     sqlx::query(
+        "CREATE TABLE IF NOT EXISTS ghostchat_crypto_application_outbox (\
+            client_message_id TEXT PRIMARY KEY NOT NULL,\
+            user_id TEXT NOT NULL,\
+            conversation_id TEXT NOT NULL,\
+            encrypted_payload BLOB NOT NULL\
+        )",
+    )
+    .execute(db)
+    .await
+    .map_err(|_| "GhostChat could not prepare its encrypted application outbox.".to_string())?;
+    sqlx::query(
         "CREATE TABLE IF NOT EXISTS ghostchat_crypto_membership_outbox (\
             user_id TEXT NOT NULL,\
             conversation_id TEXT NOT NULL,\
@@ -1678,20 +1689,51 @@ pub async fn encrypt_text(
     .map_err(|_| "GhostChat could not load this device's encryption identity.".to_string())?
     .ok_or_else(|| "Prepare this device for encryption in Settings first.".to_string())?;
 
-    let existing = sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT encrypted_content FROM ghostchat_crypto_text_cache WHERE client_message_id=?",
+    let existing = sqlx::query_as::<_, (String, Vec<u8>)>(
+        "SELECT conversation_id,encrypted_content FROM ghostchat_crypto_text_cache WHERE client_message_id=?",
     )
     .bind(&client_message_id)
     .fetch_optional(&mut *transaction)
     .await
     .map_err(|_| "GhostChat could not load the encrypted message cache.".to_string())?;
-    if let Some(existing) = existing {
+    if let Some((cached_conversation, existing)) = existing {
+        if cached_conversation != conversation_id {
+            return Err("This message ID belongs to another conversation.".into());
+        }
         let existing: String = EncryptedJsonCodec::from_slice(&existing)
             .map_err(|_| "The local encrypted message cache could not be decrypted.".to_string())?;
         if existing != content {
             return Err("This message ID is already associated with different content.".into());
         }
+        let saved = sqlx::query_as::<_, (String, String, Vec<u8>)>(
+            "SELECT user_id,conversation_id,encrypted_payload FROM ghostchat_crypto_application_outbox WHERE client_message_id=?",
+        )
+        .bind(&client_message_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|_| "GhostChat could not load the encrypted application outbox.".to_string())?
+        .ok_or_else(|| "This older message has no safe retry record. Send it with a new message ID.".to_string())?;
+        if saved.0 != user_id || saved.1 != conversation_id {
+            return Err("This message ID belongs to another account or conversation.".into());
+        }
+        let payload = EncryptedJsonCodec::from_slice::<String>(&saved.2)
+            .map_err(|_| "The encrypted application outbox could not be decrypted.".to_string())?;
+        transaction
+            .rollback()
+            .await
+            .map_err(|_| "GhostChat could not close the encrypted retry lookup.".to_string())?;
+        return Ok(EncryptedApplicationMessage { payload });
     } else {
+        let orphaned_outbox = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM ghostchat_crypto_application_outbox WHERE client_message_id=?)",
+        )
+        .bind(&client_message_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|_| "GhostChat could not validate the encrypted application outbox.".to_string())?;
+        if orphaned_outbox != 0 {
+            return Err("This message's encrypted retry record is incomplete.".into());
+        }
         sqlx::query("INSERT INTO ghostchat_crypto_text_cache(client_message_id,conversation_id,encrypted_content) VALUES(?,?,?)")
             .bind(&client_message_id)
             .bind(&conversation_id)
@@ -1728,6 +1770,16 @@ pub async fn encrypt_text(
                 .map_err(|_| "GhostChat could not serialize the encrypted message.".to_string())?,
         )
     };
+    let encrypted_payload = EncryptedJsonCodec::to_vec(&payload)
+        .map_err(|_| "GhostChat could not protect the application outbox.".to_string())?;
+    sqlx::query("INSERT INTO ghostchat_crypto_application_outbox(client_message_id,user_id,conversation_id,encrypted_payload) VALUES(?,?,?,?)")
+        .bind(&client_message_id)
+        .bind(&user_id)
+        .bind(&conversation_id)
+        .bind(encrypted_payload)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| "GhostChat could not save the encrypted application outbox.".to_string())?;
     transaction
         .commit()
         .await
@@ -2544,6 +2596,34 @@ mod tests {
         drop(bob_db);
         let alice_db = open_database(&alice_path).await;
         let bob_db = open_database(&bob_path).await;
+        let retried = encrypt_text(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &first_id,
+            first_text,
+        )
+        .await
+        .expect("A retry after restart should reuse the committed ciphertext");
+        assert_eq!(retried.payload, first.payload);
+        assert!(encrypt_text(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &first_id,
+            "different content",
+        )
+        .await
+        .is_err());
+        assert!(encrypt_text(
+            &alice_db,
+            &alice_id,
+            &Uuid::new_v4().to_string(),
+            &first_id,
+            first_text,
+        )
+        .await
+        .is_err());
         assert_eq!(
             get_cached_sent_text(&alice_db, &first_id)
                 .await
@@ -2619,5 +2699,79 @@ mod tests {
         .expect("Bob should decrypt the next message after restart and replay");
         assert_eq!(second_received.kind, "application");
         assert_eq!(second_received.content.as_deref(), Some(second_text));
+
+        // A failed outbox write must roll back the MLS sender state and cache too.
+        sqlx::query("CREATE TRIGGER fail_application_outbox BEFORE INSERT ON ghostchat_crypto_application_outbox BEGIN SELECT RAISE(ABORT, 'injected outbox failure'); END")
+            .execute(&alice_db).await.unwrap();
+        let third_id = Uuid::new_v4().to_string();
+        assert!(encrypt_text(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &third_id,
+            "atomic retry"
+        )
+        .await
+        .is_err());
+        assert!(get_cached_sent_text(&alice_db, &third_id)
+            .await
+            .unwrap()
+            .is_none());
+        sqlx::query("DROP TRIGGER fail_application_outbox")
+            .execute(&alice_db)
+            .await
+            .unwrap();
+        let third = encrypt_text(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &third_id,
+            "atomic retry",
+        )
+        .await
+        .expect("Retry after rollback should encrypt successfully");
+        let third_received = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            Some(&third_id),
+            4,
+            false,
+            &expected_members,
+            &third.payload,
+        )
+        .await
+        .expect("Receiver should decrypt after the failed transaction");
+        assert_eq!(third_received.content.as_deref(), Some("atomic retry"));
+
+        let legacy_id = Uuid::new_v4().to_string();
+        sqlx::query("INSERT INTO ghostchat_crypto_text_cache(client_message_id,conversation_id,encrypted_content) VALUES(?,?,?)")
+            .bind(&legacy_id).bind(&conversation_id)
+            .bind(EncryptedJsonCodec::to_vec(&"legacy message".to_string()).unwrap())
+            .execute(&alice_db).await.unwrap();
+        let legacy_error = encrypt_text(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &legacy_id,
+            "legacy message",
+        )
+        .await
+        .err()
+        .expect("Legacy entries without ciphertext cannot be regenerated safely");
+        assert!(legacy_error.contains("no safe retry record"));
+
+        sqlx::query("UPDATE ghostchat_crypto_application_outbox SET encrypted_payload=? WHERE client_message_id=?")
+            .bind(vec![0_u8; 16]).bind(&third_id).execute(&alice_db).await.unwrap();
+        assert!(encrypt_text(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &third_id,
+            "atomic retry"
+        )
+        .await
+        .is_err());
     }
 }

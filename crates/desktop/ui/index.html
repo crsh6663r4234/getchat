@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="design-system.css">
   <link rel="stylesheet" href="voice-room.css">
   <link rel="stylesheet" href="desktop-controls.css">
+  <link rel="stylesheet" href="industrial-ui.css">
 </head>
 <body>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -71,6 +72,7 @@
 
   <div id="appView" class="app-shell hidden">
     <nav class="rail" aria-label="Main navigation" data-en-label="Main navigation" data-tr-label="Ana gezinme">
+      <span id="railActiveIndicator" class="rail-active-indicator" aria-hidden="true"></span>
       <button class="brand-mark rail-brand" title="GhostChat" aria-label="GhostChat">G</button>
       <div class="rail-divider"></div>
       <button class="rail-button active" data-page="messages" title="Messages" aria-label="Messages" data-en-title="Messages" data-tr-title="Mesajlar" aria-current="page"><span class="icon" aria-hidden="true">◷</span><span class="rail-label" data-en="Messages" data-tr="Mesajlar">Messages</span></button>
@@ -325,7 +327,7 @@
           <label class="setting-row"><span data-en="Push to talk (hold Space)" data-tr="Bas-konuş (Boşluk tuşunu basılı tut)">Push to talk (hold Space)</span><input id="voicePushToTalk" type="checkbox"></label>
           <label class="setting-row"><span data-en="Share system audio with screen" data-tr="Ekranla sistem sesini paylaş">Share system audio with screen</span><input id="voiceShareAudio" type="checkbox"></label>
           <label><span data-en="GhostShare quality" data-tr="GhostShare kalitesi">GhostShare quality</span><select id="voiceShareQuality"><option value="balanced" data-en="Balanced (recommended)" data-tr="Dengeli (önerilen)">Balanced (recommended)</option><option value="detail" data-en="Sharp text and desktop" data-tr="Net metin ve masaüstü">Sharp text and desktop</option><option value="motion" data-en="Smooth motion" data-tr="Akıcı hareket">Smooth motion</option><option value="saver" data-en="Data saver" data-tr="Veri tasarrufu">Data saver</option></select></label>
-          <label class="setting-row"><span data-en="Relay-only (hide IP from peer)" data-tr="Yalnızca aktarma (IP'yi eşten gizle)">Relay-only (hide IP from peer)</span><input id="voiceRelayOnly" type="checkbox" disabled></label>
+          <label class="setting-row"><span data-en="Relay-only required (peer-to-peer is disabled)" data-tr="Yalnızca aktarma zorunlu (eşten eşe bağlantı kapalı)">Relay-only required (peer-to-peer is disabled)</span><input id="voiceRelayOnly" type="checkbox" checked disabled></label>
           <label><span data-en="Remote call volume" data-tr="Karşı tarafın sesi">Remote call volume</span><input id="voiceVolume" type="range" min="0" max="100" value="100"></label>
           <p id="voiceNetworkStatus" class="fine-print">Checking voice relay support…</p>
           <p id="groupVoiceNetworkStatus" class="fine-print">Group voice status is being checked.</p>

@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "observed_date": "2026-11-04",
+  "timezone": "Europe/Istanbul",
+  "baseline_commit": "da5ee92a3ecaafd2d3d73a62d91f6854258f74a4",
+  "baseline_app_version": "4.0.44",
+  "scope": "Baseline source inspection plus listed local tests. T05 and C02 separately record the lead's Phase 1 working-tree progress and reported test; later changes require re-evaluation.",
+  "independent_review": false,
+  "real_device_testing": false,
+  "deployment_inspected": false,
+  "production_release_decision": "NO_GO",
+  "status_definitions": {
+    "partial": "Control exists in part; required security gate remains unmet.",
+    "missing": "Required control not found in inspected source.",
+    "unverified": "Operational or external assertion lacks evidence."
+  },
+  "tests": [
+    {"id":"T01","command":"node scripts/test-watch-party.cjs","result":"pass","kind":"local_mock","supports":["B05","M05"],"does_not_prove":["real video synchronization","host IP privacy","MLS or media E2EE"]},
+    {"id":"T02","command":"node scripts/test-ghost-share.cjs","result":"pass","kind":"local_mock","supports":["M06"],"does_not_prove":["deployed SFU connectivity","relay-only packet flow","frame E2EE"]},
+    {"id":"T03","command":"node scripts/test-voice-gate.cjs","result":"pass","kind":"local_mock","supports":["M06"],"does_not_prove":["hardware audio performance","two-device media delivery"]},
+    {"id":"T04","command":"cargo test --locked --package ghostchat-server watch_party_ --lib","result":"pass","passed_tests":2,"failed_tests":0,"kind":"local_unit","supports":["B05"],"does_not_prove":["membership authorization integration","signed request authentication","deployed service security"]},
+    {"id":"T05","command":"cargo test -p ghostchat-desktop two_account_direct_mls_survives_restart_and_deduplicates_replayed_events --locked --offline","result":"pass","passed_tests":1,"failed_tests":0,"kind":"local_real_openmls","reported_by":"lead_agent_root","platform":"Windows","source_state":"Phase 1 working-tree patch after baseline; final commit not yet assigned","supports":["C02"],"observed_subproperties":["sender-state and immutable ciphertext outbox transaction","same-byte retry after database reopen","conflicting content/conversation rejection","outbox insertion failure rolls back sender state","legacy cache-only and corrupted-outbox rejection"],"does_not_prove":["universal ACTIVE-only application state machine","all crash/send/ack boundaries","concurrent commits and forks","real cross-device network exchange","independent cryptographic review"]}
+  ],
+  "requirements": [
+    {"id":"C01","status":"partial","owner":"crypto","code":["crates/server/src/lib.rs::send_message"],"evidence":"MLS-shaped content enforcement is conditional on conversation crypto lock; not universal content E2EE.","gate":"All private content paths and old-client downgrade fail closed; real-device MLS validation."},
+    {"id":"C02","status":"partial","owner":"crypto","code":["crates/desktop/src/crypto.rs::encrypt_text","crates/desktop/src/crypto.rs::two_account_direct_mls_survives_restart_and_deduplicates_replayed_events"],"tests":["T05"],"evidence":"Lead reports Phase 1 working-tree implementation/test of atomic sender-state plus immutable ciphertext outbox, retry after reopen and rejection/rollback cases. This closes only the locally tested persistence/retry subproperty.","gate":"Universal ACTIVE-only state machine, ordered per-group worker, other crash/send/ack boundaries, concurrent commits/forks and real-device exchange remain unmet."},
+    {"id":"C03","status":"partial","owner":"storage","code":["crates/desktop/src/crypto.rs::EncryptedJsonCodec","crates/desktop/src/main.rs::windows_credential"],"evidence":"Encrypted entities and OS vault are not full SQLCipher authenticated page encryption.","gate":"Cipher-enabled library verification, wrong-key and DB/WAL/temp inspection."},
+    {"id":"C04","status":"missing","owner":"recovery","code":["crates/desktop/src/main.rs","crates/desktop/src/crypto.rs"],"evidence":"No reviewed authenticated isolated 3-of-5 recovery implementation found.","gate":"Ten valid subsets, corrupt/mixed shares, external manifest anchor and no live-ratchet restoration."},
+    {"id":"B01","status":"missing","owner":"backend","code":["crates/server/src/lib.rs::authenticate"],"evidence":"Hashed bearer session authentication; no canonical device-proof middleware.","gate":"Enrollment binding and signed byte vectors; changed audience/target/body and wrong-role rejection."},
+    {"id":"B02","status":"missing","owner":"backend","code":["crates/server/src/lib.rs"],"evidence":"No distributed request nonce/replay store found.","gate":"Atomic cross-worker replay tests plus restart/failover consistency and fail-closed behavior."},
+    {"id":"B03","status":"missing","owner":"backend","code":["crates/server/src/lib.rs::allow_rate"],"evidence":"Process-local mutex/deques; no Redis integration or distributed atomic quota policy.","gate":"Bounded cardinality/TTL/scripts, algorithm definition, cluster slot and fault/load tests."},
+    {"id":"B04","status":"partial","owner":"backend","code":["crates/server/src/lib.rs::websocket_session"],"evidence":"Bearer session recheck every 15 seconds and revocation events; no device-bound signed frame sequence.","gate":"Live WS revocation, replay/order, worker/reconnect and resource-bound integration tests."},
+    {"id":"B05","status":"partial","owner":"backend","code":["crates/server/src/lib.rs::relay_voice_signal","crates/server/src/lib.rs::valid_watch_party_payload"],"tests":["T01","T04"],"evidence":"Participant membership and payload bounds exist; device proof and complete adversarial authorization tests absent.","gate":"Outsider/wrong-role integration and authenticated state-generation checks."},
+    {"id":"B06","status":"partial","owner":"backend_crypto","code":["crates/desktop/src/crypto_attachments.rs","crates/server/src/lib.rs"],"evidence":"Encrypted attachment path exists; universal signed resumable upload manifest policy not established.","gate":"Bounded 5 GB streaming, chunk tamper/order/truncation, completion/idempotency tests."},
+    {"id":"B07","status":"unverified","owner":"backend_ops","code":["crates/server/src/lib.rs"],"evidence":"No operational proxy/global expensive-operation/Redis-failure budget evidence in this inspection.","gate":"Spoofed proxy headers, KDF/crypto concurrency and load/failover tests."},
+    {"id":"M01","status":"missing","owner":"media","code":["crates/desktop/ui/voice-client.js::loadIceConfiguration","crates/desktop/ui/group-voice-client.js::join","crates/desktop/ui/ghost-share-client.js::ensure"],"evidence":"Optional relay preference and direct fallback; LiveKit relay enforcement absent.","gate":"All constructor/reconnect paths fail closed; selected candidates and packet traces."},
+    {"id":"M02","status":"missing","owner":"media_crypto","code":["crates/desktop/ui/group-voice-client.js","crates/desktop/ui/ghost-share-client.js"],"evidence":"No application frame E2EE configured in inspected LiveKit rooms.","gate":"MLS-bound media keys, membership rotation, old/new client and JS/native interop."},
+    {"id":"M03","status":"partial","owner":"media_backend","code":["crates/server/src/lib.rs::group_voice_token","crates/server/src/lib.rs::ghost_share_token"],"evidence":"Membership-scoped token issuance with 10-minute TTL; no tested short-TTL device/generation admission contract.","gate":"Concurrent join/removal, original/refreshed-token rejoin and session binding tests."},
+    {"id":"M04","status":"partial","owner":"media_backend","code":["crates/server/src/lib.rs::remove_livekit_participant"],"evidence":"Authenticated ListParticipants/RemoveParticipant RPC after SQL commit; best-effort logged failure, no durable disconnect outbox found.","gate":"Transactional generation/outbox, all-session retries/reconciliation and partition latency evidence."},
+    {"id":"M05","status":"partial","owner":"media_privacy","code":["crates/desktop/ui/watch-party.js","crates/server/src/lib.rs::valid_watch_party_payload"],"tests":["T01","T04"],"evidence":"Direct HTTPS source validation does not conceal participant IP from video hosts.","gate":"Explicit remote-resource privacy/consent or trusted relay policy and real load tests."},
+    {"id":"M06","status":"partial","owner":"media","code":["crates/desktop/ui/ghost-share-client.js","crates/desktop/ui/voice-client.js"],"tests":["T02","T03"],"evidence":"Mocked lifecycle and speech-gate regressions pass locally.","gate":"Real two-device audio/screen/reconnect and encryption verification."},
+    {"id":"S01","status":"partial","owner":"secops","code":[".github/workflows/release.yml"],"evidence":"Locked Rust builds but action tags and contents-write workflow permission; external repository protections not inspected.","gate":"Reviewed SHA pins, job isolation, least privilege and actual branch/environment protection evidence."},
+    {"id":"S02","status":"missing","owner":"secops","code":[".github/workflows/release.yml","crates/desktop/tauri.conf.json"],"evidence":"Tauri updater signing configuration exists; no Authenticode signing/publisher validation found.","gate":"Approved protected signer, trusted timestamp and signature coverage verification."},
+    {"id":"S03","status":"missing","owner":"secops","code":["crates/desktop/src/main.rs::check_for_update","crates/desktop/src/main.rs::install_update","crates/desktop/tauri.conf.json"],"evidence":"Updater artifact checks are not a complete expiring signed metadata/high-water antirollback policy.","gate":"Expired/frozen/old metadata, channel/platform, clock, key rotation and interrupted install tests."},
+    {"id":"S04","status":"missing","owner":"secops","code":[".github/workflows/release.yml"],"evidence":"No SBOM or verifiable provenance generation in inspected workflow.","gate":"Toolchain/source/artifact hashes, SBOM/license review and provenance verification."},
+    {"id":"O01","status":"unverified","owner":"ops","code":[],"evidence":"No actual VDS/SFU/TURN deployment, secret rotation or quota inspection performed.","gate":"Redacted operational verification and real-service tests."},
+    {"id":"O02","status":"unverified","owner":"storage_ops","code":[],"evidence":"No history purge performed; no completed migration/deletion evidence supplied.","gate":"Separate authorized migration inventory/dry run, integrity/recovery and retention decision."},
+    {"id":"R01","status":"unverified","owner":"independent_reviewer","code":[],"evidence":"No independent cryptographic/design review or penetration-test report supplied.","gate":"Independent review and no unresolved critical/high finding for claimed production controls."}
+  ],
+  "claim_boundaries": [
+    "Device signatures prove key possession, not unmodified application attestation.",
+    "The delivery service cannot certify opaque MLS application semantics.",
+    "RemoveParticipant is an authenticated RPC, not a webhook.",
+    "JWT expiry does not itself disconnect an existing media session.",
+    "TURN peer-address protection is not anonymity from infrastructure/video hosts.",
+    "Authenticode/EV cannot guarantee suppression of SmartScreen warnings.",
+    "Artifact signatures alone do not prevent metadata freeze or replay/rollback.",
+    "A fully privileged endpoint rollback cannot be prevented by an unauthenticated local counter.",
+    "Zeroize and SQL DELETE do not prove erasure from SSDs, backups, swap or snapshots."
+  ]
+}

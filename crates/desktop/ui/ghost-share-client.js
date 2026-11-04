@@ -93,13 +93,18 @@
       conversationId = nextConversationId;
       bind(activeRoom);
       try {
-        await activeRoom.connect(credentials.url, credentials.token);
+        // LiveKit preserves this RTC override for resume and full reconnects.
+        // TURN credentials are delivered by its authenticated signaling service.
+        await activeRoom.connect(credentials.url, credentials.token, {
+          rtcConfig: { iceTransportPolicy: "relay" },
+          peerConnectionTimeout: 15_000,
+        });
         emit();
         return activeRoom;
       } catch (error) {
         if (room === activeRoom) { room = null; conversationId = null; }
         try { await activeRoom.disconnect(); } catch {}
-        throw error;
+        throw new Error("GhostShare could not establish its required relay connection. Verify the media server and its authenticated TURN service.");
       }
     }
 

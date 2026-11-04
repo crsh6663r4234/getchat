@@ -668,7 +668,7 @@
       pushToTalk: localStorage.getItem("ghostchat.voice.ptt") === "true",
       shareSystemAudio: localStorage.getItem("ghostchat.voice.systemAudio") === "true",
       shareQuality: localStorage.getItem("ghostchat.share.quality") || "balanced",
-      relayOnly: localStorage.getItem("ghostchat.voice.relayOnly") === "true",
+      relayOnly: true,
       volume: Number(localStorage.getItem("ghostchat.voice.volume") || "100"),
       speakerMuted: localStorage.getItem("ghostchat.voice.speakerMuted") === "true",
     };
@@ -686,7 +686,7 @@
     localStorage.setItem("ghostchat.voice.ptt", String($("#voicePushToTalk").checked));
     localStorage.setItem("ghostchat.voice.systemAudio", String($("#voiceShareAudio").checked));
     localStorage.setItem("ghostchat.share.quality", $("#voiceShareQuality").value);
-    localStorage.setItem("ghostchat.voice.relayOnly", String($("#voiceRelayOnly").checked));
+    localStorage.setItem("ghostchat.voice.relayOnly", "true");
     localStorage.setItem("ghostchat.voice.volume", $("#voiceVolume").value);
   }
 
@@ -701,7 +701,7 @@
     $("#voicePushToTalk").checked = settings.pushToTalk;
     $("#voiceShareAudio").checked = settings.shareSystemAudio;
     $("#voiceShareQuality").value = ["balanced", "detail", "motion", "saver"].includes(settings.shareQuality) ? settings.shareQuality : "balanced";
-    $("#voiceRelayOnly").checked = settings.relayOnly;
+    $("#voiceRelayOnly").checked = true;
     $("#voiceVolume").value = String(Math.max(0, Math.min(100, settings.volume)));
     const micSelects = [$("#voiceMicSelect"), $("#voiceCallMicSelect")];
     const speakerSelects = [$("#voiceSpeakerSelect"), $("#voiceCallSpeakerSelect")];
@@ -1219,6 +1219,18 @@
     void node.offsetWidth;
     node.classList.add("content-enter");
   }
+  function updateRailIndicator() {
+    const rail = $(".rail");
+    const active = $(".rail-button.active");
+    const indicator = $("#railActiveIndicator");
+    if (!rail || !active || !indicator) return;
+    requestAnimationFrame(() => {
+      const railBox = rail.getBoundingClientRect();
+      const activeBox = active.getBoundingClientRect();
+      const y = activeBox.top - railBox.top + ((activeBox.height - indicator.offsetHeight) / 2);
+      indicator.style.transform = `translate3d(0, ${Math.round(y)}px, 0)`;
+    });
+  }
   function setPage(page) {
     sendTyping(false);
     closeMobileSidebar();
@@ -1230,6 +1242,7 @@
       if (active) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     });
+    updateRailIndicator();
     const titles = { messages: "Messages", friends: "Friends", search: "Find people", searchMessages: "Search messages" };
     $("#sidebarTitle").textContent = translate(titles[page]);
     const sidebarActionLabel = translate(page === "messages" ? "Start a conversation" : "Find people");
@@ -4035,6 +4048,7 @@
     if (groupVoiceUiState.status !== "idle") void groupVoiceClient?.setPushToTalk(false).catch(() => {});
     else voiceClient?.setPushToTalk(false);
   });
+  window.addEventListener("resize", updateRailIndicator, { passive: true });
   setupVoiceClient();
   void refreshAudioDevices({ requestPermission: false, quiet: true });
   navigator.mediaDevices?.addEventListener?.("devicechange", () => { void refreshAudioDevices({ requestPermission: false, quiet: true }); });

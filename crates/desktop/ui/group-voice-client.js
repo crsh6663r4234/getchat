@@ -205,7 +205,12 @@
         });
         room = activeRoom;
         bindRoom(activeRoom);
-        await activeRoom.connect(credentials.url, credentials.token);
+        // Connect-time RTC overrides also feed LiveKit's ICE restart/full
+        // reconnect configuration. Never enable host/srflx transport fallback.
+        await activeRoom.connect(credentials.url, credentials.token, {
+          rtcConfig: { iceTransportPolicy: "relay" },
+          peerConnectionTimeout: 15_000,
+        });
         await activeRoom.startAudio().catch(() => {});
         let micAvailable = true;
         try { micAvailable = (await LK.Room.getLocalDevices("audioinput", false)).length > 0; } catch {}
@@ -217,8 +222,9 @@
           try { await room.disconnect(); } catch {}
           room = null;
         }
-        publishState({ ...idleState(), error: error.message || "Could not join group voice." });
-        throw error;
+        const message = "Group voice could not establish its required relay connection. Verify the media server and its authenticated TURN service.";
+        publishState({ ...idleState(), error: message });
+        throw new Error(message);
       }
     }
 

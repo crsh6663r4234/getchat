@@ -42,6 +42,9 @@ use tokio::{
 };
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
+pub mod ratelimit;
+pub mod device_proof;
+mod media_revocation;
 
 const MESSAGE_LIMIT: usize = 4_000;
 const MAX_CRYPTO_PAYLOAD_BYTES: usize = 64 * 1024;
@@ -61,6 +64,7 @@ pub struct AppState {
     limiter: Arc<Mutex<HashMap<String, VecDeque<Instant>>>>,
     online_users: Arc<Mutex<HashMap<String, usize>>>,
     voice: VoiceServerConfig,
+    distributed_limiter: Result<Option<ratelimit::RateLimiter>, ratelimit::LimitError>,
 }
 
 #[derive(Clone)]
@@ -223,6 +227,7 @@ pub async fn build_state_with_attachment_dir(db: SqlitePool, attachment_dir: Pat
             livekit_api_key,
             livekit_api_secret,
         },
+        distributed_limiter: ratelimit::RateLimiter::from_env(),
     }
 }
 
@@ -380,11 +385,45 @@ pub fn router(state: AppState) -> Router {
         .fallback(|| async { ApiError::not_found() })
         .layer(DefaultBodyLimit::max(96 * 1024))
         .layer(cors)
+        .layer(axum::middleware::from_fn_with_state(state.clone(), distributed_admission))
         .with_state(state)
 }
 
+async fn distributed_admission(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if request.uri().path() == "/health" { return next.run(request).await; }
+    match &state.distributed_limiter {
+        Err(_) => return ApiError::unavailable("Distributed admission is misconfigured.").into_response(),
+        Ok(None) if env::var("GHOSTCHAT_REQUIRE_REDIS").as_deref() == Ok("1") =>
+            return ApiError::unavailable("Distributed admission is required but unavailable.").into_response(),
+        Ok(None) => {}, // Compatibility mode, explicitly not distributed security.
+        Ok(Some(limiter)) => {
+            let subject = request.headers().get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok()).filter(|v| v.len() <= 256)
+                .map(session_hash).unwrap_or_else(|| "anonymous".into());
+            for (scope, identity, count, window) in [
+                ("http-global", "global", 200, Duration::from_secs(1)),
+                ("http-session", subject.as_str(), 600, Duration::from_secs(60)),
+            ] {
+                match limiter.check(scope, identity, count, window).await {
+                    Ok(decision) if decision.allowed => {},
+                    Ok(_) => return ApiError::new(StatusCode::TOO_MANY_REQUESTS, "Please slow down and try again.").into_response(),
+                    Err(_) => return ApiError::unavailable("Distributed admission could not be verified.").into_response(),
+                }
+            }
+        }
+    }
+    next.run(request).await
+}
+
 pub async fn serve(listener: tokio::net::TcpListener, state: AppState) -> std::io::Result<()> {
-    axum::serve(listener, router(state)).await
+    let reconciler = tokio::spawn(media_revocation::run(state.clone()));
+    let result = axum::serve(listener, router(state)).await;
+    reconciler.abort();
+    result
 }
 
 fn session_hash(token: &str) -> String {
@@ -648,6 +687,7 @@ async fn group_voice_token(
     if participant.1 != "group" {
         return Err(ApiError::not_found());
     }
+    media_revocation::admit(&state, &conversation_id).await?;
     let api_key =
         state.voice.livekit_api_key.as_deref().ok_or_else(|| {
             ApiError::unavailable("Group voice is not configured on this server.")
@@ -686,7 +726,7 @@ async fn group_voice_token(
         "metadata": metadata,
         "iat": now,
         "nbf": now.saturating_sub(5),
-        "exp": now.saturating_add(10 * 60),
+        "exp": now.saturating_add(media_revocation::JOIN_TTL),
         "video": {
             "roomJoin": true,
             "room": conversation_id,
@@ -709,7 +749,7 @@ async fn group_voice_token(
         "url": server_url,
         "token": token,
         "room": conversation_id,
-        "expires_at": now.saturating_add(10 * 60)
+        "expires_at": now.saturating_add(media_revocation::JOIN_TTL)
     })))
 }
 
@@ -734,6 +774,7 @@ async fn ghost_share_token(
     if participant.1 != "direct" {
         return Err(ApiError::not_found());
     }
+    media_revocation::admit(&state, &conversation_id).await?;
     let api_key = state.voice.livekit_api_key.as_deref().ok_or_else(|| {
         ApiError::unavailable("GhostShare needs a configured LiveKit media server.")
     })?;
@@ -753,7 +794,7 @@ async fn ghost_share_token(
     let metadata = serde_json::json!({"account_id": user.id, "purpose": "ghostshare"}).to_string();
     let claims = serde_json::json!({
         "iss": api_key, "sub": identity, "name": participant.0, "metadata": metadata,
-        "iat": now, "nbf": now.saturating_sub(5), "exp": now.saturating_add(10 * 60),
+        "iat": now, "nbf": now.saturating_sub(5), "exp": now.saturating_add(media_revocation::JOIN_TTL),
         "video": {"roomJoin": true, "room": room, "canPublish": true,
           "canPublishSources": ["screen_share", "screen_share_audio"], "canSubscribe": true, "canPublishData": false}
     });
@@ -762,7 +803,7 @@ async fn ghost_share_token(
     let mut mac = Hmac::<Sha256>::new_from_slice(api_secret.as_bytes()).map_err(|_| ApiError::internal())?;
     mac.update(signing_input.as_bytes());
     let token = format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()));
-    Ok(Json(serde_json::json!({"url": server_url, "token": token, "room": room, "expires_at": now.saturating_add(10 * 60)})))
+    Ok(Json(serde_json::json!({"url": server_url, "token": token, "room": room, "expires_at": now.saturating_add(media_revocation::JOIN_TTL)})))
 }
 
 fn allow_rate(state: &AppState, key: &str, count: usize, period: Duration) -> bool {
@@ -3123,6 +3164,7 @@ async fn commit_encrypted_group_leave(
     .execute(&mut *tx)
     .await
     .map_err(|_| ApiError::internal())?;
+    media_revocation::enqueue(&mut tx, &id, &target_id).await?;
     tx.commit().await.map_err(|_| ApiError::internal())?;
 
     if let Err(error) = remove_livekit_participant(&state, &id, &target_id).await {
@@ -3315,6 +3357,7 @@ async fn remove_encrypted_group_member(
     .execute(&mut *tx)
     .await
     .map_err(|_| ApiError::internal())?;
+    media_revocation::enqueue(&mut tx, &id, &target_id).await?;
     tx.commit().await.map_err(|_| ApiError::internal())?;
 
     if let Err(error) = remove_livekit_participant(&state, &id, &target_id).await {
@@ -3390,6 +3433,7 @@ async fn remove_group_member(
         .execute(&mut *tx)
         .await
         .map_err(|_| ApiError::internal())?;
+    media_revocation::enqueue(&mut tx, &id, &target_id).await?;
     tx.commit().await.map_err(|_| ApiError::internal())?;
     if let Err(error) = remove_livekit_participant(&state, &id, &target_id).await {
         tracing::warn!(conversation_id = %id, account_id = %target_id, %error, "could not remove group member from LiveKit");

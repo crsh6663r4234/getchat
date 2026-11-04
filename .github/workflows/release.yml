@@ -15,8 +15,15 @@ permissions:
 jobs:
   publish-windows:
     runs-on: windows-latest
+    env:
+      # Set this repository/environment variable to true only in the protected
+      # production release environment. Development releases are visibly
+      # unsigned at the Windows publisher layer; updater signatures still apply.
+      GHOSTCHAT_REQUIRE_WINDOWS_CODESIGN: ${{ vars.GHOSTCHAT_REQUIRE_WINDOWS_CODESIGN || 'false' }}
+      GHOSTCHAT_CODESIGN_CERT_SHA1: ${{ vars.GHOSTCHAT_CODESIGN_CERT_SHA1 }}
+      GHOSTCHAT_CODESIGN_TIMESTAMP_URL: ${{ vars.GHOSTCHAT_CODESIGN_TIMESTAMP_URL }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -55,45 +62,92 @@ jobs:
         shell: pwsh
         run: cargo build --release --locked --package ghostchat-server
 
-      - name: Build, sign, and create draft
-        uses: tauri-apps/tauri-action@action-v1.0.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          GHOSTCHAT_UPDATE_ENDPOINT: https://github.com/${{ github.repository }}/releases/latest/download/latest.json
+      # This build deliberately suppresses Tauri's automatic updater artifact
+      # signing. The MSI must first receive Authenticode, then the updater
+      # signature is generated over the final MSI bytes below.
+      - name: Build unsigned Windows MSI for release signing
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
         with:
           projectPath: crates/desktop
-          tagName: v__VERSION__
-          releaseName: GhostChat v__VERSION__
-          releaseBody: |
-            ## GhostChat 4.0
+          args: >-
+            --bundles msi --config '{"bundle":{"createUpdaterArtifacts":false}}'
 
-            This major update adds group conversations, replies, reactions, pins, unread status, invite links, profile photos, Windows notifications and tray controls, 5 GB file sharing, and voice/screen sharing through a separately configured LiveKit service.
+      - name: Authenticode-sign final Windows artifacts before updater signing
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem -LiteralPath "target/release/bundle/msi" -Filter "*.msi" -File | Select-Object -First 1
+          if (-not $msi) { throw "The Windows MSI bundle was not built." }
+          $sourcePath = "target/release/ghostchat-server.exe"
+          $releasePath = "target/release/ghostchat-server-windows-x64.exe"
+          if (-not (Test-Path -LiteralPath $sourcePath)) { throw "The standalone server binary was not built." }
+          Copy-Item -LiteralPath $sourcePath -Destination $releasePath -Force
+          $arguments = @{ Path = @($msi.FullName, $releasePath) }
+          if ($env:GHOSTCHAT_REQUIRE_WINDOWS_CODESIGN -eq "true") { $arguments.Required = $true }
+          & .\scripts\sign-windows.ps1 @arguments
 
-            Direct and group text can be opted into MLS encryption after participants verify their security codes. New attachments in verified encrypted chats are encrypted on the device. Earlier messages and files remain unencrypted. MLS device replacement and portable encrypted-state recovery are not supported yet; account recovery restores account access only. Group voice and screen sharing are encrypted in transit but are not end-to-end encrypted.
+      - name: Sign final MSI for the Tauri updater
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw "TAURI_SIGNING_PRIVATE_KEY is required to publish an updater artifact."
+          }
+          $msi = Get-ChildItem -LiteralPath "target/release/bundle/msi" -Filter "*.msi" -File | Select-Object -First 1
+          if (-not $msi) { throw "The Windows MSI bundle was not built." }
+          # Exact CLI version avoids a floating `latest` package. This command
+          # signs the Authenticode-final MSI; it never modifies it afterwards.
+          & npx.cmd --yes "@tauri-apps/cli@2.12.4" signer sign $msi.FullName
+          if ($LASTEXITCODE -ne 0) { throw "The Tauri updater signer failed." }
+          if (-not (Test-Path -LiteralPath "$($msi.FullName).sig")) {
+            throw "The Tauri updater signature was not produced."
+          }
 
-            Review the security and deployment notes before using GhostChat for sensitive conversations or exposing a server to the internet.
-          # The desktop updater reads GitHub's public "latest" release. A draft
-          # has no downloadable latest.json, so clients would report up to date.
-          releaseDraft: false
-          prerelease: false
-          args: --bundles msi
-          updaterJsonPreferNsis: false
-          uploadUpdaterJson: true
-
-      - name: Attach standalone server and checksum
+      - name: Publish signed release assets and update feed
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          $msi = Get-ChildItem -LiteralPath "target/release/bundle/msi" -Filter "*.msi" -File | Select-Object -First 1
+          if (-not $msi) { throw "The Windows MSI bundle was not built." }
+          $signaturePath = "$($msi.FullName).sig"
           $sourcePath = "target/release/ghostchat-server.exe"
           $releasePath = "target/release/ghostchat-server-windows-x64.exe"
           $checksumPath = "$releasePath.sha256"
-          if (-not (Test-Path -LiteralPath $sourcePath)) { throw "The standalone server binary was not built." }
-          Copy-Item -LiteralPath $sourcePath -Destination $releasePath -Force
+          if (-not (Test-Path -LiteralPath $signaturePath) -or -not (Test-Path -LiteralPath $releasePath)) {
+            throw "The signed release assets are incomplete."
+          }
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $releasePath).Hash.ToLowerInvariant()
           Set-Content -LiteralPath $checksumPath -Value "$hash  ghostchat-server-windows-x64.exe" -NoNewline
           $config = Get-Content -Raw "crates/desktop/tauri.conf.json" | ConvertFrom-Json
           $releaseTag = "v$($config.version)"
-          gh release upload "$releaseTag" "$releasePath#ghostchat-server-windows-x64.exe" "$checksumPath#ghostchat-server-windows-x64.exe.sha256"
-          if ($LASTEXITCODE -ne 0) { throw "Could not attach the standalone server assets to the GitHub Release." }
+          $msiName = $msi.Name
+          $signature = (Get-Content -LiteralPath $signaturePath -Raw).Trim()
+          if ([string]::IsNullOrWhiteSpace($signature)) { throw "The Tauri updater signature is empty." }
+          $latest = [ordered]@{
+            version = $config.version
+            notes = "GhostChat $($config.version)"
+            pub_date = [DateTime]::UtcNow.ToString("o")
+            platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{
+                signature = $signature
+                url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$releaseTag/$msiName"
+              }
+            }
+          }
+          $latestPath = "target/release/latest.json"
+          $latest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $latestPath -Encoding utf8
+          @"
+          ## GhostChat $($config.version)
+
+          This release includes the Windows desktop installer and standalone server.
+          Consult docs/RELEASE_SECURITY.md for signing scope and verification steps.
+          "@ | Set-Content -LiteralPath "target/release/RELEASE_NOTES.md" -Encoding utf8
+          gh release view "$releaseTag" *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "$releaseTag" --title "GhostChat $releaseTag" --notes-file "target/release/RELEASE_NOTES.md" --latest
+            if ($LASTEXITCODE -ne 0) { throw "Could not create the GitHub Release." }
+          }
+          gh release upload "$releaseTag" "$($msi.FullName)#$msiName" "$signaturePath#$msiName.sig" "$latestPath#latest.json" "$releasePath#ghostchat-server-windows-x64.exe" "$checksumPath#ghostchat-server-windows-x64.exe.sha256"
+          if ($LASTEXITCODE -ne 0) { throw "Could not upload signed release assets." }

@@ -2,6 +2,9 @@
 
 mod crypto;
 mod crypto_attachments;
+mod identity_recovery;
+#[cfg(feature = "sqlcipher-vault")]
+mod secure_vault;
 
 use serde::Serialize;
 use std::{
@@ -18,6 +21,26 @@ use tauri::{
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::UpdaterExt;
+
+#[tauri::command]
+fn split_identity_recovery(
+    account_id: String,
+    recovery_capability: String,
+) -> Result<identity_recovery::RecoveryKit, String> {
+    let capability = zeroize::Zeroizing::new(recovery_capability);
+    identity_recovery::split(&account_id, &capability)
+}
+
+#[tauri::command]
+fn restore_identity_recovery(
+    manifest: identity_recovery::Manifest,
+    shares: Vec<identity_recovery::RecoveryShare>,
+    account_id: String,
+    external_anchor: String,
+) -> Result<String, String> {
+    identity_recovery::recover(&manifest, &shares, &account_id, &external_anchor)
+        .map(|value| value.to_string())
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -662,9 +685,11 @@ fn main() {
                 .join("attachments");
             let path = database_path.to_string_lossy().to_string();
             let (api, crypto_db) = tauri::async_runtime::block_on(async move {
-                let db = ghostchat_server::open_database(&path).await.map_err(|error| {
-                    format!("Could not open GhostChat's local database at {path}: {error}")
-                })?;
+                let db = ghostchat_server::open_database(&path)
+                    .await
+                    .map_err(|error| {
+                        format!("Could not open GhostChat's local database at {path}: {error}")
+                    })?;
                 let crypto_db = db.clone();
                 let state =
                     ghostchat_server::build_state_with_attachment_dir(db, attachment_dir).await;
@@ -687,6 +712,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            split_identity_recovery,
+            restore_identity_recovery,
             api_base,
             credential_get,
             credential_set,
