@@ -100,7 +100,7 @@
     "Start a conversation": "Sohbet başlat", "Create group": "Grup oluştur", "Create a group": "Grup oluştur", "Group name": "Grup adı", "CHOOSE 2 TO 15 FRIENDS": "2 İLE 15 ARKADAŞ SEÇ", "Only accepted friends can be added. You can invite up to 15 friends.": "Yalnızca arkadaş olarak eklediğin kişileri seçebilirsin. En fazla 15 arkadaş davet edebilirsin.", "Start a private chat or bring a few friends together.": "Özel sohbet başlat ya da birkaç arkadaşını bir araya getir.", "CONVERSATIONS": "SOHBETLER", "GROUP MEMBERS": "GRUP ÜYELERİ", "No friends to add yet. Add friends first.": "Henüz eklenecek arkadaş yok. Önce arkadaş ekle.", "Choose 2 to 15 friends for a group.": "Grup için 2 ile 15 arkadaş seç.", "Group created.": "Grup oluşturuldu.", "members": "üye", "You were added to a group.": "Bir gruba eklendin.", "Attach a photo, video, or file": "Fotoğraf, video veya dosya ekle", "File is too large. The limit is 5 GB.": "Dosya çok büyük. Üst sınır 5 GB.", "File sent.": "Dosya gönderildi.", "Could not load this file.": "Bu dosya yüklenemedi.",
     "Microphone test": "Mikrofon testi", "Press test and speak into your microphone.": "Testi başlatıp mikrofona konuş.", "Speak into your microphone.": "Mikrofona konuş.", "Microphone is picking up sound.": "Mikrofon ses alıyor.", "Test microphone": "Mikrofonu dene", "Stop microphone test": "Mikrofon testini durdur", "Microphone test stopped.": "Mikrofon testi durduruldu.",
     "Refresh share": "Paylaşımı yenile", "File shared": "Dosya paylaşıldı",
-    "You": "Sen", "Who’s here": "Görüşmedekiler", "Listening": "Dinliyor", "Microphone on": "Mikrofon açık", "Mic off": "Mikrofon kapalı", "No microphone": "Mikrofon yok", "Muted for you": "Sana sessiz", "Mute their audio": "Onun sesini kıs", "Unmute their audio": "Onun sesini aç", "Only changes what you hear.": "Yalnızca senin duyduğun sesi etkiler.", "Right-click to mute or unmute this caller": "Arayanın sesini kısmak/açmak için sağ tıkla", "DIRECT MESSAGE": "ÖZEL MESAJ", "GROUP CONVERSATION": "GRUP SOHBETİ"
+    "You": "Sen", "Who’s here": "Görüşmedekiler", "Listening": "Dinliyor", "Microphone on": "Mikrofon açık", "Mic off": "Mikrofon kapalı", "No microphone": "Mikrofon yok", "Muted for you": "Sana sessiz", "Mute their audio": "Onun sesini kıs", "Unmute their audio": "Onun sesini aç", "Only changes what you hear.": "Yalnızca senin duyduğun sesi etkiler.", "Right-click to mute or unmute this caller": "Arayanın sesini kısmak/açmak için sağ tıkla", "Direct message": "Özel mesaj", "Group conversation": "Grup sohbeti"
   });
   Object.assign(trText, {
     "Preparing this device…": "Bu cihaz hazırlanıyor…", "Encryption device is ready; one key package was published.": "Şifreleme cihazı hazır; bir anahtar paketi yayımlandı.", "The device identity was prepared, but its key package could not be published.": "Cihaz kimliği hazırlandı ancak anahtar paketi yayımlanamadı.", "A local device identity is saved. Publish a fresh one-time key package when needed.": "Yerel cihaz kimliği kayıtlı. Gerektiğinde yeni tek kullanımlık anahtar paketi yayımla.", "No encryption device is prepared on this account yet.": "Bu hesap için henüz şifreleme cihazı hazırlanmadı.", "Device ID": "Cihaz kimliği", "Identity fingerprint": "Kimlik parmak izi", "Private messaging setup": "Özel mesaj hazırlığı", "Prepare this device": "Bu cihazı hazırla", "Prepare this device and publish a one-time key package. This only prepares the device; direct-message encryption starts after both people set it up and verify each other.": "Bu cihazı hazırla ve tek kullanımlık anahtar paketi yayımla. Bu yalnızca cihazı hazırlar; özel mesaj şifrelemesi iki taraf da kurulumu tamamlayıp birbirini doğrulayınca başlar.", "Encrypted chat keys are stored on this Windows device. Your account recovery key does not restore them. Reinstalling Windows or losing this device can make existing encrypted chats unreadable; device backup and transfer are not supported yet.": "Şifreli sohbet anahtarları bu Windows cihazında tutulur. Hesap kurtarma anahtarın bunları geri yüklemez. Windows'u yeniden kurmak veya bu cihazı kaybetmek mevcut şifreli sohbetleri okunamaz hâle getirebilir; cihaz yedekleme ve aktarımı henüz desteklenmiyor."
@@ -244,6 +244,9 @@
     "Could not check for updates. Try again when you’re online.": "Güncellemeler kontrol edilemedi. Çevrimiçiyken tekrar dene.",
     "The update could not be installed.": "Güncelleme yüklenemedi.",
     "New friend request": "Yeni arkadaşlık isteği", "{name} sent you a friend request.": "{name} sana arkadaşlık isteği gönderdi."
+  });
+  Object.assign(trText, {
+    "Saved messages": "Kaydedilenler", "Saved": "Kaydedilenler", "Keep important messages within reach.": "Önemli mesajlarını kolayca bul.", "No saved messages yet.": "Henüz kaydedilmiş mesaj yok.", "Save message": "Mesajı kaydet", "Remove from saved": "Kaydedilenlerden kaldır", "Message saved.": "Mesaj kaydedildi.", "Removed from saved messages.": "Mesaj kaydedilenlerden kaldırıldı."
   });
   let updateStatusKey = "Updates are checked automatically.";
   let updateStatusValues = {};
@@ -1176,7 +1179,8 @@
       messages: ["Your quiet corner", "Choose a friend or find someone new."],
       friends: ["Friends", "Manage requests and start a private conversation."],
       search: ["Find people", "Search for a username or user ID. Users are not listed publicly."],
-      searchMessages: ["Search messages", "Search in your messages"]
+      searchMessages: ["Search messages", "Search in your messages"],
+      saved: ["Saved messages", "Keep important messages within reach."]
     };
     const [title, subtitle] = routes[state.page] || routes.messages;
     $("#chatKindLabel").textContent = "GHOSTCHAT";
@@ -1243,7 +1247,7 @@
       else button.removeAttribute("aria-current");
     });
     updateRailIndicator();
-    const titles = { messages: "Messages", friends: "Friends", search: "Find people", searchMessages: "Search messages" };
+    const titles = { messages: "Messages", friends: "Friends", search: "Find people", searchMessages: "Search messages", saved: "Saved messages" };
     $("#sidebarTitle").textContent = translate(titles[page]);
     const sidebarActionLabel = translate(page === "messages" ? "Start a conversation" : "Find people");
     $("#sidebarAction").title = sidebarActionLabel;
@@ -1358,6 +1362,33 @@
         finally { go.disabled = false; }
       };
       setTimeout(() => input.focus(), 20);
+    } else if (state.page === "saved") {
+      page.append(create("h2", "", translate("Saved messages")), create("p", "muted", translate("Keep important messages within reach.")));
+      const results = create("div", "search-results");
+      results.append(create("div", "empty-list", translate("Loading…")));
+      page.append(results);
+      void (async () => {
+        try {
+          const rows = await request("/v1/me/saved-messages");
+          results.replaceChildren();
+          if (!rows.length) { results.append(create("div", "empty-list", translate("No saved messages yet."))); return; }
+          for (const row of rows) {
+            let message = row;
+            if (row.content?.startsWith("e2e1:")) {
+              try { message = await decodeMessageRow(row); }
+              catch { message = { ...row, content: translate("Encrypted message") }; }
+            }
+            const conversation = state.conversations.find(item => item.id === message.conversation_id);
+            const card = create("div", "result-card");
+            const copy = create("button", "list-copy"); copy.type = "button"; copy.style.textAlign = "left";
+            copy.append(create("strong", "", `${message.sender_name} · ${conversation?.display_name || translate("Messages")}`), create("span", "", message.content || ""));
+            copy.onclick = () => { setPage("messages"); openConversation(message.conversation_id); };
+            const remove = create("button", "button secondary", translate("Remove from saved"));
+            remove.onclick = async () => { remove.disabled = true; try { await request(`/v1/messages/${encodeURIComponent(message.id)}/save`, { method: "POST" }); toast(translate("Removed from saved messages.")); renderPage(); } catch (error) { toast(error.message, true); remove.disabled = false; } };
+            card.append(copy, remove); results.append(card);
+          }
+        } catch (error) { results.replaceChildren(create("div", "empty-list", error.message)); }
+      })();
     }
     root.append(page); $("#messagePanel").classList.add("hidden");
   }
@@ -2170,7 +2201,7 @@
     const convo = state.conversations.find(item => item.id === id);
     if (!convo) { await refreshConversations(); }
     state.active = state.conversations.find(item => item.id === id) || { id, display_name: "Conversation", username: "" };
-    $("#chatKindLabel").textContent = translate(state.active.kind === "group" ? "GROUP CONVERSATION" : "DIRECT MESSAGE");
+    $("#chatKindLabel").textContent = translate(state.active.kind === "group" ? "Group conversation" : "Direct message");
     $("#chatTitle").textContent = state.active.display_name;
     $("#chatSubtitle").textContent = state.active.kind === "group"
       ? `${state.active.member_count} ${translate("members")} · ${state.active.member_names || translate("GROUP MEMBERS")}`
@@ -2366,7 +2397,8 @@
       };
       const reply = create("button", "message-inline-action", translate("Reply")); reply.type = "button"; reply.onclick = () => setReplyTarget(message);
       const pin = create("button", "message-inline-action", message.pinned_at ? translate("Unpin message") : translate("Pin message")); pin.type = "button"; pin.onclick = async () => { pin.disabled = true; try { await request(`/v1/messages/${encodeURIComponent(message.id)}/pin`, { method: "POST" }); await loadMessages(false); } catch (error) { toast(error.message, true); pin.disabled = false; } };
-      inlineActions.append(addReaction, reply, pin); reactions.append(inlineActions);
+      const save = create("button", "message-inline-action", translate("Save message")); save.type = "button"; save.onclick = async () => { save.disabled = true; try { const result = await request(`/v1/messages/${encodeURIComponent(message.id)}/save`, { method: "POST" }); save.textContent = result.saved ? translate("Remove from saved") : translate("Save message"); toast(translate(result.saved ? "Message saved." : "Removed from saved messages.")); } catch (error) { toast(error.message, true); } finally { save.disabled = false; } };
+      inlineActions.append(addReaction, reply, pin, save); reactions.append(inlineActions);
     }
     row.append(main);
     if (ownMessage) {
@@ -2375,6 +2407,7 @@
     row.addEventListener("contextmenu", event => openAppContextMenu(event, [
       { label: state.language === "tr" ? "Yanıtla" : "Reply", run: () => setReplyTarget(message) },
       { label: state.language === "tr" ? "Metni kopyala" : "Copy text", run: async () => { try { await navigator.clipboard.writeText(message.content || ""); toast(state.language === "tr" ? "Mesaj kopyalandı." : "Message copied."); } catch { toast(state.language === "tr" ? "Kopyalama engellendi." : "Copy was blocked.", true); } } },
+      { label: translate("Save message"), run: async () => { try { const result = await request(`/v1/messages/${encodeURIComponent(message.id)}/save`, { method: "POST" }); toast(translate(result.saved ? "Message saved." : "Removed from saved messages.")); } catch (error) { toast(error.message, true); } } },
       !message.encrypted && ownMessage ? { label: state.language === "tr" ? "Düzenle" : "Edit", run: () => editMessage(message) } : null,
       ownMessage ? { label: state.language === "tr" ? "Sil" : "Delete", danger: true, run: () => deleteMessage(message.id) } : null,
     ]));
@@ -2442,9 +2475,22 @@
       await refreshMessageReactions();
       state.older = rows.length === 50; $("#loadOlderRow").classList.toggle("hidden", !state.older || !rows.length);
       if (older) container.scrollTop += container.scrollHeight - oldHeight; else container.scrollTop = container.scrollHeight;
+      updateJumpToLatest();
       if (!older && rows.length) await markConversationRead(conversationId, Number(rows.at(-1).sequence));
       await refreshConversations(); updateSeenBadge();
     } catch (error) { toast(error.message, true); }
+  }
+  function updateJumpToLatest() {
+    const messages = $("#messages");
+    const button = $("#jumpToLatest");
+    if (!messages || !button) return;
+    const distance = messages.scrollHeight - messages.scrollTop - messages.clientHeight;
+    button.classList.toggle("hidden", distance < 160);
+  }
+  function jumpToLatest() {
+    const messages = $("#messages");
+    messages.scrollTo({ top: messages.scrollHeight, behavior: document.body.classList.contains("reduced-motion") ? "auto" : "smooth" });
+    updateJumpToLatest();
   }
   function encryptedMessagePendingKey(conversationId) { return `ghostchat.cryptoMessagePending.${state.base}.${state.user?.id || ""}.${conversationId}`; }
   async function retryPendingEncryptedMessage(conversation) {
@@ -4005,6 +4051,9 @@
   $("#logoutButton").onclick = async () => { try { await request("/v1/sessions", { method: "DELETE" }); } catch {} voiceClient?.hangup(); await groupVoiceClient?.leave(); if (state.socket) state.socket.close(); await clearToken(); state.recoveryKey = ""; state.cryptoDevice = null; state.user = null; state.blockedUserIds.clear(); state.active = null; state.conversations = []; resetCryptoViewState(); show("authView"); toast("You are logged out."); };
   $("#checkUpdates").onclick = () => checkForUpdates(false);
   $("#installUpdate").onclick = installUpdate;
+  $("#jumpToLatest").onclick = jumpToLatest;
+  $("#messages").addEventListener("scroll", updateJumpToLatest, { passive: true });
+  $("#shortcutsButton").onclick = () => { if (!$("#shortcutsDialog").open) $("#shortcutsDialog").showModal(); };
   window.__TAURI__?.event?.listen?.("ghostchat:update-progress", event => {
     const percent = Number(event.payload);
     if (Number.isFinite(percent)) {
@@ -4032,6 +4081,10 @@
   });
   document.addEventListener("keydown", event => {
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setPage("search"); }
+    if (event.key === "?" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.target.closest("input, textarea, select, [contenteditable=true]")) {
+      event.preventDefault();
+      if (!$("#shortcutsDialog").open) $("#shortcutsDialog").showModal();
+    }
     if (event.key === "Escape" && !$("#settingsDialog").open) document.activeElement?.blur();
     if (event.code === "Space" && !event.repeat && voiceSettings().pushToTalk && !event.target.closest("input, textarea, select, [contenteditable=true], button")) {
       event.preventDefault();

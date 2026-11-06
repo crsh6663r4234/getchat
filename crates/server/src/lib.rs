@@ -318,6 +318,16 @@ pub fn router(state: AppState) -> Router {
             patch(change_group_role).delete(remove_group_member),
         )
         .route(
+            "/v1/conversations/:id/planner/polls",
+            get(list_group_polls).post(create_group_poll),
+        )
+        .route("/v1/group-polls/:id/vote", post(vote_group_poll))
+        .route(
+            "/v1/conversations/:id/planner/events",
+            get(list_group_events).post(create_group_event),
+        )
+        .route("/v1/group-events/:id/rsvp", post(rsvp_group_event))
+        .route(
             "/v1/conversations/:id/crypto-membership/remove/:user_id",
             post(remove_encrypted_group_member),
         )
@@ -377,7 +387,9 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/v1/messages/:id/reactions", post(toggle_message_reaction))
         .route("/v1/messages/:id/pin", post(toggle_message_pin))
+        .route("/v1/messages/:id/save", post(toggle_saved_message))
         .route("/v1/messages/search", get(search_messages))
+        .route("/v1/me/saved-messages", get(list_saved_messages))
         .route("/v1/voice/ice", get(voice_ice_servers))
         .route("/v1/conversations/:id/voice-token", post(group_voice_token))
         .route("/v1/conversations/:id/share-token", post(ghost_share_token))
@@ -4017,6 +4029,11 @@ struct MessageRow {
     reply_to_sender: Option<String>,
 }
 
+#[derive(Serialize)]
+struct SavedMessageState {
+    saved: bool,
+}
+
 async fn is_member(
     db: &SqlitePool,
     conversation_id: &str,
@@ -4326,6 +4343,268 @@ async fn toggle_message_pin(
         recipients,
         event: serde_json::json!({"type":"message_pin_updated","conversation_id":conversation_id,"message_id":message_id}),
     });
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn toggle_saved_message(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(message_id): Path<String>,
+) -> Result<Json<SavedMessageState>, ApiError> {
+    let user = authenticate(&headers, &state).await?;
+    let conversation_id = sqlx::query_scalar::<_, String>("SELECT conversation_id FROM messages WHERE id=?")
+        .bind(&message_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(|_| ApiError::internal())?
+        .ok_or_else(ApiError::not_found)?;
+    if !is_member(&state.db, &conversation_id, &user.id).await? {
+        return Err(ApiError::not_found());
+    }
+    if !allow_rate(&state, &format!("save:{}", user.id), 60, Duration::from_secs(60)) {
+        return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, "Please slow down and try again."));
+    }
+    let removed = sqlx::query("DELETE FROM saved_messages WHERE user_id=? AND message_id=?")
+        .bind(&user.id)
+        .bind(&message_id)
+        .execute(&state.db)
+        .await
+        .map_err(|_| ApiError::internal())?
+        .rows_affected() > 0;
+    let saved = if removed {
+        false
+    } else {
+        sqlx::query("INSERT INTO saved_messages(user_id,message_id) VALUES(?,?)")
+            .bind(&user.id)
+            .bind(&message_id)
+            .execute(&state.db)
+            .await
+            .map_err(|_| ApiError::internal())?;
+        true
+    };
+    Ok(Json(SavedMessageState { saved }))
+}
+
+async fn list_saved_messages(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<MessageRow>>, ApiError> {
+    let user = authenticate(&headers, &state).await?;
+    let rows = sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,u.avatar_data AS sender_avatar,m.client_message_id,m.content,m.created_at,m.edited_at,m.pinned_at,m.reply_to_id,(SELECT r.content FROM messages r WHERE r.id=m.reply_to_id) AS reply_to_content,(SELECT u.display_name FROM messages r JOIN users u ON u.id=r.sender_id WHERE r.id=m.reply_to_id) AS reply_to_sender FROM saved_messages s JOIN messages m ON m.id=s.message_id JOIN users u ON u.id=m.sender_id JOIN conversation_members c ON c.conversation_id=m.conversation_id AND c.user_id=s.user_id WHERE s.user_id=? ORDER BY s.saved_at DESC LIMIT 200")
+        .bind(&user.id)
+        .fetch_all(&state.db)
+        .await
+        .map_err(|_| ApiError::internal())?;
+    Ok(Json(rows))
+}
+
+async fn ensure_group_planner_member(
+    db: &SqlitePool,
+    conversation_id: &str,
+    user_id: &str,
+) -> Result<(), ApiError> {
+    let allowed = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM conversations c JOIN conversation_members cm ON cm.conversation_id=c.id WHERE c.id=? AND c.kind='group' AND cm.user_id=?",
+    )
+    .bind(conversation_id)
+    .bind(user_id)
+    .fetch_one(db)
+    .await
+    .map_err(|_| ApiError::internal())?;
+    if allowed == 0 { Err(ApiError::not_found()) } else { Ok(()) }
+}
+
+#[derive(Deserialize)]
+struct CreateGroupPollRequest {
+    question: String,
+    options: Vec<String>,
+    closes_at: Option<String>,
+}
+
+#[derive(Serialize, FromRow)]
+struct GroupPollOption {
+    id: String,
+    label: String,
+    position: i64,
+    votes: i64,
+}
+
+#[derive(Serialize, FromRow)]
+struct GroupPollRow {
+    id: String,
+    conversation_id: String,
+    creator_id: String,
+    question: String,
+    closes_at: Option<String>,
+    closed_at: Option<String>,
+    created_at: String,
+}
+
+#[derive(Serialize)]
+struct GroupPollDetail {
+    #[serde(flatten)]
+    poll: GroupPollRow,
+    options: Vec<GroupPollOption>,
+    my_option_id: Option<String>,
+}
+
+async fn group_poll_details(
+    db: &SqlitePool,
+    conversation_id: &str,
+    user_id: &str,
+) -> Result<Vec<GroupPollDetail>, ApiError> {
+    let polls = sqlx::query_as::<_, GroupPollRow>(
+        "SELECT id,conversation_id,creator_id,question,closes_at,closed_at,created_at FROM group_polls WHERE conversation_id=? ORDER BY created_at DESC LIMIT 100",
+    )
+    .bind(conversation_id)
+    .fetch_all(db)
+    .await
+    .map_err(|_| ApiError::internal())?;
+    let mut details = Vec::with_capacity(polls.len());
+    for poll in polls {
+        let options = sqlx::query_as::<_, GroupPollOption>(
+            "SELECT o.id,o.label,o.position,(SELECT count(*) FROM group_poll_votes v WHERE v.option_id=o.id) AS votes FROM group_poll_options o WHERE o.poll_id=? ORDER BY o.position",
+        )
+        .bind(&poll.id)
+        .fetch_all(db)
+        .await
+        .map_err(|_| ApiError::internal())?;
+        let my_option_id = sqlx::query_scalar::<_, String>(
+            "SELECT option_id FROM group_poll_votes WHERE poll_id=? AND user_id=?",
+        )
+        .bind(&poll.id)
+        .bind(user_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|_| ApiError::internal())?;
+        details.push(GroupPollDetail { poll, options, my_option_id });
+    }
+    Ok(details)
+}
+
+async fn list_group_polls(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(conversation_id): Path<String>,
+) -> Result<Json<Vec<GroupPollDetail>>, ApiError> {
+    let user = authenticate(&headers, &state).await?;
+    ensure_group_planner_member(&state.db, &conversation_id, &user.id).await?;
+    Ok(Json(group_poll_details(&state.db, &conversation_id, &user.id).await?))
+}
+
+async fn create_group_poll(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(conversation_id): Path<String>,
+    Json(body): Json<CreateGroupPollRequest>,
+) -> Result<Json<Vec<GroupPollDetail>>, ApiError> {
+    let user = authenticate(&headers, &state).await?;
+    ensure_group_planner_member(&state.db, &conversation_id, &user.id).await?;
+    let question = body.question.trim();
+    let options: Vec<_> = body.options.iter().map(|item| item.trim()).filter(|item| !item.is_empty()).collect();
+    if question.is_empty() || question.len() > 240 || !(2..=8).contains(&options.len()) || options.iter().any(|item| item.len() > 100) {
+        return Err(ApiError::bad("A poll needs a question and 2 to 8 short options."));
+    }
+    if body.closes_at.as_ref().is_some_and(|value| value.len() > 64) {
+        return Err(ApiError::bad("The poll closing time is not valid."));
+    }
+    let poll_id = Uuid::new_v4().to_string();
+    let mut tx = state.db.begin().await.map_err(|_| ApiError::internal())?;
+    sqlx::query("INSERT INTO group_polls(id,conversation_id,creator_id,question,closes_at) VALUES(?,?,?,?,?)")
+        .bind(&poll_id).bind(&conversation_id).bind(&user.id).bind(question).bind(body.closes_at.as_deref())
+        .execute(&mut *tx).await.map_err(|_| ApiError::internal())?;
+    for (position, option) in options.iter().enumerate() {
+        sqlx::query("INSERT INTO group_poll_options(id,poll_id,label,position) VALUES(?,?,?,?)")
+            .bind(Uuid::new_v4().to_string()).bind(&poll_id).bind(option).bind(position as i64)
+            .execute(&mut *tx).await.map_err(|_| ApiError::internal())?;
+    }
+    tx.commit().await.map_err(|_| ApiError::internal())?;
+    let _ = state.events.send(ServerEvent { recipients: group_recipients(&state.db, &conversation_id).await?, event: serde_json::json!({"type":"group_planner_updated","conversation_id":conversation_id}) });
+    Ok(Json(group_poll_details(&state.db, &conversation_id, &user.id).await?))
+}
+
+#[derive(Deserialize)]
+struct VoteGroupPollRequest { option_id: String }
+
+async fn vote_group_poll(
+    State(state): State<AppState>, headers: HeaderMap, Path(poll_id): Path<String>, Json(body): Json<VoteGroupPollRequest>,
+) -> Result<StatusCode, ApiError> {
+    let user = authenticate(&headers, &state).await?;
+    let conversation_id = sqlx::query_scalar::<_, String>("SELECT conversation_id FROM group_polls WHERE id=? AND closed_at IS NULL")
+        .bind(&poll_id).fetch_optional(&state.db).await.map_err(|_| ApiError::internal())?.ok_or_else(ApiError::not_found)?;
+    ensure_group_planner_member(&state.db, &conversation_id, &user.id).await?;
+    let valid = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM group_poll_options WHERE id=? AND poll_id=?")
+        .bind(&body.option_id).bind(&poll_id).fetch_one(&state.db).await.map_err(|_| ApiError::internal())?;
+    if valid == 0 { return Err(ApiError::bad("Choose an option from this poll.")); }
+    sqlx::query("INSERT INTO group_poll_votes(poll_id,user_id,option_id) VALUES(?,?,?) ON CONFLICT(poll_id,user_id) DO UPDATE SET option_id=excluded.option_id,created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+        .bind(&poll_id).bind(&user.id).bind(&body.option_id).execute(&state.db).await.map_err(|_| ApiError::internal())?;
+    let _ = state.events.send(ServerEvent { recipients: group_recipients(&state.db, &conversation_id).await?, event: serde_json::json!({"type":"group_planner_updated","conversation_id":conversation_id}) });
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct CreateGroupEventRequest { title: String, details: String, scheduled_at: String }
+
+#[derive(Deserialize)]
+struct GroupEventRsvpRequest { status: String }
+
+#[derive(Serialize, FromRow)]
+struct GroupEventRow {
+    id: String,
+    conversation_id: String,
+    creator_id: String,
+    title: String,
+    details: String,
+    scheduled_at: String,
+    cancelled_at: Option<String>,
+    created_at: String,
+    going: i64,
+    maybe: i64,
+    declined: i64,
+    my_status: Option<String>,
+}
+
+async fn group_event_details(db: &SqlitePool, conversation_id: &str, user_id: &str) -> Result<Vec<GroupEventRow>, ApiError> {
+    sqlx::query_as::<_, GroupEventRow>(
+        "SELECT e.id,e.conversation_id,e.creator_id,e.title,e.details,e.scheduled_at,e.cancelled_at,e.created_at,(SELECT count(*) FROM group_event_rsvps r WHERE r.event_id=e.id AND r.status='going') AS going,(SELECT count(*) FROM group_event_rsvps r WHERE r.event_id=e.id AND r.status='maybe') AS maybe,(SELECT count(*) FROM group_event_rsvps r WHERE r.event_id=e.id AND r.status='declined') AS declined,(SELECT status FROM group_event_rsvps r WHERE r.event_id=e.id AND r.user_id=?) AS my_status FROM group_events e WHERE e.conversation_id=? ORDER BY e.scheduled_at ASC LIMIT 100",
+    ).bind(user_id).bind(conversation_id).fetch_all(db).await.map_err(|_| ApiError::internal())
+}
+
+async fn list_group_events(State(state): State<AppState>, headers: HeaderMap, Path(conversation_id): Path<String>) -> Result<Json<Vec<GroupEventRow>>, ApiError> {
+    let user = authenticate(&headers, &state).await?;
+    ensure_group_planner_member(&state.db, &conversation_id, &user.id).await?;
+    Ok(Json(group_event_details(&state.db, &conversation_id, &user.id).await?))
+}
+
+async fn create_group_event(
+    State(state): State<AppState>, headers: HeaderMap, Path(conversation_id): Path<String>, Json(body): Json<CreateGroupEventRequest>,
+) -> Result<Json<Vec<GroupEventRow>>, ApiError> {
+    let user = authenticate(&headers, &state).await?;
+    ensure_group_planner_member(&state.db, &conversation_id, &user.id).await?;
+    let title = body.title.trim();
+    let details = body.details.trim();
+    let scheduled_at = body.scheduled_at.trim();
+    if !(2..=140).contains(&title.len()) || details.len() > 1_500 || scheduled_at.is_empty() || scheduled_at.len() > 64 {
+        return Err(ApiError::bad("Add a short title and a valid time for this event."));
+    }
+    sqlx::query("INSERT INTO group_events(id,conversation_id,creator_id,title,details,scheduled_at) VALUES(?,?,?,?,?,?)")
+        .bind(Uuid::new_v4().to_string()).bind(&conversation_id).bind(&user.id).bind(title).bind(details).bind(scheduled_at)
+        .execute(&state.db).await.map_err(|_| ApiError::internal())?;
+    let _ = state.events.send(ServerEvent { recipients: group_recipients(&state.db, &conversation_id).await?, event: serde_json::json!({"type":"group_planner_updated","conversation_id":conversation_id}) });
+    Ok(Json(group_event_details(&state.db, &conversation_id, &user.id).await?))
+}
+
+async fn rsvp_group_event(
+    State(state): State<AppState>, headers: HeaderMap, Path(event_id): Path<String>, Json(body): Json<GroupEventRsvpRequest>,
+) -> Result<StatusCode, ApiError> {
+    let user = authenticate(&headers, &state).await?;
+    if !matches!(body.status.as_str(), "going" | "maybe" | "declined") { return Err(ApiError::bad("Choose going, maybe, or declined.")); }
+    let conversation_id = sqlx::query_scalar::<_, String>("SELECT conversation_id FROM group_events WHERE id=? AND cancelled_at IS NULL")
+        .bind(&event_id).fetch_optional(&state.db).await.map_err(|_| ApiError::internal())?.ok_or_else(ApiError::not_found)?;
+    ensure_group_planner_member(&state.db, &conversation_id, &user.id).await?;
+    sqlx::query("INSERT INTO group_event_rsvps(event_id,user_id,status) VALUES(?,?,?) ON CONFLICT(event_id,user_id) DO UPDATE SET status=excluded.status,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+        .bind(&event_id).bind(&user.id).bind(&body.status).execute(&state.db).await.map_err(|_| ApiError::internal())?;
+    let _ = state.events.send(ServerEvent { recipients: group_recipients(&state.db, &conversation_id).await?, event: serde_json::json!({"type":"group_planner_updated","conversation_id":conversation_id}) });
     Ok(StatusCode::NO_CONTENT)
 }
 
