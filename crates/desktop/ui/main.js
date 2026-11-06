@@ -248,6 +248,9 @@
   Object.assign(trText, {
     "Saved messages": "Kaydedilenler", "Saved": "Kaydedilenler", "Keep important messages within reach.": "Önemli mesajlarını kolayca bul.", "No saved messages yet.": "Henüz kaydedilmiş mesaj yok.", "Save message": "Mesajı kaydet", "Remove from saved": "Kaydedilenlerden kaldır", "Message saved.": "Mesaj kaydedildi.", "Removed from saved messages.": "Mesaj kaydedilenlerden kaldırıldı."
   });
+  Object.assign(trText, {
+    "Group planner": "Grup planlayıcısı", "Plan together": "Birlikte planla", "Quick poll": "Hızlı anket", "Question": "Soru", "Options (one per line)": "Seçenekler (her satıra bir tane)", "Create poll": "Anket oluştur", "Make a plan": "Plan oluştur", "When": "Ne zaman", "Notes (optional)": "Notlar (isteğe bağlı)", "Create event": "Etkinlik oluştur", "Active polls": "Açık anketler", "Upcoming": "Yaklaşanlar", "Vote": "Oy ver", "Going": "Geliyorum", "Maybe": "Belki", "Declined": "Gelemiyorum", "No polls yet.": "Henüz anket yok.", "No upcoming events.": "Yaklaşan etkinlik yok.", "Poll created.": "Anket oluşturuldu.", "Event created.": "Etkinlik oluşturuldu."
+  });
   let updateStatusKey = "Updates are checked automatically.";
   let updateStatusValues = {};
   const tr = () => (localStorage.getItem("ghostchat.language") || "en") === "tr";
@@ -1662,6 +1665,34 @@
       $("#groupManageStatus").textContent = error.message || translate("Group settings could not be loaded.");
     }
   }
+  async function openGroupPlanner() {
+    const conversation = state.active;
+    if (!conversation || conversation.kind !== "group") return;
+    $("#groupPlannerStatus").textContent = translate("Loading…");
+    if (!$("#groupPlannerDialog").open) $("#groupPlannerDialog").showModal();
+    const pollList = $("#groupPollList"); const eventList = $("#groupEventList");
+    try {
+      const [polls, events] = await Promise.all([
+        request(`/v1/conversations/${encodeURIComponent(conversation.id)}/planner/polls`),
+        request(`/v1/conversations/${encodeURIComponent(conversation.id)}/planner/events`),
+      ]);
+      pollList.replaceChildren(); eventList.replaceChildren();
+      if (!polls.length) pollList.append(create("div", "empty-list", translate("No polls yet.")));
+      for (const poll of polls) {
+        const card = create("div", "group-member-row"); const copy = create("div", "list-copy"); copy.append(create("strong", "", poll.question));
+        for (const option of poll.options || []) { const vote = create("button", "button secondary", `${option.label} · ${option.votes}`); vote.disabled = poll.closed_at || poll.my_option_id === option.id; vote.onclick = async () => { try { await request(`/v1/group-polls/${encodeURIComponent(poll.id)}/vote`, { method: "POST", body: JSON.stringify({ option_id: option.id }) }); await openGroupPlanner(); } catch (error) { toast(error.message, true); } }; copy.append(vote); }
+        card.append(copy); pollList.append(card);
+      }
+      if (!events.length) eventList.append(create("div", "empty-list", translate("No upcoming events.")));
+      for (const item of events) {
+        const card = create("div", "group-member-row"); const copy = create("div", "list-copy"); const when = new Date(item.scheduled_at);
+        copy.append(create("strong", "", item.title), create("span", "", Number.isNaN(when.getTime()) ? item.scheduled_at : when.toLocaleString()), create("span", "", `${translate("Going")}: ${item.going} · ${translate("Maybe")}: ${item.maybe}`));
+        const actions = create("div", "request-actions"); for (const [status, label] of [["going", "Going"], ["maybe", "Maybe"], ["declined", "Declined"]]) { const button = create("button", "button secondary", translate(label)); button.disabled = item.my_status === status; button.onclick = async () => { try { await request(`/v1/group-events/${encodeURIComponent(item.id)}/rsvp`, { method: "POST", body: JSON.stringify({ status }) }); await openGroupPlanner(); } catch (error) { toast(error.message, true); } }; actions.append(button); }
+        card.append(copy, actions); eventList.append(card);
+      }
+      $("#groupPlannerStatus").textContent = "";
+    } catch (error) { $("#groupPlannerStatus").textContent = error.message; }
+  }
   function cryptoObservedFingerprintKey(conversationId) { return `ghostchat.cryptoPeerObserved.${state.base}.${state.user?.id || ""}.${conversationId}`; }
   function cryptoTrustedFingerprintKey(conversationId) { return `ghostchat.cryptoPeerTrusted.${state.base}.${state.user?.id || ""}.${conversationId}`; }
   function cryptoEventCursorKey(conversationId) { return `ghostchat.cryptoCursor.${state.base}.${state.user?.id || ""}.${conversationId}`; }
@@ -2912,6 +2943,7 @@
   }
   function renderVoiceControls() {
     $("#manageGroupButton").classList.toggle("hidden", !state.active || state.active.kind !== "group");
+    $("#groupPlannerButton").classList.toggle("hidden", !state.active || state.active.kind !== "group");
     if (!voiceClient) return;
     const directVoice = voiceClient.getState();
     const groupVoice = groupVoiceClient?.getState() || groupVoiceUiState;
@@ -3295,6 +3327,23 @@
   $("#findPeopleAction").onclick = () => { $("#newConversationDialog").close(); setPage("search"); };
   $("#createGroupAction").onclick = () => { $("#newConversationDialog").close(); openGroupDialog(); };
   $("#manageGroupButton").onclick = () => void openGroupManageDialog();
+  $("#groupPlannerButton").onclick = () => void openGroupPlanner();
+  $("#createGroupPoll").onclick = async event => {
+    if (!state.active || state.active.kind !== "group") return;
+    const button = event.currentTarget; const question = $("#groupPollQuestion").value.trim(); const options = $("#groupPollOptions").value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+    button.disabled = true;
+    try { await request(`/v1/conversations/${encodeURIComponent(state.active.id)}/planner/polls`, { method: "POST", body: JSON.stringify({ question, options, closes_at: null }) }); $("#groupPollQuestion").value = ""; $("#groupPollOptions").value = ""; toast(translate("Poll created.")); await openGroupPlanner(); }
+    catch (error) { toast(error.message, true); }
+    finally { button.disabled = false; }
+  };
+  $("#createGroupEvent").onclick = async event => {
+    if (!state.active || state.active.kind !== "group") return;
+    const button = event.currentTarget; const title = $("#groupEventTitle").value.trim(); const details = $("#groupEventDetails").value.trim(); const scheduled_at = $("#groupEventTime").value;
+    button.disabled = true;
+    try { await request(`/v1/conversations/${encodeURIComponent(state.active.id)}/planner/events`, { method: "POST", body: JSON.stringify({ title, details, scheduled_at }) }); $("#groupEventTitle").value = ""; $("#groupEventDetails").value = ""; $("#groupEventTime").value = ""; toast(translate("Event created.")); await openGroupPlanner(); }
+    catch (error) { toast(error.message, true); }
+    finally { button.disabled = false; }
+  };
   $("#saveGroupName").onclick = async event => {
     if (!state.active || state.active.kind !== "group") return;
     const button = event.currentTarget; button.disabled = true;
