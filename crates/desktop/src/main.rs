@@ -53,7 +53,14 @@ struct UpdateStatus {
 }
 
 fn update_endpoint() -> Option<&'static str> {
-    option_env!("GHOSTCHAT_UPDATE_ENDPOINT").filter(|endpoint| !endpoint.trim().is_empty())
+    // Release builds used to require a CI-only compile-time variable even
+    // though the signed GitHub feed is part of this application's stable
+    // public configuration. That made otherwise valid installed builds report
+    // that Releases were not connected. Keep the environment override for
+    // staging, but always retain the production feed as a safe fallback.
+    option_env!("GHOSTCHAT_UPDATE_ENDPOINT")
+        .filter(|endpoint| !endpoint.trim().is_empty())
+        .or(Some("https://github.com/crsh6663r4234/getchat/releases/latest/download/latest.json"))
 }
 
 fn make_updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
