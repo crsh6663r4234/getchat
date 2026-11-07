@@ -623,9 +623,18 @@
     function makePeer(activeCall, configuration) {
       const pc = new RTCPeerConnection({ ...configuration, iceTransportPolicy: "relay" });
       activeCall.pc = pc;
+      activeCall.relayCandidates = 0;
+      // Relay-only calls cannot carry media without a TURN allocation. When
+      // gathering finishes with none, fail loudly instead of leaving the call
+      // stuck in "connecting" with no audio in either direction.
+      pc.onicegatheringstatechange = () => {
+        if (call !== activeCall || pc.iceGatheringState !== "complete" || activeCall.relayCandidates) return;
+        closeCall({ notifyPeer: true, message: "The TURN relay server did not respond, so no audio can be sent. Check that coturn is running and that port 3478 (UDP and TCP) and the relay port range are open on the server firewall." });
+      };
       pc.onicecandidate = event => {
         if (call !== activeCall || !event.candidate) return;
         if (event.candidate.type !== "relay" && !/\btyp relay(?:\s|$)/.test(event.candidate.candidate || "")) return;
+        activeCall.relayCandidates += 1;
         const candidate = event.candidate.toJSON();
         try {
           if (activeCall.signalReady) send(activeCall.conversationId, activeCall.peerId, "ice", candidate);
