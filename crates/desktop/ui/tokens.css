@@ -1,0 +1,659 @@
+/* Hallmark · checked: 2026-11-08 · genre: modern-minimal (inferred)
+ * floor: 48 and 24a left for the token pass · fixed: 2a, 7a, 10a, 19, 30a, 34, 39a, 41, 50, 54, 62, 63, 67 · structural: none printed (app scope)
+ * built: Hallmark · theme: Console (manual) · scope: GhostChat app workspace · signature: compact live-call dock · redesign: polish · v2.0.0 */
+
+/* Hallmark · pre-emit critique: P4 H4 E4 S4 R5 V3 · weakest: V, removed the prior aura-and-glass treatment for a dense graphite workspace */
+
+/* Hallmark · dismissed 41 · the toggle track carries no text, and --ink names the GhostChat surface, not its text colour */
+
+/* Core palette, type, spacing, radius and motion (dark default). */
+
+:root {
+  --bg: #10131a;
+  --surface: #171b24;
+  --surface-2: #1e2430;
+  --surface-3: #282f3d;
+  --text: #f1f3f8;
+  --ink-1: #0f121a;
+  --lilac: #ad9bff;
+  --lilac-soft: #d6ceff;
+  --mint: #66dfb0;
+  --font-ui: Inter, "Segoe UI", system-ui, sans-serif;
+  --ink: #111418;
+  --ink-raised: #181d23;
+  --ink-hover: #222933;
+  --ink-input: #0d1014;
+  --ink-strong: #080a0d;
+  --paper: #edf0e9;
+  --tint-white: #fbfaff;
+  --tint-black: #07060b;
+  --muted: #9aa3a7;
+  --muted-strong: #c6cdcb;
+  --line: #303942;
+  --line-subtle: #252c33;
+  --accent: #d6a859;
+  --accent-ink: #21180a;
+  --accent-soft: #3e3220;
+  --good: #77c49c;
+  --danger: #dc7b72;
+  --shadow: rgba(0, 0, 0, .34);
+  --shadow-deep: rgba(0, 0, 0, .56);
+  --focus: rgba(214, 168, 89, .42);
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --radius-control: 8px;
+  --radius-panel: 14px;
+  --radius-dialog: 18px;
+  --motion-fast: 140ms;
+  --motion-base: 220ms;
+  --ease-out: cubic-bezier(.2, .8, .2, 1);
+}
+
+/* Component colours: default (dark) values. A token that body.light redefines below has a light value too. */
+
+:root {
+  --active-speaker-breath-shadow-1: #54c38c20;
+  --active-speaker-breath-shadow-2: #46a97816;
+  --app-bg: #111318;
+  --app-context-menu-border: #464451;
+  --app-context-menu-button-danger-hover-bg: #472d34;
+  --app-context-menu-button-danger-text: #ffb3b8;
+  --app-context-menu-button-hover-bg: #34313f;
+  --app-decision-dialog-button-danger-bg: #9e4954;
+  --app-decision-dialog-button-danger-border: #c86773;
+  --app-decision-dialog-button-danger-hover-bg: #b85561;
+  --brand-mark-after-shadow: #0006;
+  --check-row-text: #c6c8cf;
+  --composer-border: #3b4352;
+  --composer-hint-text: #777d8b;
+  --composer-textarea-placeholder-text: #727786;
+  --crypto-conversation-status-warning-text: #e4b56f;
+  --crypto-recovery-warning-bg: #332b20;
+  --crypto-recovery-warning-border: #765a34;
+  --crypto-recovery-warning-text: #f0ce91;
+  --desktop-player-bg: #080a0f;
+  --desktop-tooltip-shadow: #0004;
+  --dialog-body-scrollbar-color: #41495a;
+  --dialog-border: #3a3d47;
+  --dialog-open-border: #41495a;
+  --dialog-open-shadow: #0008;
+  --empty-list-text: #7d8290;
+  --friend-actions-secondary-border: #69434a;
+  --friend-actions-secondary-hover-bg: #442d33;
+  --friend-actions-secondary-text: #e9b0b6;
+  --group-friend-option-bg: #252235;
+  --group-screen-tile-bg: #090a0e;
+  --group-screen-tile-border: #393a46;
+  --group-screen-video-bg: #08090c;
+  --group-voice-participant-pressed-border: #70434c;
+  --key-box-bg: #101115;
+  --key-box-border: #3b3d46;
+  --key-box-code-text: #d1c8ff;
+  --list-row-mini-avatar-shadow: #ffffff0a;
+  --local-participant-voice-muted-bg: #302b3b;
+  --local-participant-voice-muted-border: #49435c;
+  --local-participant-voice-muted-text: #c8bded;
+  --message-actions-button-hover-bg: #3a3e49;
+  --message-avatar-border: #ffffff1c;
+  --message-avatar-border-2: #ffffff1a;
+  --message-highlight-bg: #a995ff28;
+  --message-hover-border: #343a48;
+  --message-image-bg: #08090c;
+  --message-inline-action-bg: #ffffff08;
+  --message-inline-action-hover-border: #7868a7;
+  --message-link-border: #b8a8ff8c;
+  --message-link-hover-text: #f0edff;
+  --message-link-text: #d0c7ff;
+  --message-meta-time-text: #737988;
+  --message-own-hover-bg: #a995ff0d;
+  --message-owner-label-bg: #a995ff13;
+  --message-owner-label-border: #a995ff38;
+  --message-owner-label-text: #c6baff;
+  --message-pinned-badge-bg: #8b704115;
+  --message-pinned-badge-border: #8b7041;
+  --message-pinned-badge-text: #e6c27d;
+  --messages-scrollbar-color: #41495a;
+  --own-message-body-text: #eeebf8;
+  --page-content-scrollbar-color: #41495a;
+  --presence-copy-before-bg: #66dfb0;
+  --presence-copy-dnd-before-bg: #ef6270;
+  --presence-copy-invisible-before-bg: #7d8595;
+  --presence-copy-text: #99a4b6;
+  --presence-dot-bg: #66dfb0;
+  --presence-dot-dnd-bg: #ef6270;
+  --presence-dot-dnd-shadow: #ef627066;
+  --presence-dot-invisible-bg: #7d8595;
+  --presence-dot-shadow: #66dfb077;
+  --profile-avatar-bg: #36313f;
+  --profile-avatar-bg-2: #454054;
+  --profile-avatar-hover-shadow-1: #a995ff33;
+  --profile-avatar-hover-shadow-2: #0006;
+  --profile-avatar-text: #d8ccff;
+  --profile-preview-avatar-bg: #7460d2;
+  --profile-preview-avatar-text: #171324;
+  --profile-preview-body-strong-text: #b4bdd0;
+  --profile-preview-dialog-bg: #111722;
+  --profile-preview-dialog-border: #ffffff18;
+  --profile-preview-dialog-shadow: #000a;
+  --rail-divider-bg: #ffffff14;
+  --reaction-choice-hover-bg: #a995ff24;
+  --reaction-picker-shadow: #0002;
+  --reaction-pill-active-bg: #332d45;
+  --reaction-pill-active-border: #8572c5;
+  --reaction-pill-active-text: #e4dcff;
+  --reaction-pill-bg: #ffffff0b;
+  --recovery-card-brand-mark-bg: #fed17c;
+  --remote-screen-bg: #08090c;
+  --reply-composer-preview-bg: #a995ff0d;
+  --reply-reference-bg: #a995ff0d;
+  --screen-expand-button-bg: #12151ee6;
+  --screen-expand-button-border: #ffffff30;
+  --screen-expand-button-hover-bg: #39304f;
+  --screen-share-badge-border: #ffffff20;
+  --screen-share-badge-live-before-bg: #ff6672;
+  --screen-share-badge-live-before-shadow: #ff6672;
+  --screen-share-badge-live-bg: #59272dd9;
+  --screen-share-badge-live-border: #a94f5a;
+  --screen-share-badge-live-text: #ffe3e5;
+  --screen-share-layout-local-panel-border: #655b85;
+  --screen-share-layout-local-panel-shadow: #0009;
+  --screen-share-panel-border: #393a46;
+  --screen-share-panel-remote-bg: #08090c;
+  --screen-share-panel-remote-text: #edf0e9;
+  --screen-share-panel-shadow: #0003;
+  --screen-viewer-dialog-bg: #0a0c11;
+  --search-results-result-card-bg: #ffffff08;
+  --send-button-hover-bg: #c5b8ff;
+  --setting-row-input-checkbox-after-bg-end: #8e97a8;
+  --setting-row-input-checkbox-after-bg-start: #c7ced9;
+  --setting-row-input-checkbox-after-border: #6e7686;
+  --setting-row-input-checkbox-after-shadow: #0007;
+  --setting-row-input-checkbox-bg-end: #20242e;
+  --setting-row-input-checkbox-bg-start: #2b303d;
+  --setting-row-input-checkbox-border: #464d5e;
+  --setting-row-input-checkbox-checked-after-bg: #e4ddff;
+  --setting-row-input-checkbox-checked-bg-end: #b49bff;
+  --setting-row-input-checkbox-checked-bg-start: #8a70ed;
+  --setting-row-input-checkbox-checked-border: #b7a8ff;
+  --setting-row-input-checkbox-checked-shadow-1: #fff4;
+  --setting-row-input-checkbox-checked-shadow-2: #a995ff21;
+  --setting-row-input-checkbox-checked-shadow-3: #8069d833;
+  --setting-row-input-checkbox-focus-outline: #d1c5ff;
+  --setting-row-input-checkbox-hover-border: #777f92;
+  --setting-row-input-checkbox-shadow-1: #0008;
+  --setting-row-input-checkbox-shadow-2: #ffffff0a;
+  --settings-bg: #10141df7;
+  --settings-button-bg: #1c2433;
+  --settings-button-border: #ffffff2b;
+  --settings-button-primary-text: #171324;
+  --settings-dialog-shadow: #000a;
+  --settings-section-bg: #171920;
+  --settings-section-bg-2: #111724ed;
+  --settings-section-border: #ffffff1c;
+  --settings-section-content-setting-row-border: #292b34;
+  --settings-section-content-setting-row-border-2: #ffffff0d;
+  --sidebar-content-scrollbar-color: #41495a;
+  --sidebar-head-border: #ffffff0d;
+  --sidebar-shadow: #0005;
+  --sidebar-shadow-2: #0007;
+  --speaking-pulse-shadow-1: #58d99510;
+  --speaking-pulse-shadow-2: #58d995;
+  --speaking-voice-dot-shadow: #63c79c66;
+  --speaking-voice-participant-avatar-shadow: #63c79c18;
+  --startup-update-card-border: #34313f;
+  --status-dot-connecting-bg: #e9bf70;
+  --theme-wallpaper-actions-fine-print-text: #9ca7bb;
+  --theme-wallpaper-upload-border: #ffffff0d;
+  --theme-wallpaper-upload-small-text: #9ca7bb;
+  --toast-border: #414552;
+  --unread-badge-text: #171324;
+  --update-orbit-after-bg: #b8aaff;
+  --update-orbit-after-shadow: #a995ff;
+  --update-orbit-before-border: #65588d;
+  --update-orbit-border: #393449;
+  --update-orbit-border-2: #aa98ff;
+  --update-orbit-border-3: #8271d2;
+  --voice-call-duration-text: #d7d3e5;
+  --voice-call-notes-bg: #141620aa;
+  --voice-call-notes-border: #343745;
+  --voice-call-notes-p-text: #afa0e7;
+  --voice-call-notes-textarea-bg: #0e1016;
+  --voice-call-notes-textarea-border: #3c4050;
+  --voice-connection-quality-bg: #13151c;
+  --voice-connection-quality-border: #373947;
+  --voice-connection-quality-live-bg: #183226;
+  --voice-connection-quality-live-border: #316e55;
+  --voice-connection-quality-live-text: #7de0ad;
+  --voice-connection-quality-warning-bg: #372b18;
+  --voice-connection-quality-warning-border: #735a30;
+  --voice-connection-quality-warning-text: #f2c46c;
+  --voice-control-button-border: #363843;
+  --voice-control-button-icon-bg: #5b343b;
+  --voice-control-button-muted-bg: #3a272d;
+  --voice-control-button-muted-border: #70434c;
+  --voice-control-button-muted-text: #ffb3b8;
+  --voice-control-icon-bg: #ffffff0d;
+  --voice-device-notice-text: #8893a7;
+  --voice-device-picker-select-bg: #ffffff08;
+  --voice-device-picker-select-border: #ffffff13;
+  --voice-device-picker-select-border-2: #373946;
+  --voice-device-picker-span-text: #8e98aa;
+  --voice-device-picker-text: #999eac;
+  --voice-device-row-bg: #12141a66;
+  --voice-device-row-border: #30313c;
+  --voice-encryption-note-border-2: #ffffff11;
+  --voice-end-button-bg-end: #96414d;
+  --voice-end-button-bg-start: #be5664;
+  --voice-end-button-border: #df717d55;
+  --voice-end-button-hover-bg-end: #a54754;
+  --voice-end-button-hover-bg-start: #cf6270;
+  --voice-end-button-hover-border: #c1656d;
+  --voice-end-button-shadow: #9a3f4a2e;
+  --voice-mic-level-meter-span-bg-1: #55b889;
+  --voice-mic-level-meter-span-bg-2: #d6c95b;
+  --voice-mic-level-meter-span-bg-3: #e56868;
+  --voice-participant-avatar-shadow: #ffffff0a;
+  --voice-participant-card-bg-end: #ffffff04;
+  --voice-participant-card-bg-start: #ffffff0a;
+  --voice-participant-card-border: #ffffff10;
+  --voice-participant-card-border-2: #373946;
+  --voice-participant-card-hover-bg: #a995ff10;
+  --voice-participant-card-hover-border: #b9abff42;
+  --voice-participant-card-local-bg-end: #ffffff04;
+  --voice-participant-card-local-bg-start: #a995ff1a;
+  --voice-participant-card-speaking-bg-end: #20212a;
+  --voice-participant-card-speaking-bg-start: #20352e;
+  --voice-participant-card-speaking-border: #66dfb080;
+  --voice-participant-card-speaking-dot-bg: #58d995;
+  --voice-participant-card-speaking-dot-shadow-1: #58d99520;
+  --voice-participant-card-speaking-dot-shadow-2: #58d995;
+  --voice-participant-card-speaking-shadow-1: #66dfb014;
+  --voice-participant-card-speaking-shadow-2: #0003;
+  --voice-participant-menu-bg: #20212a;
+  --voice-participant-menu-border: #464451;
+  --voice-participant-menu-button-hover-bg: #34313f;
+  --voice-participant-menu-shadow: #0009;
+  --voice-participant-muted-bg: #3a272d;
+  --voice-participant-muted-border: #70434c;
+  --voice-participant-muted-text: #ffb3b8;
+  --voice-participant-speaking-text: #939db1;
+  --voice-participant-volume-text: #b9c1d0;
+  --voice-peer-avatar-bg: #7460d2;
+  --voice-peer-avatar-border: #7965b9;
+  --voice-peer-avatar-shadow: #a995ff14;
+  --voice-peer-avatar-text: #191425;
+  --voice-refresh-button-bg: #ffffff08;
+  --voice-refresh-button-border: #373946;
+  --voice-refresh-button-border-2: #ffffff13;
+  --voice-refresh-button-hover-bg: #302b40;
+  --voice-speaking-dot-bg: #767987;
+  --voice-stage-bg-1: #151827f2;
+  --voice-stage-bg-2: #10151ee8;
+  --voice-stage-bg-3: #102126e8;
+  --voice-stage-body-bg: #06090e22;
+  --voice-stage-body-border: #ffffff0d;
+  --voice-stage-border: #ffffff12;
+  --voice-stage-control-button-muted-bg: #ed7c8315;
+  --voice-stage-control-button-muted-border: #ed7c8340;
+  --voice-stage-end-button-bg: #b74353;
+  --voice-stage-end-button-border: #b74353;
+  --voice-stage-end-button-hover-bg: #cb4d60;
+  --voice-stage-end-button-hover-border: #cb4d60;
+  --voice-stage-participant-muted-bg: #ed7c8318;
+  --voice-stage-remote-screen-border: #30313c;
+  --voice-stage-room-accent: #a995ff;
+  --voice-stage-scroll-device-row-bg: #070a1029;
+  --voice-stage-scroll-device-row-border: #ffffff0d;
+  --voice-stage-scroll-scrollbar-color: #7f87a655;
+  --voice-stage-shadow-1: #0006;
+  --voice-stage-shadow-2: #ffffff09;
+  --voice-start-button-bg: #302b49;
+  --voice-start-button-border: #5c4f89;
+  --voice-start-button-hover-bg: #3a3357;
+  --voice-start-button-text: #ddd4ff;
+  --voice-status-line-dot-connecting-bg: #edc06a;
+  --voice-status-line-text: #99a3b8;
+  --voice-tools-danger-text: #ff9da4;
+  --voice-tools-icon-button-pressed-bg: #754148;
+  --watch-party-video-bg: #080a0f;
+  --welcome-card-before-bg: #ad9bff26;
+  --welcome-orb-bg: #b5a4ff14;
+  --welcome-orb-border: #b5a4ff30;
+  --welcome-profile-border: #ffffff12;
+  --welcome-profile-copy-small-before-shadow: #66dfb0a8;
+  --welcome-profile-copy-span-text: #97a1b7;
+}
+
+/* Light mode. Two body.light blocks: the first is overridden by the theme accents, the second (after the themes) wins over the theme --line. */
+
+body.light {
+  --bg: #f5f6fa;
+  --surface: #fff;
+  --surface-2: #f1f2f6;
+  --surface-3: #e8eaf0;
+  --text: #252832;
+  --accent: #725bd8;
+}
+
+.light {
+  --good: #23865c;
+  --danger: #bd4452;
+}
+
+/* Visual themes (body[data-theme]). */
+
+body[data-theme="midnight"] {
+  --ink-1: #0b1020;
+  --line: #7aa2ff26;
+  --lilac: #78a9ff;
+  --lilac-soft: #b9d0ff;
+  --mint: #69e6c1;
+  --accent: #8cb6d7;
+  --accent-ink: #0e1d28;
+  --accent-soft: #243945;
+  --theme-app-bg-end: #080d1c;
+  --theme-app-bg-start: #244b9838;
+}
+
+body[data-theme="forest"] {
+  --ink-1: #0d1b16;
+  --line: #8dd8a329;
+  --lilac: #8ed7a1;
+  --lilac-soft: #c0f0c8;
+  --mint: #75e2b4;
+  --accent: #a3bf75;
+  --accent-ink: #19200f;
+  --accent-soft: #35402a;
+  --theme-app-bg-end: #09130f;
+  --theme-app-bg-start: #2c8d5c31;
+}
+
+body[data-theme="ember"] {
+  --ink-1: #21120f;
+  --line: #f59b6d30;
+  --lilac: #fa9d6a;
+  --lilac-soft: #ffd1b8;
+  --mint: #e7cb80;
+  --accent: #d98b67;
+  --accent-ink: #28150d;
+  --accent-soft: #47271d;
+  --theme-app-bg-end: #160c0a;
+  --theme-app-bg-start: #ed6f3738;
+}
+
+body[data-theme="glacier"] {
+  --ink-1: #0b1720;
+  --line: #9feaff30;
+  --lilac: #8bdff2;
+  --lilac-soft: #c8f5ff;
+  --mint: #93e5c1;
+  --accent: #86c7cc;
+  --accent-ink: #0f2023;
+  --accent-soft: #254044;
+  --theme-app-bg-end: #081218;
+  --theme-app-bg-start: #5abde336;
+}
+
+body[data-theme="sakura"] {
+  --ink-1: #20131d;
+  --line: #ffbddb32;
+  --lilac: #ff9dc7;
+  --lilac-soft: #ffd1e4;
+  --mint: #9ee6cf;
+  --accent: #d99a9d;
+  --accent-ink: #281317;
+  --accent-soft: #49282d;
+  --theme-app-bg-end: #160d15;
+  --theme-app-bg-start: #e779ae38;
+  --theme-app-shell-before-bg-1: #ffd8e888;
+  --theme-app-shell-before-bg-2: #ff9fc899;
+  --theme-app-shell-before-bg-3: #ff89ba1c;
+}
+
+body[data-theme="aurora"] {
+  --ink-1: #091822;
+  --line: #77f0dc2b;
+  --lilac: #70dff2;
+  --lilac-soft: #c0f7ff;
+  --mint: #86efae;
+  --accent: #8dc3a5;
+  --accent-ink: #11251c;
+  --accent-soft: #294239;
+  --theme-app-bg: #071219;
+  --theme-app-shell-before-bg-1: #8dc3a536;
+  --theme-app-shell-before-bg-2: #8dc3a52b;
+  --theme-app-shell-before-bg-3: #8dc3a514;
+}
+
+body[data-theme="tide"] {
+  --ink-1: #061b29;
+  --line: #78d5ff2d;
+  --lilac: #64d5ff;
+  --lilac-soft: #bef2ff;
+  --mint: #7ae8c3;
+  --accent: #78b8d2;
+  --accent-ink: #0e2029;
+  --accent-soft: #263e4b;
+  --theme-app-bg: #05131f;
+  --theme-app-shell-before-bg-1: #3ed9f13d;
+  --theme-app-shell-before-bg-2: #3479ee38;
+  --theme-app-shell-before-bg-3: #baf5ff0c;
+}
+
+body.light {
+  --ink: #e9e9e2;
+  --ink-raised: #f5f4ef;
+  --ink-hover: #e1e0d8;
+  --ink-input: #ffffff;
+  --ink-strong: #d8d8ce;
+  --paper: #20251f;
+  --muted: #5f6861;
+  --muted-strong: #343b35;
+  --line: #babbb0;
+  --line-subtle: #d0d0c7;
+  --shadow: rgba(37, 37, 32, .14);
+  --shadow-deep: rgba(37, 37, 32, .24);
+}
+
+/* Component colours: light mode. */
+
+body.light {
+  --account-bar-bg: #f5f5f9;
+  --app-context-menu-bg: #fffe;
+  --app-context-menu-border-light: #dedbe8;
+  --app-context-menu-button-hover-bg-light: #f0edf7;
+  --app-context-menu-button-text: #282a33;
+  --auth-view-bg: #edebfa;
+  --avatar-upload-row-border: #e3e0ec;
+  --button-primary-hover-bg: #826ce9;
+  --composer-border-light: #d9dae5;
+  --composer-shadow: #20243b0b;
+  --crypto-device-row-bg: #f7f7fa;
+  --crypto-device-row-border: #e3e0ec;
+  --crypto-recovery-warning-bg: #fff8e9;
+  --crypto-recovery-warning-border-light: #e2c995;
+  --crypto-recovery-warning-text: #74551d;
+  --group-manage-section-bg: #f7f7fa;
+  --group-screen-tile-border-light: #d9d4e3;
+  --key-box-bg: #f4f2fb;
+  --key-box-code-text: #53419a;
+  --list-row-active-bg: #eeeaff;
+  --list-row-active-border: #755de028;
+  --list-row-hover-bg: #f0eff6;
+  --local-participant-voice-muted-bg: #f2eff9;
+  --local-participant-voice-muted-border: #ddd6ee;
+  --local-participant-voice-muted-text: #574d78;
+  --message-body-bg: #f0f1f5;
+  --message-body-text: #424651;
+  --message-hover-bg: #f1f1f5;
+  --message-hover-border-light: #e8e7ee;
+  --message-own-bg: #725bd80a;
+  --message-own-border: #725bd81a;
+  --message-own-hover-bg: #725bd812;
+  --message-owner-label-bg: #725bd810;
+  --message-owner-label-border-light: #725bd83d;
+  --message-owner-label-text: #5743a3;
+  --message-pinned-badge-bg: #b18b4310;
+  --message-pinned-badge-border-light: #b18b43;
+  --message-pinned-badge-text: #806021;
+  --own-message-body-bg: #f1eff9;
+  --own-message-body-border: #dcd5f2;
+  --own-message-body-text-light: #32313b;
+  --rail-bg: #eef0f5;
+  --rail-button-active-bg: #e8e2ff;
+  --reaction-pill-active-bg: #eeeafb;
+  --reaction-pill-active-border: #725bd8;
+  --reaction-pill-active-text: #51408f;
+  --recovery-settings-bg: #f7f7fa;
+  --recovery-settings-border: #e3e0ec;
+  --reply-composer-preview-bg: #725bd80c;
+  --reply-reference-bg: #725bd80c;
+  --screen-share-badge-bg: #171820e8;
+  --screen-share-badge-border-light: #ffffff30;
+  --screen-share-badge-text: #f4f1fb;
+  --screen-share-panel-bg: #171820;
+  --screen-share-panel-border-light: #d9d4e3;
+  --screen-share-panel-text: #edf0e9;
+  --setting-row-input-checkbox-after-bg: #e8e6ef;
+  --setting-row-input-checkbox-after-border-light: #b6b2c2;
+  --setting-row-input-checkbox-bg-end-light: #dedde6;
+  --setting-row-input-checkbox-bg-start-light: #f8f7fb;
+  --setting-row-input-checkbox-border-light: #c7c4d1;
+  --setting-row-input-checkbox-shadow: #9290a033;
+  --settings-recovery-value-border: #dddae6;
+  --settings-recovery-value-text: #282a33;
+  --settings-section-content-setting-row-border-light: #ebe9ef;
+  --settings-section-summary-text: #292a33;
+  --settings-section-title-border: #ebe9ef;
+  --settings-section-title-text: #292a33;
+  --sidebar-bg: #fbfbfd;
+  --startup-update-card-border-light: #e1deeb;
+  --startup-update-gate-bg-end: #f5f6fa;
+  --startup-update-gate-bg-start: #eeebfa;
+  --startup-update-progress-bg: #ebe9f1;
+  --voice-call-notes-bg: #fff9;
+  --voice-call-notes-border-light: #dedbe8;
+  --voice-call-notes-textarea-border-light: #dddae6;
+  --voice-call-notes-textarea-text: #272933;
+  --voice-control-button-border-light: #dddae6;
+  --voice-control-button-hover-bg: #f2effa;
+  --voice-control-button-icon-bg: #f6dadd;
+  --voice-control-button-muted-bg: #fff0f1;
+  --voice-control-button-muted-border: #e7c9cd;
+  --voice-control-button-muted-text: #923f48;
+  --voice-control-button-text: #42434c;
+  --voice-control-icon-bg: #f0edf7;
+  --voice-device-notice-text: #737784;
+  --voice-device-picker-select-border: #dddae6;
+  --voice-device-picker-select-text: #282a33;
+  --voice-device-picker-text-light: #747786;
+  --voice-encryption-note-bg: #ffffffa8;
+  --voice-encryption-note-border: #e3e0ec;
+  --voice-encryption-note-text: #716b7f;
+  --voice-participant-card-border: #dedbe8;
+  --voice-participant-card-speaking-bg-end-light: #fff;
+  --voice-participant-card-speaking-bg-start-light: #e4f5ec;
+  --voice-participant-card-speaking-border: #3b9b6d;
+  --voice-participant-card-speaking-shadow: #54c38c35;
+  --voice-participant-card-text: #282a33;
+  --voice-participant-copy-strong-text: #282a33;
+  --voice-participant-menu-border-light: #dedbe8;
+  --voice-participant-menu-button-hover-bg: #f0edf7;
+  --voice-participant-menu-button-text: #282a33;
+  --voice-participant-menu-p-text: #737784;
+  --voice-participant-menu-shadow-light: #20173430;
+  --voice-participant-muted-bg: #fff0f1;
+  --voice-participant-muted-border-light: #e7c9cd;
+  --voice-participant-muted-text: #923f48;
+  --voice-refresh-button-border-light: #dddae6;
+  --voice-refresh-button-text: #655792;
+  --voice-stage-bg: #f6f5fb;
+  --voice-stage-border: #d8d3e6;
+  --voice-stage-shadow: #32215b12;
+}
+
+/* Turkey calendar identities (body[data-special-day]). */
+
+body[data-special-day="ataturk-remembrance"] {
+  --ink-1: #0d0d0f;
+  --lilac: #d6d6d8;
+  --lilac-soft: #f4f4f5;
+  --mint: #aaaab0;
+  --day-brand-mark-after-bg: #151519;
+  --day-brand-mark-after-text: #f3f3f4;
+  --day-brand-mark-bg-end: #77777d;
+  --day-brand-mark-bg-start: #eeeeef;
+  --day-brand-mark-shadow-1: #ffffff22;
+  --day-brand-mark-shadow-2: #0008;
+  --day-brand-mark-text: #111114;
+}
+
+body[data-special-day="national-sovereignty"] {
+  --day-brand-mark-after-bg: #e92c3e;
+  --day-brand-mark-bg-end: #a41325;
+  --day-brand-mark-bg-start: #e92c3e;
+  --day-brand-mark-shadow-1: #e92c3e24;
+  --day-brand-mark-shadow-2: #9e132342;
+}
+
+body[data-special-day="youth-sports"] {
+  --day-brand-mark-after-bg: #e92c3e;
+  --day-brand-mark-bg-end: #a41325;
+  --day-brand-mark-bg-start: #e92c3e;
+  --day-brand-mark-shadow-1: #e92c3e24;
+  --day-brand-mark-shadow-2: #9e132342;
+}
+
+body[data-special-day="victory"] {
+  --day-brand-mark-after-bg: #e92c3e;
+  --day-brand-mark-bg-end: #a41325;
+  --day-brand-mark-bg-start: #e92c3e;
+  --day-brand-mark-shadow-1: #e92c3e24;
+  --day-brand-mark-shadow-2: #9e132342;
+}
+
+body[data-special-day="republic"] {
+  --day-brand-mark-after-bg: #e92c3e;
+  --day-brand-mark-bg-end: #a41325;
+  --day-brand-mark-bg-start: #e92c3e;
+  --day-brand-mark-shadow-1: #e92c3e24;
+  --day-brand-mark-shadow-2: #9e132342;
+}
+
+body[data-special-day="ramadan-feast"] {
+  --day-brand-mark-after-bg: #e4b95b;
+  --day-brand-mark-after-text: #174d47;
+  --day-brand-mark-bg-end: #1e897d;
+  --day-brand-mark-bg-start: #125b5b;
+  --day-brand-mark-shadow-1: #58cfbc20;
+  --day-brand-mark-shadow-2: #0d5a5240;
+  --day-brand-mark-text: #fff6d8;
+}
+
+body[data-special-day="sacrifice-feast"] {
+  --day-brand-mark-after-bg: #e4b95b;
+  --day-brand-mark-after-text: #174d47;
+  --day-brand-mark-bg-end: #1e897d;
+  --day-brand-mark-bg-start: #125b5b;
+  --day-brand-mark-shadow-1: #58cfbc20;
+  --day-brand-mark-shadow-2: #0d5a5240;
+  --day-brand-mark-text: #fff6d8;
+}
+
+body[data-special-day="new-year"] {
+  --day-brand-mark-after-bg: #d82939;
+  --day-brand-mark-after-text: #fff3c2;
+  --day-brand-mark-bg-end: #0d3727;
+  --day-brand-mark-bg-start: #176747;
+  --day-brand-mark-text: #ffdd71;
+}
+
+/* Custom wallpaper scrim: resolved on <body>, where JS sets --wallpaper-shade inline. */
+
+body.has-custom-wallpaper {
+  --wallpaper-scrim: rgba(7, 10, 16, var(--wallpaper-shade, .58));
+}

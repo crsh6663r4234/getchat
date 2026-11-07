@@ -1,6 +1,6 @@
 # GhostChat Industrial UI system
 
-GhostChat uses a single final visual layer, `crates/desktop/ui/industrial-ui.css`. It intentionally overrides legacy feature-specific sheets rather than duplicating view logic in JavaScript.
+GhostChat's desktop UI loads two stylesheets: `crates/desktop/ui/tokens.css` (every custom property: core palette, spacing, radius, motion, component colours, per light mode, `data-theme` and `data-special-day`) and `crates/desktop/ui/app.css` (base and components). The final "Console layer" section of `app.css` is the visual treatment; it intentionally overrides the legacy feature sections above it rather than duplicating view logic in JavaScript.
 
 ## Foundations
 
