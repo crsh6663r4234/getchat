@@ -4,8 +4,8 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ui = path.resolve(__dirname, '../crates/desktop/ui');
 
-function directFixture(config, { failShare = false } = {}) {
-  const pcs = []; const signals = []; let micRequests = 0; let screenRequests = 0; let shareLeaves = 0;
+function directFixture(config, { failShare = false, relayOnly = false, relayResponds = true } = {}) {
+  const pcs = []; const probes = []; const signals = []; let micRequests = 0; let screenRequests = 0; let shareLeaves = 0;
   class Peer {
     connectionState = 'new'; signalingState = 'stable'; transceivers = [];
     constructor(configuration) { this.configuration = configuration; pcs.push(this); }
@@ -17,8 +17,13 @@ function directFixture(config, { failShare = false } = {}) {
     getTransceivers() { return this.transceivers; }
     getSenders() { return this.transceivers.map(t => t.sender); }
     async createOffer() { return { type: 'offer', sdp: 'fixture' }; }
-    async setLocalDescription(value) { this.localDescription = value; }
+    async setLocalDescription(value) {
+      this.localDescription = value;
+      if (this.probe) queueMicrotask(() => this.onicecandidate?.({ candidate: relayResponds ? { type: 'relay', candidate: 'candidate:1 1 udp 1 192.0.2.9 5009 typ relay' } : null }));
+    }
     async getStats() { return new Map(); }
+    // The pre-call relay probe is the only peer that opens a data channel.
+    createDataChannel() { pcs.splice(pcs.indexOf(this), 1); probes.push(this); this.probe = true; return {}; }
     close() { this.connectionState = 'closed'; }
   }
   const window = { GhostChatShare: { create: () => ({ start: async () => { if (failShare) throw new Error('TURN unavailable'); }, leave: async () => { shareLeaves++; } }) } };
@@ -33,11 +38,11 @@ function directFixture(config, { failShare = false } = {}) {
   };
   vm.runInNewContext(fs.readFileSync(path.join(ui, 'voice-client.js'), 'utf8'), context);
   const client = window.GhostChatVoice.create({
-    getSettings: () => ({ relayOnly: false }), getIceConfiguration: async () => config,
+    getSettings: () => ({ relayOnly }), getIceConfiguration: async () => config,
     getUserId: () => 'a', getShareToken: async () => ({}), sendSignal: signal => signals.push(signal),
     onChange() {}, onError() {}, onIncoming() {},
   });
-  return { client, pcs, signals, counts: () => ({ micRequests, screenRequests, shareLeaves }) };
+  return { client, pcs, probes, signals, counts: () => ({ micRequests, screenRequests, shareLeaves }) };
 }
 
 function livekitFixture({ connectFails = false } = {}) {
@@ -66,7 +71,7 @@ async function run() {
     { ice_servers: [{ urls: 'turn:fixture:3478', username: '', credential: 'fixture' }], turn_available: true },
     { ice_servers: [{ urls: 'turn:fixture:3478', username: 'fixture' }], turn_available: true },
   ]) {
-    const fixture = directFixture(config);
+    const fixture = directFixture(config, { relayOnly: true });
     await assert.rejects(fixture.client.start({ id: 'conversation', peer_id: 'b' }), /authenticated TURN relay/);
     assert.equal(fixture.pcs.length, 0, 'Missing authenticated TURN must fail before constructing any peer connection');
     assert.equal(fixture.counts().micRequests, 0, 'Missing TURN must fail before microphone capture');
@@ -74,10 +79,11 @@ async function run() {
   const direct = directFixture({ turn_available: true, group_voice_available: true, ice_servers: [
     { urls: 'stun:public.fixture:19302' },
     { urls: ['stun:public.fixture:19302', 'turns:relay.fixture:5349?transport=tcp'], username: 'fixture', credential: 'fixture' },
-  ] }, { failShare: true });
+  ] }, { failShare: true, relayOnly: true });
   await direct.client.start({ id: 'conversation', peer_id: 'b' });
   const pc = direct.pcs[0];
-  assert.equal(pc.configuration.iceTransportPolicy, 'relay', 'A saved relayOnly=false preference cannot weaken required policy');
+  assert.equal(direct.probes.length, 0, 'Strict relay-only mode never probes or falls back');
+  assert.equal(pc.configuration.iceTransportPolicy, 'relay', 'Strict relay-only mode keeps the relay policy');
   assert.equal(pc.configuration.iceServers.length, 1);
   assert.deepEqual([...pc.configuration.iceServers[0].urls], ['turns:relay.fixture:5349?transport=tcp'], 'Public STUN must not be contacted');
   const beforeCandidates = direct.signals.length;
@@ -90,6 +96,38 @@ async function run() {
   assert.equal(direct.counts().screenRequests, 0, 'An SFU failure cannot silently invoke direct screen capture');
   assert.equal(direct.counts().shareLeaves, 1);
   direct.client.hangup();
+
+  // Default mode, working relay: same relay-only guarantees as strict mode.
+  const turnConfig = { turn_available: true, ice_servers: [
+    { urls: 'stun:public.fixture:19302' },
+    { urls: ['turn:relay.fixture:3478?transport=udp'], username: 'fixture', credential: 'fixture' },
+  ] };
+  const healthy = directFixture(turnConfig);
+  await healthy.client.start({ id: 'conversation', peer_id: 'b' });
+  assert.equal(healthy.probes.length, 1, 'The relay is probed before the call');
+  assert.equal(healthy.pcs[0].configuration.iceTransportPolicy, 'relay', 'A responding relay is always used');
+  assert.deepEqual(healthy.pcs[0].configuration.iceServers.map(server => server.urls).flat(), ['turn:relay.fixture:3478?transport=udp'], 'Public STUN is not contacted while the relay works');
+  healthy.client.hangup();
+
+  // Default mode, configured but unreachable relay: fall back to direct so audio still flows.
+  const dead = directFixture(turnConfig, { relayResponds: false });
+  await dead.client.start({ id: 'conversation', peer_id: 'b' });
+  const fallback = dead.pcs[0];
+  assert.equal(fallback.configuration.iceTransportPolicy, 'all', 'An unreachable relay falls back to a direct connection');
+  assert(fallback.configuration.iceServers.some(server => [server.urls].flat().includes('stun:public.fixture:19302')), 'The fallback uses STUN');
+  const beforeHost = dead.signals.length;
+  fallback.onicecandidate({ candidate: { type: 'host', candidate: 'candidate:1 1 udp 1 192.0.2.1 5000 typ host', toJSON: () => ({ candidate: 'host' }) } });
+  assert.equal(dead.signals.length, beforeHost + 1, 'Direct candidates are signaled in fallback mode');
+  fallback.iceGatheringState = 'complete'; fallback.onicegatheringstatechange();
+  assert.equal(dead.client.getState().status, 'calling', 'A fallback call is not ended for having no relay candidate');
+  dead.client.hangup();
+
+  // Default mode, no TURN configured at all: direct call, like before 4.0.45.
+  const noTurn = directFixture({ turn_available: false, ice_servers: [{ urls: 'stun:public.fixture:19302' }] });
+  await noTurn.client.start({ id: 'conversation', peer_id: 'b' });
+  assert.equal(noTurn.probes.length, 0, 'Nothing to probe without TURN');
+  assert.equal(noTurn.pcs[0].configuration.iceTransportPolicy, 'all');
+  noTurn.client.hangup();
 
   for (const connectFails of [false, true]) {
     const fixture = livekitFixture({ connectFails });
@@ -133,6 +171,6 @@ async function run() {
     assert.equal(config.iceServers[0].credential, credential, 'Reconnect signaling may refresh credentials without weakening relay policy');
   }
   await room.disconnect();
-  console.log(`Media relay checks passed: direct fail-closed admission, TURN-only configuration, no SFU downgrade, group/share failures, reconnect state and vendored LiveKit ${SDK.version} RTC merges.`);
+  console.log(`Media relay checks passed: strict relay-only admission, relay probe with direct fallback, no SFU downgrade, group/share failures, reconnect state and vendored LiveKit ${SDK.version} RTC merges.`);
 }
 run().catch(error => { console.error(error); process.exitCode = 1; });

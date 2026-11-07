@@ -230,7 +230,7 @@
     "Choose your microphone and speaker, or join muted and listen.": "Mikrofonunu ve hoparlörünü seç veya sessiz katılıp dinle.",
     "Checking voice relay support…": "Ses aktarma desteği kontrol ediliyor…",
     "Group voice SFU is configured. Group media is relayed and not end-to-end encrypted.": "Grup sesi yapılandırılmış. Grup görüşmeleri aktarma sunucusundan geçer ve uçtan uca şifreli değildir.",
-    "TURN relay is configured. Relay-only keeps your address from the other caller; the relay still handles encrypted media traffic.": "TURN aktarma sunucusu yapılandırılmış. Yalnızca aktarma modu adresini karşı taraftan gizler; şifreli ses ve görüntü aktarma sunucusundan geçer.",
+    "TURN relay is configured. Calls use it whenever it responds and fall back to a direct connection when it does not. Turn on relay-only to never reveal your address; calls then fail while the relay is down.": "TURN aktarma sunucusu yapılandırılmış. Aramalar sunucu yanıt verdiğinde onu kullanır, vermediğinde doğrudan bağlantıya geçer. Adresini hiç göstermemek için yalnızca aktarma modunu aç; bu durumda sunucu kapalıyken arama yapılamaz.",
     "TURN relay is not configured. Direct calls can reveal your network address to the other caller and may fail on restrictive networks.": "TURN aktarma sunucusu yapılandırılmamış. Doğrudan aramalarda karşı taraf ağ adresini görebilir; kısıtlı ağlarda bağlantı kurulamayabilir.",
     "This server is outdated for voice and screen sharing. Restart it with the latest GhostChat server build.": "Bu sunucu ses ve ekran paylaşımı için eski. Güncel GhostChat sunucusuyla yeniden başlatılmalı.",
     "Voice relay settings are unavailable. The selected server may need the latest GhostChat server build.": "Ses aktarma ayarlarına ulaşılamıyor. Seçili sunucunun güncellenmesi gerekebilir.",
@@ -674,7 +674,9 @@
       pushToTalk: localStorage.getItem("ghostchat.voice.ptt") === "true",
       shareSystemAudio: localStorage.getItem("ghostchat.voice.systemAudio") === "true",
       shareQuality: localStorage.getItem("ghostchat.share.quality") || "balanced",
-      relayOnly: true,
+      // 4.0.45 force-wrote "true" to ghostchat.voice.relayOnly for everyone,
+      // so the opt-in strict mode lives under a fresh key.
+      relayOnly: localStorage.getItem("ghostchat.voice.strictRelay") === "true",
       volume: Number(localStorage.getItem("ghostchat.voice.volume") || "100"),
       speakerMuted: localStorage.getItem("ghostchat.voice.speakerMuted") === "true",
     };
@@ -692,7 +694,7 @@
     localStorage.setItem("ghostchat.voice.ptt", String($("#voicePushToTalk").checked));
     localStorage.setItem("ghostchat.voice.systemAudio", String($("#voiceShareAudio").checked));
     localStorage.setItem("ghostchat.share.quality", $("#voiceShareQuality").value);
-    localStorage.setItem("ghostchat.voice.relayOnly", "true");
+    localStorage.setItem("ghostchat.voice.strictRelay", String($("#voiceRelayOnly").checked));
     localStorage.setItem("ghostchat.voice.volume", $("#voiceVolume").value);
   }
 
@@ -707,7 +709,7 @@
     $("#voicePushToTalk").checked = settings.pushToTalk;
     $("#voiceShareAudio").checked = settings.shareSystemAudio;
     $("#voiceShareQuality").value = ["balanced", "detail", "motion", "saver"].includes(settings.shareQuality) ? settings.shareQuality : "balanced";
-    $("#voiceRelayOnly").checked = true;
+    $("#voiceRelayOnly").checked = settings.relayOnly;
     $("#voiceVolume").value = String(Math.max(0, Math.min(100, settings.volume)));
     const micSelects = [$("#voiceMicSelect"), $("#voiceCallMicSelect")];
     const speakerSelects = [$("#voiceSpeakerSelect"), $("#voiceCallSpeakerSelect")];
@@ -752,7 +754,7 @@
       const enabled = !!config.turn_available;
       relay.disabled = !enabled;
       status.textContent = translate(enabled
-        ? "TURN relay is configured. Relay-only keeps your address from the other caller; the relay still handles encrypted media traffic."
+        ? "TURN relay is configured. Calls use it whenever it responds and fall back to a direct connection when it does not. Turn on relay-only to never reveal your address; calls then fail while the relay is down."
         : "TURN relay is not configured. Direct calls can reveal your network address to the other caller and may fail on restrictive networks.");
     } catch (error) {
       state.groupVoiceAvailable = false;
