@@ -1,5 +1,8 @@
-/* Hallmark · theme: Console (manual) · scope: GhostChat app workspace · signature: compact live-call dock */
+/* Hallmark · checked: 2026-11-08 · genre: modern-minimal (inferred)
+ * floor: 48 and 24a left for the token pass · fixed: 2a, 7a, 10a, 19, 30a, 34, 39a, 41, 50, 54, 62, 63, 67 · structural: none printed (app scope)
+ * built: Hallmark · theme: Console (manual) · scope: GhostChat app workspace · signature: compact live-call dock · redesign: polish · v2.0.0 */
 /* Hallmark · pre-emit critique: P4 H4 E4 S4 R5 V3 · weakest: V, removed the prior aura-and-glass treatment for a dense graphite workspace */
+/* Hallmark · dismissed 41 · the toggle track carries no text, and --ink names the GhostChat surface, not its text colour */
 :root {
   --font-ui: Inter, "Segoe UI", system-ui, sans-serif;
   --ink: #111418;
@@ -8,6 +11,8 @@
   --ink-input: #0d1014;
   --ink-strong: #080a0d;
   --paper: #edf0e9;
+  --tint-white: #fbfaff;
+  --tint-black: #07060b;
   --muted: #9aa3a7;
   --muted-strong: #c6cdcb;
   --line: #303942;
@@ -382,10 +387,12 @@ select:focus-visible,
   box-shadow: none;
 }
 
-.dialog :is(input, textarea, select):focus,
-.search-form input:focus,
-.watch-party input[type=url]:focus {
+.dialog :is(input, textarea, select):focus-visible,
+.search-form input:focus-visible,
+.watch-party input[type=url]:focus-visible {
   border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
   box-shadow: 0 0 0 3px var(--focus);
 }
 
@@ -443,6 +450,7 @@ select:focus-visible,
 
 #voiceStage .voice-participant-card.is-speaking {
   background: var(--accent-soft);
+  color: var(--paper);
   border-color: var(--line-subtle);
   box-shadow: inset 3px 0 var(--good);
 }
@@ -528,6 +536,7 @@ body.reduced-motion *::after {
   border: 1px solid var(--line);
   border-radius: var(--radius-dialog);
   background: var(--ink-raised);
+  color: var(--paper);
   box-shadow: 0 var(--space-6) 64px var(--shadow-deep);
 }
 
@@ -655,6 +664,7 @@ body.reduced-motion *::after {
 .request-card {
   border-color: var(--line);
   background: var(--ink-raised);
+  color: var(--paper);
 }
 
 .result-card,
@@ -691,6 +701,7 @@ body.reduced-motion *::after {
   border-color: var(--line);
   border-radius: var(--radius-panel);
   background: var(--ink-strong);
+  color: var(--paper);
 }
 
 .screen-share-badge,
@@ -752,6 +763,7 @@ body.reduced-motion *::after {
   border-color: var(--line);
   border-radius: var(--radius-control);
   background: var(--ink-raised);
+  color: var(--paper);
 }
 
 .group-manage-section,
@@ -886,4 +898,51 @@ body.reduced-motion *::after {
   #settingsDialog .settings-section:nth-child(n) { grid-column: auto; }
   .active-call-dock { padding: var(--space-2); }
   .jump-to-latest { right: var(--space-3); bottom: 62px; }
+}
+
+/* Hallmark polish: one stroke icon set (currentColor, aria-hidden), sized per control. */
+.ui-icon {
+  display: inline-block;
+  flex: none;
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.15em;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.rail-button .icon .ui-icon { display: block; width: 20px; height: 20px; }
+.icon-button .ui-icon,
+.voice-refresh-button .ui-icon { display: block; width: 18px; height: 18px; }
+.voice-start-button .ui-icon { display: block; width: 15px; height: 15px; }
+.voice-refresh-button { display: grid; place-items: center; }
+.welcome-orb .ui-icon { display: block; width: 26px; height: 26px; }
+.message-encrypted-badge .ui-icon { width: 11px; height: 11px; }
+.message-pinned-badge .ui-icon,
+.attachment-filename .ui-icon { margin-right: .35em; }
+.attachment-download .ui-icon { width: 16px; height: 16px; }
+
+/* Hallmark polish: every interactive element shows an instant focus ring. */
+a:focus-visible,
+summary:focus-visible,
+[role="menuitem"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.app-context-menu button:focus-visible,
+.voice-participant-menu button:focus-visible,
+.desktop-select-menu button:focus-visible,
+.reaction-choice:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+label:has(> input.visually-hidden:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: var(--radius-control);
 }

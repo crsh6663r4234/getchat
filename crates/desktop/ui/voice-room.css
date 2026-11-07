@@ -30,7 +30,7 @@
 #voiceStage .voice-control-button.is-muted{background:#ed7c8315;color:var(--danger);border-color:#ed7c8340}
 #voiceStage .voice-control-button.is-muted .voice-control-icon{background:transparent}
 #voiceStage .voice-call-actions{margin-left:auto;flex-shrink:0}
-#voiceStage .voice-end-button{min-width:36px;background:#b74353;color:#fff;border-color:#b74353}
+#voiceStage .voice-end-button{min-width:36px;background:#b74353;color:var(--tint-white);border-color:#b74353}
 #voiceStage .voice-end-button:hover{background:#cb4d60;border-color:#cb4d60}
 #voiceStage .voice-device-notice{margin:8px 2px 0;font-size:9px;line-height:1.4;color:var(--muted)}
 #voiceStage .voice-device-row{margin:0 16px 12px;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--surface-2)}

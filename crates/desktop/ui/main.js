@@ -87,7 +87,7 @@
   let watchPartyBuffering = null;
   const localWatchPrefix = "https://local.watch.ghostchat.invalid/";
   const trText = {
-    "Create account": "Hesap oluştur", "Recover": "Kurtar", "Name": "Ad", "Display name": "Görünen ad", "Profile picture": "Profil fotoğrafı", "Choose": "Seç", "Create anonymous account": "Anonim hesap oluştur", "Recover account": "Hesabı kurtar", "Recovery key": "Kurtarma anahtarı", "Your recovery key": "Kurtarma anahtarın", "Copy key": "Anahtarı kopyala", "Save backup": "Yedek kaydet", "Continue to GhostChat": "GhostChat'e devam et", "Messages": "Mesajlar", "Friends": "Arkadaşlar", "Find people": "Kişi bul", "Search messages": "Mesajlarda ara", "Settings": "Ayarlar", "Profile": "Profil", "Connection": "Bağlantı", "Appearance": "Görünüm", "Notifications": "Bildirimler", "Voice and screen sharing": "Sesli sohbet ve ekran paylaşımı", "Updates": "Güncellemeler", "Privacy and data": "Gizlilik ve veriler", "Theme": "Tema", "Text size": "Yazı boyutu", "Dark": "Koyu", "Light": "Açık", "Compact": "Küçük", "Default": "Varsayılan", "Large": "Büyük", "Windows notifications": "Windows bildirimleri", "Send test notification": "Test bildirimi gönder", "Microphone": "Mikrofon", "Speaker": "Hoparlör", "System default": "Sistem varsayılanı", "Refresh audio devices": "Ses aygıtlarını yenile", "Echo cancellation": "Yankı engelleme", "Noise suppression": "Gürültü azaltma", "Automatic microphone gain": "Otomatik mikrofon seviyesi", "Push to talk (hold Space)": "Bas-konuş (Boşluk tuşunu basılı tut)", "Share system audio with screen": "Ekranla sistem sesini paylaş", "Save settings": "Ayarları kaydet", "Check now": "Şimdi kontrol et", "Install and restart": "Yükle ve yeniden başlat", "Save profile": "Profili kaydet", "Remove photo": "Fotoğrafı kaldır", "Your quiet corner": "Sana özel alan", "A little more room to talk.": "Rahatça konuşabileceğin bir alan.", "Find someone by username, send a friend request, then start a private conversation. Your account does not need an email or phone number.": "Etiketiyle kişi bul, arkadaşlık isteği gönder ve özel sohbete başla. Hesap için e-posta veya telefon gerekmez.", "View friends": "Arkadaşları gör", "Search": "Ara", "Search by username or user ID. GhostChat does not publish a public directory.": "Kullanıcı etiketiyle veya kullanıcı kimliğiyle ara. GhostChat herkese açık bir rehber yayınlamaz.", "No conversations yet. Find a friend to start a chat.": "Henüz sohbet yok. Sohbet başlatmak için arkadaş ekle.", "No pending requests.": "Bekleyen istek yok.", "YOUR FRIENDS": "ARKADAŞLARIN", "REQUESTS": "İSTEKLER", "DIRECT MESSAGES": "ÖZEL MESAJLAR", "No friends yet. Use Find people to add someone.": "Henüz arkadaşın yok. Kişi bul bölümünden arkadaş ekleyebilirsin.", "Manage requests and start a private conversation.": "İstekleri yönet ve özel sohbet başlat.", "All friends": "Tüm arkadaşlar", "Accept": "Kabul et", "Ignore": "Yoksay", "Message": "Mesaj", "Add friend": "Arkadaş ekle", "Request sent": "İstek gönderildi", "No friend requests right now.": "Şu anda arkadaşlık isteği yok.", "No matching messages.": "Eşleşen mesaj yok.", "Edited": "Düzenlendi", "Edit": "Düzenle", "Delete": "Sil", "Write a message…": "Mesaj yaz…", "Load earlier messages": "Önceki mesajları yükle", "Call": "Ara", "End call": "Aramayı bitir", "Settings saved.": "Ayarlar kaydedildi.", "Profile saved.": "Profil kaydedildi.", "Friend request accepted.": "Arkadaşlık isteği kabul edildi.", "Request removed.": "İstek kaldırıldı.", "Choose an image file.": "Bir resim dosyası seç.", "That photo is too detailed. Choose a smaller image.": "Fotoğraf çok detaylı. Daha küçük bir görsel seç.", "Could not use that photo.": "Fotoğraf kullanılamadı.", "Checking for updates": "Güncellemeler kontrol ediliyor", "Update required": "Güncelleme gerekli", "Downloading update": "Güncelleme indiriliyor", "Update failed": "Güncelleme başarısız", "Try again": "Yeniden dene", "Getting the latest version ready…": "En yeni sürüm hazırlanıyor…", "This app version is out of date.": "Bu uygulama sürümü güncel değil.", "Preparing the update…": "Güncelleme hazırlanıyor…"
+    "Create account": "Hesap oluştur", "Recover": "Kurtar", "Name": "Ad", "Display name": "Görünen ad", "Profile picture": "Profil fotoğrafı", "Choose": "Seç", "Create anonymous account": "Anonim hesap oluştur", "Recover account": "Hesabı kurtar", "Recovery key": "Kurtarma anahtarı", "Your recovery key": "Kurtarma anahtarın", "Copy key": "Anahtarı kopyala", "Save backup": "Yedek kaydet", "Continue to GhostChat": "GhostChat'e devam et", "Messages": "Mesajlar", "Friends": "Arkadaşlar", "Find people": "Kişi bul", "Search messages": "Mesajlarda ara", "Settings": "Ayarlar", "Profile": "Profil", "Connection": "Bağlantı", "Appearance": "Görünüm", "Notifications": "Bildirimler", "Voice and screen sharing": "Sesli sohbet ve ekran paylaşımı", "Updates": "Güncellemeler", "Privacy and data": "Gizlilik ve veriler", "Theme": "Tema", "Text size": "Yazı boyutu", "Dark": "Koyu", "Light": "Açık", "Compact": "Küçük", "Default": "Varsayılan", "Large": "Büyük", "Windows notifications": "Windows bildirimleri", "Send test notification": "Test bildirimi gönder", "Microphone": "Mikrofon", "Speaker": "Hoparlör", "System default": "Sistem varsayılanı", "Refresh audio devices": "Ses aygıtlarını yenile", "Echo cancellation": "Yankı engelleme", "Noise suppression": "Gürültü azaltma", "Automatic microphone gain": "Otomatik mikrofon seviyesi", "Push to talk (hold Space)": "Bas-konuş (Boşluk tuşunu basılı tut)", "Share system audio with screen": "Ekranla sistem sesini paylaş", "Save settings": "Ayarları kaydet", "Check now": "Şimdi kontrol et", "Install and restart": "Yükle ve yeniden başlat", "Save profile": "Profili kaydet", "Remove photo": "Fotoğrafı kaldır", "Your quiet corner": "Sana özel alan", "A little more room to talk.": "Rahatça konuşabileceğin bir alan.", "Find someone by username, send a friend request, then start a private conversation. Your account does not need an email or phone number.": "Etiketiyle kişi bul, arkadaşlık isteği gönder ve özel sohbete başla. Hesap için e-posta veya telefon gerekmez.", "View friends": "Arkadaşları gör", "Search": "Ara", "Search by username or user ID. GhostChat does not publish a public directory.": "Kullanıcı etiketiyle veya kullanıcı kimliğiyle ara. GhostChat herkese açık bir rehber yayınlamaz.", "No conversations yet. Find a friend to start a chat.": "Henüz sohbet yok. Sohbet başlatmak için arkadaş ekle.", "No pending requests.": "Bekleyen istek yok.", "Your friends": "Arkadaşların", "Requests": "İstekler", "DIRECT MESSAGES": "ÖZEL MESAJLAR", "No friends yet. Use Find people to add someone.": "Henüz arkadaşın yok. Kişi bul bölümünden arkadaş ekleyebilirsin.", "Manage requests and start a private conversation.": "İstekleri yönet ve özel sohbet başlat.", "All friends": "Tüm arkadaşlar", "Accept": "Kabul et", "Ignore": "Yoksay", "Message": "Mesaj", "Add friend": "Arkadaş ekle", "Request sent": "İstek gönderildi", "No friend requests right now.": "Şu anda arkadaşlık isteği yok.", "No matching messages.": "Eşleşen mesaj yok.", "Edited": "Düzenlendi", "Edit": "Düzenle", "Delete": "Sil", "Write a message…": "Mesaj yaz…", "Load earlier messages": "Önceki mesajları yükle", "Call": "Ara", "End call": "Aramayı bitir", "Settings saved.": "Ayarlar kaydedildi.", "Profile saved.": "Profil kaydedildi.", "Friend request accepted.": "Arkadaşlık isteği kabul edildi.", "Request removed.": "İstek kaldırıldı.", "Choose an image file.": "Bir resim dosyası seç.", "That photo is too detailed. Choose a smaller image.": "Fotoğraf çok detaylı. Daha küçük bir görsel seç.", "Could not use that photo.": "Fotoğraf kullanılamadı.", "Checking for updates": "Güncellemeler kontrol ediliyor", "Update required": "Güncelleme gerekli", "Downloading update": "Güncelleme indiriliyor", "Update failed": "Güncelleme başarısız", "Try again": "Yeniden dene", "Getting the latest version ready…": "En yeni sürüm hazırlanıyor…", "This app version is out of date.": "Bu uygulama sürümü güncel değil.", "Preparing the update…": "Güncelleme hazırlanıyor…"
   };
   Object.assign(trText, {
     "is downloading": "indiriliyor",
@@ -97,7 +97,7 @@
     "Username": "Kullanıcı adı", "3–24 letters, numbers, or underscores. Your tag changes when you save.": "3–24 harf, rakam veya alt çizgi. Kaydedince etiketin değişir.", "That username is already in use.": "Bu kullanıcı adı zaten kullanılıyor.", "Username must be 3 to 24 letters, numbers, or underscores.": "Kullanıcı adı 3–24 harf, rakam veya alt çizgi içermeli.", "Display name must be 2 to 32 characters.": "Görünen ad 2–32 karakter olmalı.", "Recovery key": "Kurtarma anahtarı", "Show recovery key": "Kurtarma anahtarını göster", "Hide recovery key": "Kurtarma anahtarını gizle", "Copy key": "Anahtarı kopyala", "Save backup": "Yedek kaydet", "Generate replacement key": "Yeni kurtarma anahtarı oluştur", "Creating a replacement immediately invalidates your previous recovery key. Keep the new key somewhere safe; anyone who has it can recover your account.": "Yeni anahtar oluşturmak eski kurtarma anahtarını hemen geçersiz kılar. Yeni anahtarı güvenli yerde sakla; anahtara sahip olan herkes hesabını kurtarabilir.", "Recovery key saved securely on this device.": "Kurtarma anahtarı bu cihazda güvenli biçimde saklanıyor.", "This device has no saved key. Creating a replacement will disable your old key.": "Bu cihazda kayıtlı anahtar yok. Yeni anahtar oluşturmak eski anahtarını devre dışı bırakır.", "Recovery key copied.": "Kurtarma anahtarı kopyalandı.", "Create a replacement recovery key? Your old key will stop working immediately.": "Yeni kurtarma anahtarı oluşturulsun mu? Eski anahtarın hemen geçersiz olacak.", "A new recovery key is ready. Save a backup somewhere safe.": "Yeni kurtarma anahtarın hazır. Güvenli bir yere yedekle.", "Windows could not save this key. Save the displayed backup before closing Settings.": "Windows bu anahtarı kaydedemedi. Ayarları kapatmadan önce görünen anahtarı yedekle.", "Windows could not store a secure copy. Copy or save the key before continuing.": "Windows anahtarın güvenli bir kopyasını saklayamadı. Devam etmeden önce anahtarı kopyala veya kaydet.", "Recovery key changes are temporarily limited. Please try again later.": "Kurtarma anahtarı değişiklikleri geçici olarak sınırlandı. Daha sonra tekrar dene."
   });
   Object.assign(trText, {
-    "Start a conversation": "Sohbet başlat", "Create group": "Grup oluştur", "Create a group": "Grup oluştur", "Group name": "Grup adı", "CHOOSE 2 TO 15 FRIENDS": "2 İLE 15 ARKADAŞ SEÇ", "Only accepted friends can be added. You can invite up to 15 friends.": "Yalnızca arkadaş olarak eklediğin kişileri seçebilirsin. En fazla 15 arkadaş davet edebilirsin.", "Start a private chat or bring a few friends together.": "Özel sohbet başlat ya da birkaç arkadaşını bir araya getir.", "CONVERSATIONS": "SOHBETLER", "GROUP MEMBERS": "GRUP ÜYELERİ", "No friends to add yet. Add friends first.": "Henüz eklenecek arkadaş yok. Önce arkadaş ekle.", "Choose 2 to 15 friends for a group.": "Grup için 2 ile 15 arkadaş seç.", "Group created.": "Grup oluşturuldu.", "members": "üye", "You were added to a group.": "Bir gruba eklendin.", "Attach a photo, video, or file": "Fotoğraf, video veya dosya ekle", "File is too large. The limit is 5 GB.": "Dosya çok büyük. Üst sınır 5 GB.", "File sent.": "Dosya gönderildi.", "Could not load this file.": "Bu dosya yüklenemedi.",
+    "Start a conversation": "Sohbet başlat", "Create group": "Grup oluştur", "Create a group": "Grup oluştur", "Group name": "Grup adı", "Choose 2 to 15 friends": "2 ile 15 arkadaş seç", "Only accepted friends can be added. You can invite up to 15 friends.": "Yalnızca arkadaş olarak eklediğin kişileri seçebilirsin. En fazla 15 arkadaş davet edebilirsin.", "Start a private chat or bring a few friends together.": "Özel sohbet başlat ya da birkaç arkadaşını bir araya getir.", "Conversations": "Sohbetler", "Group members": "Grup üyeleri", "No friends to add yet. Add friends first.": "Henüz eklenecek arkadaş yok. Önce arkadaş ekle.", "Choose 2 to 15 friends for a group.": "Grup için 2 ile 15 arkadaş seç.", "Group created.": "Grup oluşturuldu.", "members": "üye", "You were added to a group.": "Bir gruba eklendin.", "Attach a photo, video, or file": "Fotoğraf, video veya dosya ekle", "File is too large. The limit is 5 GB.": "Dosya çok büyük. Üst sınır 5 GB.", "File sent.": "Dosya gönderildi.", "Could not load this file.": "Bu dosya yüklenemedi.",
     "Microphone test": "Mikrofon testi", "Press test and speak into your microphone.": "Testi başlatıp mikrofona konuş.", "Speak into your microphone.": "Mikrofona konuş.", "Microphone is picking up sound.": "Mikrofon ses alıyor.", "Test microphone": "Mikrofonu dene", "Stop microphone test": "Mikrofon testini durdur", "Microphone test stopped.": "Mikrofon testi durduruldu.",
     "Refresh share": "Paylaşımı yenile", "File shared": "Dosya paylaşıldı",
     "You": "Sen", "Who’s here": "Görüşmedekiler", "Listening": "Dinliyor", "Microphone on": "Mikrofon açık", "Mic off": "Mikrofon kapalı", "No microphone": "Mikrofon yok", "Muted for you": "Sana sessiz", "Mute their audio": "Onun sesini kıs", "Unmute their audio": "Onun sesini aç", "Only changes what you hear.": "Yalnızca senin duyduğun sesi etkiler.", "Right-click to mute or unmute this caller": "Arayanın sesini kısmak/açmak için sağ tıkla", "Direct message": "Özel mesaj", "Group conversation": "Grup sohbeti"
@@ -109,7 +109,7 @@
     "Manage group": "Grubu yönet", "GROUP SETTINGS": "GRUP AYARLARI", "Members": "Üyeler", "Invite friends": "Arkadaş davet et", "Add selected friends": "Seçilen arkadaşları ekle", "Save name": "Adı kaydet", "Owner": "Kurucu", "Admin": "Yönetici", "Member": "Üye", "Leave group": "Gruptan ayrıl", "Remove from group": "Gruptan çıkar", "No friends available to invite.": "Davet edilecek arkadaş kalmadı.", "Group name saved.": "Grup adı kaydedildi.", "Friends added to the group.": "Arkadaşlar gruba eklendi.", "Group member updated.": "Grup üyesi güncellendi.", "You left the group.": "Gruptan ayrıldın.", "Member removed from the group.": "Üye gruptan çıkarıldı.", "Transfer group ownership to this person? You will become an admin.": "Grup sahipliğini bu kişiye devredilsin mi? Sen yönetici olacaksın.", "Group settings could not be loaded.": "Grup ayarları yüklenemedi.", "Could not update the group.": "Grup güncellenemedi.", "Loading group settings…": "Grup ayarları yükleniyor…", "Adding friends…": "Arkadaşlar ekleniyor…", "Groups can have up to 16 members.": "Gruplar en fazla 16 üyeli olabilir.", "Transfer group ownership before leaving the group.": "Gruptan ayrılmadan önce grup sahipliğini devret.", "Reply": "Yanıtla", "Replying to": "Yanıtlanan", "Cancel reply": "Yanıtı iptal et", "Message reactions": "Mesaj tepkileri", "Add a reaction": "Tepki ekle", "Pinned": "Sabitlendi", "Pin message": "Mesajı sabitle", "Unpin message": "Sabitlemeyi kaldır", "Typing…": "Yazıyor…", "is typing…": "yazıyor…", "and": "ve", "others": "kişi daha", "Unread messages": "Okunmamış mesaj", "Seen": "Görüldü"
   });
   Object.assign(trText, {
-    "Join voice": "Sesliye katıl", "Join group voice": "Grup seslisine katıl", "Group call": "Grup araması", "Group voice ready": "Grup sesi hazır", "Group voice connected": "Grup sesine bağlandı", "Group voice not configured": "Grup sesi yapılandırılmadı", "Group voice is not configured on this server. Configure LiveKit in the server environment.": "Bu sunucuda grup sesi yapılandırılmamış. Sunucu ortamında LiveKit'i ayarla.", "Group voice status could not be checked.": "Grup sesi durumu kontrol edilemedi.", "Group voice status is being checked.": "Grup sesi durumu kontrol ediliyor.", "Group voice SFU is configured. Group media is relayed and not end-to-end encrypted.": "Grup sesi SFU'su yapılandırılmış. Grup medyası aktarılır ve uçtan uca şifreli değildir.", "Leave call": "Aramadan ayrıl", "RELAYED · NOT END-TO-END ENCRYPTED": "AKTARILIR · UÇTAN UCA ŞİFRELİ DEĞİL", "Group voice is relayed by a LiveKit SFU and is not end-to-end encrypted. Your microphone is off.": "Grup sesi LiveKit SFU üzerinden aktarılır ve uçtan uca şifreli değildir. Mikrofonun kapalı.", "Group voice is relayed by a LiveKit SFU and is not end-to-end encrypted. No microphone was found; you joined muted.": "Grup sesi LiveKit SFU üzerinden aktarılır ve uçtan uca şifreli değildir. Mikrofon bulunamadı; sessiz katıldın.", "Group voice is not configured on this server.": "Bu sunucuda grup sesi yapılandırılmamış.", "The group voice module did not load. Restart GhostChat and try again.": "Grup sesi yüklenemedi. GhostChat'i yeniden başlatıp tekrar dene.", "Microphone stayed off": "Mikrofon kapalı kaldı", "Screen share": "Ekran paylaşımı"
+    "Join voice": "Sesliye katıl", "Join group voice": "Grup seslisine katıl", "Group call": "Grup araması", "Group voice ready": "Grup sesi hazır", "Group voice connected": "Grup sesine bağlandı", "Group voice not configured": "Grup sesi yapılandırılmadı", "Group voice is not configured on this server. Configure LiveKit in the server environment.": "Bu sunucuda grup sesi yapılandırılmamış. Sunucu ortamında LiveKit'i ayarla.", "Group voice status could not be checked.": "Grup sesi durumu kontrol edilemedi.", "Group voice status is being checked.": "Grup sesi durumu kontrol ediliyor.", "Group voice SFU is configured. Group media is relayed and not end-to-end encrypted.": "Grup sesi SFU'su yapılandırılmış. Grup medyası aktarılır ve uçtan uca şifreli değildir.", "Leave call": "Aramadan ayrıl", "Relayed · not end-to-end encrypted": "Aktarılır · uçtan uca şifreli değil", "Live audio": "Canlı ses", "Group voice is relayed by a LiveKit SFU and is not end-to-end encrypted. Your microphone is off.": "Grup sesi LiveKit SFU üzerinden aktarılır ve uçtan uca şifreli değildir. Mikrofonun kapalı.", "Group voice is relayed by a LiveKit SFU and is not end-to-end encrypted. No microphone was found; you joined muted.": "Grup sesi LiveKit SFU üzerinden aktarılır ve uçtan uca şifreli değildir. Mikrofon bulunamadı; sessiz katıldın.", "Group voice is not configured on this server.": "Bu sunucuda grup sesi yapılandırılmamış.", "The group voice module did not load. Restart GhostChat and try again.": "Grup sesi yüklenemedi. GhostChat'i yeniden başlatıp tekrar dene.", "Microphone stayed off": "Mikrofon kapalı kaldı", "Screen share": "Ekran paylaşımı"
   });
   Object.assign(trText, { "Invite codes": "Davet kodları", "Each code expires after 7 days, allows up to 20 joins, and is shown only once.": "Her kod 7 gün sonra geçersiz olur, en fazla 20 katılıma izin verir ve yalnızca bir kez gösterilir.", "Create invite code": "Davet kodu oluştur", "Invite code": "Davet kodu", "Only use invite codes from people you trust.": "Yalnızca güvendiğin kişilerden gelen davet kodlarını kullan.", "Join group": "Gruba katıl", "Join with invite code": "Davet koduyla katıl", "No active invite codes.": "Etkin davet kodu yok.", "Expires": "Son kullanım", "Uses": "Kullanım", "Copy": "Kopyala", "Revoke": "İptal et", "Invite code copied.": "Davet kodu kopyalandı.", "Group invite code created.": "Grup davet kodu oluşturuldu.", "Group invite revoked.": "Grup daveti iptal edildi.", "Joined group.": "Gruba katıldın.", "Could not copy invite code.": "Davet kodu kopyalanamadı.", "Joining…": "Katılınıyor…" });
   Object.assign(trText, {
@@ -585,7 +585,7 @@
     const fill = $("#voiceMicLevelFill");
     const label = $("#voiceMicLevelLabel");
     if (meter) meter.setAttribute("aria-valuenow", "0");
-    if (fill) fill.style.width = "0%";
+    if (fill) fill.style.setProperty("--level", "0");
     if (label) label.textContent = "0%";
     const status = $("#voiceMicTestStatus");
     if (status) status.textContent = translate(statusKey || "Press test and speak into your microphone.");
@@ -637,7 +637,7 @@
         const decibels = 20 * Math.log10(Math.max(rms, 0.00001));
         const target = Math.max(0, Math.min(100, Math.round((decibels + 60) * (100 / 60))));
         displayedLevel = Math.round(displayedLevel + (target - displayedLevel) * 0.35);
-        $("#voiceMicLevelFill").style.width = `${displayedLevel}%`;
+        $("#voiceMicLevelFill").style.setProperty("--level", String(displayedLevel / 100));
         $("#voiceMicLevelLabel").textContent = `${displayedLevel}%`;
         $("#voiceMicLevelMeter").setAttribute("aria-valuenow", String(displayedLevel));
         $("#voiceMicTestStatus").textContent = translate(rms > 0.004 ? "Microphone is picking up sound." : "Speak into your microphone.");
@@ -895,19 +895,19 @@
     const retry = $("#retryStartupUpdate");
     gate.classList.remove("hidden"); retry.classList.add("hidden");
     title.textContent = translate("Checking for updates"); status.textContent = translate("Getting the latest version ready…");
-    $("#startupUpdateProgress").style.width = "24%";
+    $("#startupUpdateProgress").style.setProperty("--progress", "0.24");
     try {
       if (!invoke) { gate.classList.add("hidden"); return true; }
       const result = await invoke("check_for_update");
       if (!result.configured || !result.available) { gate.classList.add("hidden"); return true; }
       state.updateVersion = result.version;
       title.textContent = translate("Update required"); status.textContent = `${translate("This app version is out of date.")} GhostChat ${result.version} ${translate("is downloading")}…`;
-      $("#startupUpdateProgress").style.width = "42%";
+      $("#startupUpdateProgress").style.setProperty("--progress", "0.42");
       await invoke("install_update", { expectedVersion: result.version });
       return false;
     } catch (error) {
       title.textContent = translate("Update failed"); status.textContent = error.message || translate("Could not check or install the required update.");
-      $("#startupUpdateProgress").style.width = "100%"; retry.classList.remove("hidden");
+      $("#startupUpdateProgress").style.setProperty("--progress", "1"); retry.classList.remove("hidden");
       return false;
     }
   }
@@ -1039,6 +1039,17 @@
     node.replaceChildren();
     if (image) { const img = document.createElement("img"); img.src = image; img.alt = ""; img.draggable = false; node.append(img); }
     else node.textContent = avatarText(name);
+  }
+  function uiIcon(name) {
+    const paths = {
+      messages: '<path d="M4 5h16v11H9l-5 4V5Z"/>',
+      lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+      pin: '<path d="M9 3h6l-1 6 4 4H6l4-4-1-6ZM12 13v8"/>',
+      download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>'
+    };
+    const holder = document.createElement("span");
+    holder.innerHTML = `<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${paths[name] || paths.messages}</svg>`;
+    return holder.firstChild;
   }
   function create(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = translate(text); return node; }
   async function compressAvatar(file) {
@@ -1179,14 +1190,14 @@
   function renderRouteHeader() {
     if (state.page === "messages" && state.active) return;
     const routes = {
-      messages: ["Your quiet corner", "Choose a friend or find someone new."],
+      messages: ["Messages", "Choose a friend or find someone new."],
       friends: ["Friends", "Manage requests and start a private conversation."],
       search: ["Find people", "Search for a username or user ID. Users are not listed publicly."],
       searchMessages: ["Search messages", "Search in your messages"],
       saved: ["Saved messages", "Keep important messages within reach."]
     };
     const [title, subtitle] = routes[state.page] || routes.messages;
-    $("#chatKindLabel").textContent = "GHOSTCHAT";
+    $("#chatKindLabel").textContent = "GhostChat";
     $("#chatTitle").textContent = translate(title);
     $("#chatSubtitle").textContent = translate(subtitle);
     setAvatar($("#chatAvatar"), "G");
@@ -1207,7 +1218,8 @@
     profileCopy.append(create("strong", "", state.user?.display_name || "Ghost"), create("span", "", `@${state.user?.username || "ghost"}`), create("small", "", "Online on this device"));
     const edit = create("span", "welcome-profile-edit", "Edit profile");
     profile.append(avatar, profileCopy, edit); profile.onclick = openSettings;
-    card.append(profile, create("div", "welcome-orb", "◌"), create("h2", "", "Start your first conversation"), create("p", "", "Your profile is ready. Add a photo, refine your name, or find someone you trust to start a conversation."));
+    const orb = create("div", "welcome-orb"); orb.setAttribute("aria-hidden", "true"); orb.append(uiIcon("messages"));
+    card.append(profile, orb, create("h2", "", "Start your first conversation"), create("p", "", "Your profile is ready. Add a photo, refine your name, or find someone you trust to start a conversation."));
     const actions = create("div", "welcome-actions");
     const find = create("button", "button primary", "Find people"); find.onclick = () => setPage("search");
     const friends = create("button", "button secondary", "View friends"); friends.onclick = () => setPage("friends");
@@ -1280,14 +1292,14 @@
     const root = $("#sidebarContent"); root.replaceChildren();
     if (state.page === "messages") {
       if (!state.conversations.length) { root.append(create("div", "empty-list", "No conversations yet. Find a friend to start a chat.")); return; }
-      const label = create("div", "section-label", "CONVERSATIONS"); root.append(label);
+      const label = create("div", "section-label", "Conversations"); root.append(label);
       for (const convo of state.conversations) {
         const row = create("button", `list-row${state.active?.id === convo.id ? " active" : ""}`); row.onclick = () => openConversation(convo.id);
         const avatar = create("div", "mini-avatar"); setAvatar(avatar, convo.display_name, convo.avatar_data); if (convo.kind === "direct") addPresenceDot(avatar, convo.peer_id); row.append(avatar);
         const preview = convo.last_message?.startsWith("e2e1:")
           ? translate("Encrypted conversation")
           : convo.last_message?.startsWith("file:")
-          ? `📎 ${translate("File shared")}`
+          ? translate("File shared")
           : convo.last_message || (convo.kind === "group" ? `${convo.member_count} ${translate("members")}` : `@${convo.username}`);
         const copy = create("div", "list-copy"); copy.append(create("strong", "", convo.display_name), create("span", "", preview)); row.append(copy);
         if (convo.unread_count > 0) { const unread = create("span", "unread-badge", convo.unread_count > 99 ? "99+" : String(convo.unread_count)); unread.title = `${convo.unread_count} ${translate("Unread messages")}`; unread.setAttribute("aria-label", unread.title); row.append(unread); }
@@ -1296,10 +1308,10 @@
       return;
     }
     if (state.page === "friends") {
-      const requestsLabel = create("div", "section-label", "REQUESTS"); root.append(requestsLabel);
+      const requestsLabel = create("div", "section-label", "Requests"); root.append(requestsLabel);
       for (const request of state.pending || []) { const row = create("button", "list-row"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, request.display_name, request.avatar_data); addPresenceDot(avatar, request.user_id); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", request.display_name), create("span", "", `@${request.username}`)); row.append(copy); root.append(row); }
       if (!(state.pending || []).length) root.append(create("div", "empty-list", "No pending requests."));
-      root.append(create("div", "section-label", "YOUR FRIENDS"));
+      root.append(create("div", "section-label", "Your friends"));
       for (const friend of state.friends) { const row = create("button", "list-row"); row.onclick = () => startConversation(friend.id); row.oncontextmenu = event => openAppContextMenu(event, [{ label: state.language === "tr" ? "Profili görüntüle" : "View profile", run: () => showProfilePreview(friend) }, { label: state.language === "tr" ? "Mesaj gönder" : "Message", run: () => startConversation(friend.id) }, { label: state.language === "tr" ? "Arkadaşlıktan çıkar" : "Remove friend", danger: true, run: () => removeFriend(friend) }]); const avatar = create("div", "mini-avatar"); setAvatar(avatar, friend.display_name, friend.avatar_data); addPresenceDot(avatar, friend.id); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", friend.display_name), create("span", "", `@${friend.username} · ${presenceLabel(friend.id)}`)); row.append(copy); root.append(row); }
       if (!state.friends.length) root.append(create("div", "empty-list", "Friends you add will show up here."));
       return;
@@ -2235,7 +2247,7 @@
     $("#chatKindLabel").textContent = translate(state.active.kind === "group" ? "Group conversation" : "Direct message");
     $("#chatTitle").textContent = state.active.display_name;
     $("#chatSubtitle").textContent = state.active.kind === "group"
-      ? `${state.active.member_count} ${translate("members")} · ${state.active.member_names || translate("GROUP MEMBERS")}`
+      ? `${state.active.member_count} ${translate("members")} · ${state.active.member_names || translate("Group members")}`
       : `@${state.active.username} · ${presenceLabel(state.active.peer_id)}`;
     setAvatar($("#chatAvatar"), state.active.display_name, state.active.avatar_data);
     if (state.active.kind === "direct") addPresenceDot($("#chatAvatar"), state.active.peer_id);
@@ -2378,7 +2390,7 @@
     const ownMessage = message.sender_id === state.user.id;
     const row = create("article", `message ${ownMessage ? "own-message" : "peer-message"}`); row.dataset.messageId = message.id; row.dataset.sequence = String(message.sequence);
     const avatar = create("div", "mini-avatar message-avatar"); setAvatar(avatar, message.sender_name, message.sender_avatar); avatar.title = message.sender_name; avatar.setAttribute("aria-label", message.sender_name); row.append(avatar);
-    const main = create("div", "message-main"); const meta = create("div", "message-meta"); meta.append(create("strong", "", message.sender_name)); if (ownMessage) meta.append(create("span", "message-owner-label", translate("You"))); if (message.encrypted) meta.append(create("span", "message-encrypted-badge", "🔒")); if (message.pinned_at) meta.append(create("span", "message-pinned-badge", `⌖ ${translate("Pinned")}`)); const time = create("time", "", timeLabel(message.created_at)); time.dateTime = message.created_at; meta.append(time); if (message.edited_at) meta.append(create("span", "optional", "edited"));
+    const main = create("div", "message-main"); const meta = create("div", "message-meta"); meta.append(create("strong", "", message.sender_name)); if (ownMessage) meta.append(create("span", "message-owner-label", translate("You"))); if (message.encrypted) { const lock = create("span", "message-encrypted-badge"); lock.setAttribute("role", "img"); lock.setAttribute("aria-label", translate("Encrypted message")); lock.title = lock.getAttribute("aria-label"); lock.append(uiIcon("lock")); meta.append(lock); } if (message.pinned_at) { const pinned = create("span", "message-pinned-badge", "Pinned"); pinned.prepend(uiIcon("pin")); meta.append(pinned); } const time = create("time", "", timeLabel(message.created_at)); time.dateTime = message.created_at; meta.append(time); if (message.edited_at) meta.append(create("span", "optional", "edited"));
     main.append(meta);
     if (message.reply_to_id) {
       const quote = create("button", "reply-reference"); quote.type = "button";
@@ -2654,7 +2666,7 @@
         image.onload = () => loading.remove();
         image.onerror = () => {
           loading.remove(); image.remove();
-          const fallback = create("a", "attachment-download", `⇩  ${filename}`); fallback.href = url; fallback.download = filename; container.prepend(fallback);
+          const fallback = create("a", "attachment-download", filename); fallback.prepend(uiIcon("download")); fallback.href = url; fallback.download = filename; container.prepend(fallback);
         };
         image.src = previewUrl;
         image.onclick = () => openMediaPreview({ url: previewUrl, filename, type: "image" });
@@ -2675,13 +2687,13 @@
         if (!container.isConnected || !messageRow?.isConnected) return;
         const video = create("video", "message-video"); video.src = previewUrl; video.controls = true; video.preload = "metadata"; video.playsInline = true; video.title = translate("Open preview");
         video.onloadeddata = () => loading.remove();
-        video.onerror = () => { loading.remove(); video.remove(); const fallback = create("a", "attachment-download", `⇩  ${filename}`); fallback.href = url; fallback.download = filename; container.prepend(fallback); };
+        video.onerror = () => { loading.remove(); video.remove(); const fallback = create("a", "attachment-download", filename); fallback.prepend(uiIcon("download")); fallback.href = url; fallback.download = filename; container.prepend(fallback); };
         video.onclick = event => { if (event.detail >= 2) openMediaPreview({ url: previewUrl, filename, type: "video" }); };
         const openPlayer = create("button", "attachment-preview", state.language === "tr" ? "Tam oynatıcıyı aç" : "Open full player"); openPlayer.type = "button"; openPlayer.onclick = () => openMediaPreview({ url: previewUrl, filename, type: "video" });
         container.append(video, openPlayer);
         container.append(create("span", "attachment-filename", filename));
       } else {
-        const link = create("a", "attachment-download", `⇩  ${filename}`); link.href = url; link.download = filename; container.append(link);
+        const link = create("a", "attachment-download", filename); link.prepend(uiIcon("download")); link.href = url; link.download = filename; container.append(link);
       }
     } catch { container.append(create("span", "attachment-download unavailable", translate("Could not load this file."))); }
   }
@@ -2699,7 +2711,7 @@
   function renderEncryptedAttachment(main, manifest) {
     const card = create("div", "message-attachment encrypted-attachment");
     card.dataset.attachmentId = manifest.attachmentId;
-    card.append(create("span", "attachment-filename", `🔒 ${manifest.fileName}`));
+    { const fileLabel = create("span", "attachment-filename", manifest.fileName); fileLabel.prepend(uiIcon("lock")); card.append(fileLabel); }
     card.append(create("span", "attachment-size", formatFileSize(manifest.sizeBytes)));
     const actions = create("div", "encrypted-attachment-actions");
     const save = create("button", "attachment-download", translate("Save decrypted file")); save.type = "button";
@@ -2939,7 +2951,7 @@
     const node = $(selector);
     if (!node || node.dataset.voiceIcon === name) return;
     node.dataset.voiceIcon = name;
-    node.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${voiceRoomPaths[name] || voiceRoomPaths.mic}</svg>`;
+    node.innerHTML = `<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${voiceRoomPaths[name] || voiceRoomPaths.mic}</svg>`;
   }
   function renderVoiceControls() {
     $("#manageGroupButton").classList.toggle("hidden", !state.active || state.active.kind !== "group");
@@ -3070,7 +3082,7 @@
             : activeCall
               ? "Your microphone is on. Use the controls above to switch devices or mute."
               : "Choose your microphone and speaker, or join muted and listen."));
-    $(".voice-encryption-note").textContent = groupMode ? translate("RELAYED · NOT END-TO-END ENCRYPTED") : "LIVE · AUDIO";
+    $(".voice-encryption-note").textContent = translate(groupMode ? "Relayed · not end-to-end encrypted" : "Live audio");
     const hasRemoteVideo = !!voice.remoteVideoStream?.getVideoTracks().some(track => track.readyState === "live" && !track.muted);
     const hasLocalVideo = !!voice.localScreenStream?.getVideoTracks().some(track => track.readyState === "live" && !track.muted);
     const compactCall = activeCall && voiceStageCompact && !hasRemoteVideo && !hasLocalVideo && !voiceDevicePanelOpen && !watchPartyOpen;
@@ -4108,7 +4120,7 @@
     if (Number.isFinite(percent)) {
       $("#updateStatus").textContent = `${translate("Downloading update")}… ${Math.min(100, Math.max(0, percent))}%.`;
       $("#startupUpdateStatus").textContent = `${translate("Downloading update")}… ${Math.min(100, Math.max(0, percent))}%.`;
-      $("#startupUpdateProgress").style.width = `${Math.min(100, Math.max(0, percent))}%`;
+      $("#startupUpdateProgress").style.setProperty("--progress", String(Math.min(100, Math.max(0, percent)) / 100));
     }
   });
   window.__TAURI__?.event?.listen?.("ghostchat:encrypted-attachment-progress", event => {
