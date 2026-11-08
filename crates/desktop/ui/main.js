@@ -263,6 +263,7 @@
   function setUpdateStatus(key, values = {}) { updateStatusKey = key; updateStatusValues = values; renderUpdateStatus(); }
   function applyLanguage() {
     const language = tr() ? "tr" : "en";
+    state.language = language;
     document.documentElement.lang = language;
     $$("[data-en][data-tr]").forEach(node => { node.textContent = node.dataset[language]; });
     $$("[data-en-label][data-tr-label]").forEach(node => node.setAttribute("aria-label", node.getAttribute(`data-${language}-label`)));
