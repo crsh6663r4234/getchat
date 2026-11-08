@@ -899,10 +899,20 @@
     gate.classList.remove("hidden"); retry.classList.add("hidden");
     title.textContent = translate("Checking for updates"); status.textContent = translate("Getting the latest version ready…");
     $("#startupUpdateProgress").style.setProperty("--progress", "0.24");
+    if (!invoke) { gate.classList.add("hidden"); return true; }
+    let result;
+    try { result = await invoke("check_for_update"); }
+    catch (error) {
+      // An unreachable update host must not lock the user out of the app;
+      // only a found update is mandatory. Warn and keep booting.
+      console.warn("Startup update check failed", error);
+      gate.classList.add("hidden");
+      setUpdateStatus("Could not check for updates. Try again when you’re online.");
+      toast(translate("Could not check for updates. Try again when you’re online."), true);
+      return true;
+    }
+    if (!result?.configured || !result.available) { gate.classList.add("hidden"); return true; }
     try {
-      if (!invoke) { gate.classList.add("hidden"); return true; }
-      const result = await invoke("check_for_update");
-      if (!result.configured || !result.available) { gate.classList.add("hidden"); return true; }
       state.updateVersion = result.version;
       title.textContent = translate("Update required"); status.textContent = `${translate("This app version is out of date.")} GhostChat ${result.version} ${translate("is downloading")}…`;
       $("#startupUpdateProgress").style.setProperty("--progress", "0.42");

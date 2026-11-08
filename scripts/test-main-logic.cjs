@@ -251,6 +251,30 @@ test('a failed encrypted send that is queued for retry is not restored', async (
   assert.equal(app.$('#messageInput').value, '', 'restoring a queued message would let it be sent twice');
 });
 
+test('an unreachable update host does not block startup', async () => {
+  const app = harness({
+    storage: { 'ghostchat.server': 'https://a.example' },
+    hooks: { check_for_update: () => { throw new Error('error sending request for url (https://github.com/...)'); } },
+  });
+  let reachedServer = false;
+  try { await app.flush(() => app.invokes.some(item => item.command === 'credential_get_pending_recovery')); reachedServer = true; } catch {}
+  assert.ok(reachedServer, 'boot must continue past the update gate when the check itself fails');
+  assert.ok(app.$('#startupUpdateGate').classList.contains('hidden'), 'the startup gate is hidden');
+  assert.equal(app.$('#toast').classList.contains('error'), true, 'the failed check is reported as a warning');
+});
+
+test('an available update still blocks startup and installs', async () => {
+  const app = harness({
+    storage: { 'ghostchat.server': 'https://a.example' },
+    hooks: { check_for_update: () => ({ configured: true, available: true, version: '9.9.9' }) },
+  });
+  await app.flush(() => app.invokes.some(item => item.command === 'install_update'));
+  await app.flush();
+  assert.equal(app.invokes.find(item => item.command === 'install_update').args.expectedVersion, '9.9.9');
+  assert.ok(!app.invokes.some(item => item.command === 'credential_get_pending_recovery'), 'boot stops while the mandatory update installs');
+  assert.ok(!app.$('#startupUpdateGate').classList.contains('hidden'), 'the gate stays visible');
+});
+
 (async () => {
   let failed = 0;
   for (const { name, fn } of tests) {
