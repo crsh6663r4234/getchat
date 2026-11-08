@@ -154,6 +154,17 @@ test('Turkish language reaches dialogs that branch on state.language', async () 
   assert.equal(app.$('#appDecisionConfirm').textContent, 'Oturumları kapat', 'Turkish users must see the Turkish confirm label');
 });
 
+test('translate never returns Object.prototype members for user text', async () => {
+  const app = harness({
+    storage: { 'ghostchat.language': 'tr', 'ghostchat.server': 'https://a.example' },
+    fetchHandler: url => (url.endsWith('/v1/data/export') ? { status: 400, body: { error: 'constructor' } } : undefined),
+  });
+  await app.flush(() => app.invokes.some(item => item.command === 'credential_get_pending_recovery'));
+  await app.$('#exportAccount').onclick();
+  await app.flush();
+  assert.equal(app.$('#toast').textContent, 'constructor', 'A message equal to a prototype key must render unchanged');
+});
+
 test('changing the server never sends the previous server token to the new one', async () => {
   const A = 'https://a.example';
   const B = 'https://b.example';

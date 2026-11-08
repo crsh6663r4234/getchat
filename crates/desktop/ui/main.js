@@ -254,7 +254,7 @@
   let updateStatusKey = "Updates are checked automatically.";
   let updateStatusValues = {};
   const tr = () => (localStorage.getItem("ghostchat.language") || "en") === "tr";
-  function translate(value) { return tr() ? (trText[value] || value) : value; }
+  function translate(value) { return tr() && Object.hasOwn(trText, value) ? trText[value] : value; }
   function renderUpdateStatus() {
     const statusNode = $("#updateStatus");
     if (!statusNode) return;
