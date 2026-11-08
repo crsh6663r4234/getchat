@@ -2518,8 +2518,10 @@
       if (!older && state.cryptoEnabled.has(conversationId) && !state.cryptoMembershipPending.has(conversationId)) await syncCryptoEvents(conversationId);
       const rows = await request(path); if (state.active?.id !== conversationId) return; if (!older) { clearAttachmentUrls(); container.replaceChildren(); }
       for (const row of rows) {
-        try { appendMessage(await decodeMessageRow(row), older); }
-        catch (error) { if (row.content?.startsWith("e2e1:")) toast(error.message || translate("This message could not be decrypted on this device."), true); else appendMessage(row, older); }
+        // Decoding awaits; stop if the user opened another chat meanwhile so
+        // this chat's rows are never appended into the other chat's timeline.
+        try { const decoded = await decodeMessageRow(row); if (state.active?.id !== conversationId) return; appendMessage(decoded, older); }
+        catch (error) { if (state.active?.id !== conversationId) return; if (row.content?.startsWith("e2e1:")) toast(error.message || translate("This message could not be decrypted on this device."), true); else appendMessage(row, older); }
       }
       await refreshMessageReactions();
       state.older = rows.length === 50; $("#loadOlderRow").classList.toggle("hidden", !state.older || !rows.length);
