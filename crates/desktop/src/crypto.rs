@@ -1983,7 +1983,7 @@ pub async fn process_crypto_event(
     conversation_id: &str,
     sender_id: &str,
     client_message_id: Option<&str>,
-    event_sequence: i64,
+    event_sequence: Option<i64>,
     conversation_is_group: bool,
     expected_member_ids: &[String],
     payload: &str,
@@ -1992,9 +1992,14 @@ pub async fn process_crypto_event(
     let user_id = normalized_uuid(user_id, "account")?;
     let conversation_id = normalized_uuid(conversation_id, "conversation")?;
     let sender_id = normalized_uuid(sender_id, "sender account")?;
-    if event_sequence <= 0 {
+    // Crypto-relay events carry their relay sequence, which drives the local
+    // cursor. Encrypted text from ordinary message history has no relay
+    // sequence: it may only be an application message, and it never moves the
+    // cursor (MLS itself rejects a replayed application ciphertext).
+    if event_sequence.is_some_and(|sequence| sequence <= 0) {
         return Err("The encrypted event sequence is invalid.".into());
     }
+    let from_history = event_sequence.is_none();
     let expected_member_ids = expected_member_ids
         .iter()
         .map(|member_id| normalized_uuid(member_id, "conversation member"))
@@ -2015,6 +2020,9 @@ pub async fn process_crypto_event(
     let message = MlsMessageIn::tls_deserialize_exact(bytes.as_slice())
         .map_err(|_| "The encrypted event could not be decoded as MLS data.".to_string())?;
     let is_welcome = matches!(message.clone().extract(), MlsMessageBodyIn::Welcome(_));
+    if from_history && is_welcome {
+        return Err("An MLS invitation must arrive through the encrypted event stream.".into());
+    }
     let group_id = group_id_for_conversation(&conversation_id);
     let mut transaction = db
         .begin()
@@ -2028,7 +2036,7 @@ pub async fn process_crypto_event(
     .fetch_optional(&mut *transaction)
     .await
     .map_err(|_| "GhostChat could not check the local encrypted event cursor.".to_string())?;
-    if last_sequence.is_some_and(|last| event_sequence <= last) {
+    if last_sequence.is_some_and(|last| event_sequence.is_some_and(|sequence| sequence <= last)) {
         transaction.rollback().await.map_err(|_| {
             "GhostChat could not close the duplicate event transaction.".to_string()
         })?;
@@ -2059,6 +2067,9 @@ pub async fn process_crypto_event(
                 .map_err(|_| "GhostChat could not load the local MLS group state.".to_string())?
                 .is_some()
         };
+        if !group_exists && from_history {
+            return Err("Encryption has not been set up for this conversation.".into());
+        }
         if !group_exists {
             sqlx::query(
                 "INSERT INTO ghostchat_crypto_event_cursors(user_id,conversation_id,sequence) VALUES(?,?,?) \
@@ -2207,6 +2218,16 @@ pub async fn process_crypto_event(
                 {
                     return Err("The MLS sender identity does not match the relay account.".into());
                 }
+                if from_history
+                    && !matches!(
+                        processed.content(),
+                        ProcessedMessageContent::ApplicationMessage(_)
+                    )
+                {
+                    return Err(
+                        "Only encrypted text may arrive through the message history.".into(),
+                    );
+                }
                 match processed.into_content() {
                     ProcessedMessageContent::ApplicationMessage(application) => {
                         if !group_roster_matches(&group, &expected_member_ids, &own_identity)
@@ -2349,16 +2370,18 @@ pub async fn process_crypto_event(
             .await
             .map_err(|_| "GhostChat could not save the encrypted local message cache.".to_string())?;
     }
-    sqlx::query(
-        "INSERT INTO ghostchat_crypto_event_cursors(user_id,conversation_id,sequence) VALUES(?,?,?) \
-         ON CONFLICT(user_id,conversation_id) DO UPDATE SET sequence=MAX(sequence,excluded.sequence)",
-    )
-    .bind(&user_id)
-    .bind(&conversation_id)
-    .bind(event_sequence)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|_| "GhostChat could not save the local encrypted event cursor.".to_string())?;
+    if let Some(event_sequence) = event_sequence {
+        sqlx::query(
+            "INSERT INTO ghostchat_crypto_event_cursors(user_id,conversation_id,sequence) VALUES(?,?,?) \
+             ON CONFLICT(user_id,conversation_id) DO UPDATE SET sequence=MAX(sequence,excluded.sequence)",
+        )
+        .bind(&user_id)
+        .bind(&conversation_id)
+        .bind(event_sequence)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| "GhostChat could not save the local encrypted event cursor.".to_string())?;
+    }
     transaction
         .commit()
         .await
@@ -2742,7 +2765,7 @@ mod tests {
             &conversation_id,
             &alice_id,
             None,
-            1,
+            Some(1),
             false,
             &expected_members,
             &welcome.welcome_payload,
@@ -2810,7 +2833,7 @@ mod tests {
             &conversation_id,
             &alice_id,
             Some(&first_id),
-            2,
+            Some(2),
             false,
             &expected_members,
             &first.payload,
@@ -2834,7 +2857,7 @@ mod tests {
             &conversation_id,
             &alice_id,
             Some(&first_id),
-            2,
+            Some(2),
             false,
             &expected_members,
             &first.payload,
@@ -2863,7 +2886,7 @@ mod tests {
             &conversation_id,
             &alice_id,
             Some(&second_id),
-            3,
+            Some(3),
             false,
             &expected_members,
             &second.payload,
@@ -2909,7 +2932,7 @@ mod tests {
             &conversation_id,
             &alice_id,
             Some(&third_id),
-            4,
+            Some(4),
             false,
             &expected_members,
             &third.payload,
@@ -2992,7 +3015,7 @@ mod tests {
                 &conversation_id,
                 &alice_id,
                 None,
-                1,
+                Some(1),
                 true,
                 &roster,
                 &start.welcome_payload,
@@ -3022,7 +3045,7 @@ mod tests {
             &conversation_id,
             &bob_id,
             Some(&leave.operation_id),
-            2,
+            Some(2),
             true,
             &roster,
             &leave.commit_payload,
@@ -3037,7 +3060,7 @@ mod tests {
             &conversation_id,
             &bob_id,
             Some(&leave.operation_id),
-            2,
+            Some(2),
             true,
             &roster,
             &leave.commit_payload,
@@ -3075,7 +3098,7 @@ mod tests {
             &conversation_id,
             &alice_id,
             None,
-            3,
+            Some(3),
             true,
             &remaining,
             &commit.commit_payload,
@@ -3099,7 +3122,7 @@ mod tests {
             &conversation_id,
             &alice_id,
             None,
-            3,
+            Some(3),
             true,
             &remaining,
             &commit.commit_payload,
@@ -3107,6 +3130,136 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(replayed.kind, "duplicate");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn history_message_without_event_sequence_decrypts_without_moving_cursor() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-history-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let members = vec![alice_id.clone(), bob_id.clone()];
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let welcome = create_direct_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &bob_id,
+            &bob_device.device_id,
+            &bob_device.payload,
+        )
+        .await
+        .unwrap();
+        // A Welcome must come from the ordered crypto-event stream.
+        assert!(process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            None,
+            false,
+            &members,
+            &welcome.welcome_payload,
+        )
+        .await
+        .is_err());
+        process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(7),
+            false,
+            &members,
+            &welcome.welcome_payload,
+        )
+        .await
+        .unwrap();
+
+        // Encrypted text lives in ordinary message history, whose sequence is
+        // unrelated to the crypto-event cursor; the UI sends no eventSequence.
+        let message_id = Uuid::new_v4().to_string();
+        let sent = encrypt_text(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &message_id,
+            "history text",
+        )
+        .await
+        .unwrap();
+        let received = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            Some(&message_id),
+            None,
+            false,
+            &members,
+            &sent.payload,
+        )
+        .await
+        .expect("A history message should decrypt without a crypto-event sequence");
+        assert_eq!(received.kind, "application");
+        assert_eq!(received.content.as_deref(), Some("history text"));
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &message_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("history text")
+        );
+        assert_eq!(
+            get_crypto_event_cursor(&bob_db, &bob_id, &conversation_id)
+                .await
+                .unwrap(),
+            Some(7),
+            "History decryption must not move the crypto-event cursor"
+        );
+        // MLS rejects a replayed ciphertext and the state stays usable.
+        assert!(process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            Some(&message_id),
+            None,
+            false,
+            &members,
+            &sent.payload,
+        )
+        .await
+        .is_err());
+        let next_id = Uuid::new_v4().to_string();
+        let next = encrypt_text(&alice_db, &alice_id, &conversation_id, &next_id, "next")
+            .await
+            .unwrap();
+        assert_eq!(
+            process_crypto_event(
+                &bob_db,
+                &bob_id,
+                &conversation_id,
+                &alice_id,
+                Some(&next_id),
+                None,
+                false,
+                &members,
+                &next.payload,
+            )
+            .await
+            .unwrap()
+            .content
+            .as_deref(),
+            Some("next")
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3158,7 +3311,7 @@ mod tests {
             &conversation_id,
             &alice_id,
             None,
-            1,
+            Some(1),
             false,
             &[alice_id.clone(), bob_id.clone()],
             &welcome.welcome_payload,

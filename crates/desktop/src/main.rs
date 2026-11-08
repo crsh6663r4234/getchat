@@ -409,7 +409,7 @@ async fn crypto_process_event(
     conversation_id: String,
     sender_id: String,
     client_message_id: Option<String>,
-    event_sequence: i64,
+    event_sequence: Option<i64>,
     conversation_is_group: bool,
     expected_member_ids: Vec<String>,
     payload: String,
