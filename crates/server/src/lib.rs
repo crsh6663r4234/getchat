@@ -892,15 +892,19 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Sta
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or_else(ApiError::unauthorized)?;
+    let logged_out_session_hash = session_hash(token);
     sqlx::query("DELETE FROM sessions WHERE token_hash=? AND user_id=?")
-        .bind(session_hash(token))
+        .bind(&logged_out_session_hash)
         .bind(&user.id)
         .execute(&state.db)
         .await
         .map_err(|_| ApiError::internal())?;
     let _ = state.events.send(ServerEvent {
         recipients: vec![user.id],
-        event: serde_json::json!({"type":"session_revoked"}),
+        event: serde_json::json!({
+            "type": "session_revoked",
+            "session_hash": logged_out_session_hash,
+        }),
     });
     Ok(StatusCode::NO_CONTENT)
 }
@@ -6032,6 +6036,13 @@ async fn relay_voice_signal(state: &AppState, sender: &PublicUser, text: &str) {
     });
 }
 
+fn session_revocation_applies(event: &serde_json::Value, current_session_hash: &str) -> bool {
+    if let Some(only_session_hash) = event["session_hash"].as_str() {
+        return only_session_hash == current_session_hash;
+    }
+    event["except_session_hash"].as_str() != Some(current_session_hash)
+}
+
 async fn websocket_session(mut socket: WebSocket, state: AppState) {
     let first = tokio::time::timeout(Duration::from_secs(8), socket.recv()).await;
     let token = match first {
@@ -6090,9 +6101,7 @@ async fn websocket_session(mut socket: WebSocket, state: AppState) {
             },
             event = events.recv() => match event {
                 Ok(event) if event.recipients.iter().any(|id| id == &user.id) && event.event["type"] == "session_revoked" => {
-                    if event.event["except_session_hash"].as_str()
-                        != Some(current_session_hash.as_str())
-                    {
+                    if session_revocation_applies(&event.event, &current_session_hash) {
                         let _ = socket.send(WsMessage::Text(serde_json::json!({"type":"session_revoked"}).to_string())).await;
                         let _ = socket.send(WsMessage::Close(None)).await;
                         break;
@@ -6639,5 +6648,44 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(messages[0]["content"], "original");
+    }
+
+    #[tokio::test]
+    async fn logout_keeps_other_sessions_connected() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let laptop = app.user("alice").await;
+        let desktop = TestUser {
+            id: laptop.id.clone(),
+            token: add_session(&app.state.db, &laptop.id).await.unwrap(),
+        };
+        let mut events = app.state.events.subscribe();
+        let status = app
+            .request(Method::DELETE, "/v1/sessions", &laptop)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.event["type"], "session_revoked");
+        assert!(session_revocation_applies(
+            &event.event,
+            &session_hash(&laptop.token)
+        ));
+        assert!(
+            !session_revocation_applies(&event.event, &session_hash(&desktop.token)),
+            "logging out one device must not sign out the account's other sessions"
+        );
+        let status = app
+            .request(Method::GET, "/v1/me", &desktop)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::OK);
     }
 }
