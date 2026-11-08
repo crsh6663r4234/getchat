@@ -5760,6 +5760,7 @@ async fn edit_message(
     if !is_member(&state.db, &msg.conversation_id, &user.id).await? {
         return Err(ApiError::not_found());
     }
+    ensure_direct_not_blocked(&state.db, &msg.conversation_id, &user.id).await?;
     let crypto_locked = sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM conversation_crypto_locks WHERE conversation_id=?)",
     )
@@ -6814,5 +6815,62 @@ mod tests {
             }
         }
         assert_eq!(own_events, 2, "the account itself still gets its presence");
+    }
+
+    #[tokio::test]
+    async fn message_edit_rejects_blocked_direct_peer() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        app.befriend(&alice, &bob).await;
+        let direct: serde_json::Value = app
+            .request(Method::POST, "/v1/conversations/direct", &alice)
+            .json(&serde_json::json!({"user_id": bob.id}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let direct = direct["id"].as_str().unwrap().to_owned();
+        let message = app.send_text(&alice, &direct, "earlier message").await;
+        let status = app
+            .request(Method::POST, &format!("/v1/users/{}/block", alice.id), &bob)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let mut events = app.state.events.subscribe();
+        let status = app
+            .request(Method::PATCH, &format!("/v1/messages/{message}"), &alice)
+            .json(&serde_json::json!({"content": "rewritten after block"}))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        while let Ok(Ok(event)) =
+            tokio::time::timeout(Duration::from_millis(300), events.recv()).await
+        {
+            assert!(
+                !(event.recipients.contains(&bob.id) && event.event["type"] == "message"),
+                "blocker received an edited message"
+            );
+        }
+        let messages: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{direct}/messages"),
+                &bob,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(messages[0]["content"], "earlier message");
     }
 }
