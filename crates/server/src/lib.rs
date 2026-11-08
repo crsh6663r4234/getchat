@@ -6404,7 +6404,21 @@ mod tests {
             let db = open_database(&dir.join("db.sqlite").to_string_lossy())
                 .await
                 .unwrap();
-            let state = build_state_with_attachment_dir(db, dir.join("attachments")).await;
+            let mut state = build_state_with_attachment_dir(db, dir.join("attachments")).await;
+            // Do not inherit the developer's shell: no Redis admission, no
+            // TURN and no LiveKit, whatever GHOSTCHAT_* variables are set.
+            // GHOSTCHAT_REQUIRE_REDIS is read per request, so clear it too
+            // (no test sets it).
+            std::env::remove_var("GHOSTCHAT_REQUIRE_REDIS");
+            state.distributed_limiter = Ok(None);
+            state.voice = VoiceServerConfig {
+                stun_urls: vec!["stun:stun.l.google.com:19302".into()],
+                turn_urls: Vec::new(),
+                turn_shared_secret: None,
+                livekit_url: None,
+                livekit_api_key: None,
+                livekit_api_secret: None,
+            };
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}", listener.local_addr().unwrap());
             let app = router(state.clone());
