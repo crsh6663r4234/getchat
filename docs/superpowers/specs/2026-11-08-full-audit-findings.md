@@ -2,7 +2,7 @@
 
 | ID | Area | Severity | Finding | Failure scenario | Status | Commit |
 | --- | --- | --- | --- | --- | --- | --- |
-| A-1 | Build / formatting | Low | `cargo fmt --all -- --check` fails: unformatted code in `crates/desktop/src/main.rs` (updater endpoint, ~line 60) and `crates/server/src/device_proof.rs` (import order, `ProofError` enum, `Display::fmt`). | Any CI or pre-merge step that enforces `cargo fmt --check` fails on the current branch. | open | |
+| A-1 | Build / formatting | S4 | `cargo fmt --all -- --check` fails: unformatted code in `crates/desktop/src/main.rs` (updater endpoint, ~line 60) and `crates/server/src/device_proof.rs` (import order, `ProofError` enum, `Display::fmt`). | Any CI or pre-merge step that enforces `cargo fmt --check` fails on the current branch. | open | |
 
 ## Verified checks
 
