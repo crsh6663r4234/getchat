@@ -1740,15 +1740,81 @@ async fn delete_account(
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     let user = authenticate(&headers, &state).await?;
-    let attachment_ids = sqlx::query_scalar::<_, String>("SELECT id FROM attachments WHERE stored_on_disk=1 AND (uploaded_by=? OR conversation_id IN (SELECT conversation_id FROM conversation_members WHERE user_id=?))")
-        .bind(&user.id)
-        .bind(&user.id)
-        .fetch_all(&state.db)
+    let mut tx = state.db.begin().await.map_err(|_| ApiError::internal())?;
+    let memberships = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT c.id,c.kind,cm.role FROM conversation_members cm JOIN conversations c ON c.id=cm.conversation_id WHERE cm.user_id=?",
+    )
+    .bind(&user.id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal())?;
+    // Direct conversations are removed with the account (unchanged). In a
+    // group only this membership is removed, like a leave: ownership passes
+    // to the oldest admin, else the oldest member (conversation_members rowid
+    // is join order). A group is deleted only once nobody is left in it.
+    let mut deleted_conversations = Vec::new();
+    let mut remaining_groups = Vec::new();
+    for (conversation_id, kind, role) in memberships {
+        if kind != "group" {
+            deleted_conversations.push(conversation_id);
+            continue;
+        }
+        sqlx::query("DELETE FROM conversation_members WHERE conversation_id=? AND user_id=?")
+            .bind(&conversation_id)
+            .bind(&user.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal())?;
+        let remaining = sqlx::query_scalar::<_, String>(
+            "SELECT user_id FROM conversation_members WHERE conversation_id=?",
+        )
+        .bind(&conversation_id)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|_| ApiError::internal())?;
-    let mut tx = state.db.begin().await.map_err(|_| ApiError::internal())?;
-    sqlx::query("DELETE FROM conversations WHERE id IN (SELECT conversation_id FROM conversation_members WHERE user_id=?)")
-        .bind(&user.id).execute(&mut *tx).await.map_err(|_| ApiError::internal())?;
+        if remaining.is_empty() {
+            deleted_conversations.push(conversation_id);
+            continue;
+        }
+        if role == "owner" {
+            sqlx::query(
+                "UPDATE conversation_members SET role='owner' WHERE rowid=(SELECT rowid FROM conversation_members WHERE conversation_id=? ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, rowid LIMIT 1) AND NOT EXISTS(SELECT 1 FROM conversation_members WHERE conversation_id=? AND role='owner')",
+            )
+            .bind(&conversation_id)
+            .bind(&conversation_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal())?;
+        }
+        media_revocation::enqueue(&mut tx, &conversation_id, &user.id).await?;
+        remaining_groups.push((conversation_id, remaining));
+    }
+    let mut attachment_ids = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM attachments WHERE stored_on_disk=1 AND uploaded_by=?",
+    )
+    .bind(&user.id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal())?;
+    for conversation_id in &deleted_conversations {
+        attachment_ids.extend(
+            sqlx::query_scalar::<_, String>(
+                "SELECT id FROM attachments WHERE stored_on_disk=1 AND conversation_id=? AND uploaded_by<>?",
+            )
+            .bind(conversation_id)
+            .bind(&user.id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal())?,
+        );
+        sqlx::query("DELETE FROM conversations WHERE id=?")
+            .bind(conversation_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal())?;
+    }
+    // Cascades remove this account's sessions, friendships, own messages and
+    // own uploads in the remaining groups.
     sqlx::query("DELETE FROM users WHERE id=?")
         .bind(&user.id)
         .execute(&mut *tx)
@@ -1760,9 +1826,18 @@ async fn delete_account(
         let _ = tokio::fs::remove_file(path).await;
     }
     let _ = state.events.send(ServerEvent {
-        recipients: vec![user.id],
+        recipients: vec![user.id.clone()],
         event: serde_json::json!({"type":"session_revoked"}),
     });
+    for (conversation_id, recipients) in remaining_groups {
+        if let Err(error) = remove_livekit_participant(&state, &conversation_id, &user.id).await {
+            tracing::warn!(conversation_id = %conversation_id, account_id = %user.id, %error, "could not remove deleted account from LiveKit");
+        }
+        let _ = state.events.send(ServerEvent {
+            recipients,
+            event: serde_json::json!({"type":"conversation_updated","conversation_id":conversation_id}),
+        });
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -6382,7 +6457,14 @@ mod tests {
                     .await
                     .unwrap()
                     .status();
-                assert_eq!(status, reqwest::StatusCode::NO_CONTENT);
+                // 409 means the pair is already friends (helper reused).
+                assert!(
+                    matches!(
+                        status,
+                        reqwest::StatusCode::NO_CONTENT | reqwest::StatusCode::CONFLICT
+                    ),
+                    "friend request returned {status}"
+                );
             }
         }
 
@@ -6872,5 +6954,156 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(messages[0]["content"], "earlier message");
+    }
+
+    #[tokio::test]
+    async fn account_deletion_keeps_other_members_groups() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        // Carol owns two groups: in the first Bob is an admin, in the second
+        // nobody is, so ownership falls to the oldest remaining member.
+        let with_admin = app.group(&carol, &[&alice, &bob]).await;
+        let without_admin = {
+            let reply: serde_json::Value = app
+                .request(Method::POST, "/v1/conversations/groups", &carol)
+                .json(&serde_json::json!({"name": "Second", "member_ids": [alice.id, bob.id]}))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            reply["id"].as_str().unwrap().to_owned()
+        };
+        let status = app
+            .request(
+                Method::PATCH,
+                &format!("/v1/conversations/{with_admin}/members/{}", bob.id),
+                &carol,
+            )
+            .json(&serde_json::json!({"role": "admin"}))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        app.send_text(&alice, &with_admin, "alice keeps this").await;
+        app.send_text(&carol, &with_admin, "carol's own message")
+            .await;
+        let upload: serde_json::Value = app
+            .upload(&alice, &with_admin, b"alice's file".to_vec())
+            .await
+            .json()
+            .await
+            .unwrap();
+        let attachment = upload["content"]
+            .as_str()
+            .unwrap()
+            .strip_prefix(ATTACHMENT_MARKER)
+            .unwrap()
+            .to_owned();
+        // A group Carol is alone in is removed with her.
+        let solo = app.group(&carol, &[&alice, &bob]).await;
+        for member in [&alice, &bob] {
+            let status = app
+                .request(
+                    Method::DELETE,
+                    &format!("/v1/conversations/{solo}/members/{}", member.id),
+                    member,
+                )
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, StatusCode::NO_CONTENT);
+        }
+
+        let status = app
+            .request(Method::DELETE, "/v1/me/account", &carol)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let messages = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{with_admin}/messages"),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(messages.status(), StatusCode::OK);
+        let messages: serde_json::Value = messages.json().await.unwrap();
+        let contents = messages
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["content"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert!(contents.contains(&"alice keeps this".to_owned()));
+        assert!(!contents.contains(&"carol's own message".to_owned()));
+        let download = app
+            .request(
+                Method::GET,
+                &format!("/v1/attachments/{attachment}"),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(download.status(), StatusCode::OK);
+        assert_eq!(download.bytes().await.unwrap().as_ref(), b"alice's file");
+
+        let role_of = |conversation: String, user: String| {
+            let db = app.state.db.clone();
+            async move {
+                sqlx::query_scalar::<_, String>(
+                    "SELECT role FROM conversation_members WHERE conversation_id=? AND user_id=?",
+                )
+                .bind(conversation)
+                .bind(user)
+                .fetch_one(&db)
+                .await
+                .unwrap()
+            }
+        };
+        assert_eq!(role_of(with_admin.clone(), bob.id.clone()).await, "owner");
+        assert_eq!(
+            role_of(with_admin.clone(), alice.id.clone()).await,
+            "member"
+        );
+        // create_group_conversation inserts members in sorted ID order, so the
+        // oldest remaining member is the one with the smaller ID.
+        let (oldest, newest) = if alice.id < bob.id {
+            (&alice, &bob)
+        } else {
+            (&bob, &alice)
+        };
+        assert_eq!(
+            role_of(without_admin.clone(), oldest.id.clone()).await,
+            "owner"
+        );
+        assert_eq!(
+            role_of(without_admin.clone(), newest.id.clone()).await,
+            "member"
+        );
+        let remaining =
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM conversations WHERE id IN (?,?,?)")
+                .bind(&with_admin)
+                .bind(&without_admin)
+                .bind(&solo)
+                .fetch_one(&app.state.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            remaining, 2,
+            "only the group with no members left is deleted"
+        );
     }
 }
