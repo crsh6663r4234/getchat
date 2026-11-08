@@ -579,9 +579,25 @@
       notify();
     }
 
+    // A call whose ICE never reaches "connected" would otherwise sit in
+    // "connecting" forever with no audio and no way out except hanging up.
+    const CONNECT_TIMEOUT_MS = 30_000;
+    let connectTimer = null;
+    function startConnectTimer(activeCall) {
+      clearTimeout(connectTimer);
+      connectTimer = setTimeout(() => {
+        connectTimer = null;
+        if (call === activeCall && activeCall.pc?.connectionState !== "connected") {
+          closeCall({ notifyPeer: true, message: "The call could not connect. Check your connection and call again." });
+        }
+      }, CONNECT_TIMEOUT_MS);
+    }
+
     function closeCall({ notifyPeer = false, message = "" } = {}) {
       clearTimeout(ringTimer);
       ringTimer = null;
+      clearTimeout(connectTimer);
+      connectTimer = null;
       if (call && notifyPeer) {
         try { send(call.conversationId, call.peerId, "hangup", null); } catch {}
       }
@@ -698,6 +714,7 @@
         if (pc.connectionState === "connected") {
           activeCall.status = "connected";
           clearTimeout(ringTimer); ringTimer = null;
+          clearTimeout(connectTimer); connectTimer = null;
           startConnectionMonitor(activeCall);
         }
         else if (pc.connectionState === "disconnected") activeCall.status = "reconnecting";
@@ -833,6 +850,7 @@
         });
         activeCall.initialNegotiation = false;
         flushLocalIce(activeCall);
+        startConnectTimer(activeCall);
       } catch (error) {
         closeCall({ notifyPeer: true });
         throw new Error(explainMediaError(error));
@@ -846,6 +864,7 @@
       activeCall.ignoreOffer = !activeCall.polite && offerCollision;
       if (activeCall.ignoreOffer) return;
       if (offerCollision && activeCall.polite) await pc.setLocalDescription({ type: "rollback" });
+      const firstAnswer = description.type === "answer" && activeCall.initialNegotiation;
       activeCall.settingRemoteAnswer = description.type === "answer";
       await pc.setRemoteDescription(description);
       activeCall.settingRemoteAnswer = false;
@@ -855,6 +874,7 @@
         activeCall.status = "connecting";
         clearTimeout(ringTimer);
         ringTimer = null;
+        if (firstAnswer) startConnectTimer(activeCall);
         notify();
       } else if (description.type === "offer") {
         const answer = await pc.createAnswer();

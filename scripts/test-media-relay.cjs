@@ -155,6 +155,17 @@ async function run() {
   assert.equal(twice.signals.filter(signal => signal.kind === 'answer').length, 1, 'Double accept sends one answer');
   twice.client.hangup();
 
+  const stuck = directFixture(plain);
+  await stuck.client.start({ id: 'conversation', peer_id: 'b' });
+  await stuck.client.handleSignal({ conversation_id: 'conversation', from_user_id: 'b', kind: 'answer', payload: { type: 'answer', sdp: 'fixture' } });
+  stuck.pcs[0].connectionState = 'connecting';
+  const connectTimer = stuck.timers.filter(timer => timer.ms === 30_000 && !timer.cleared);
+  assert.equal(connectTimer.length, 1, 'Applying the answer starts the connect timeout');
+  connectTimer[0].fn();
+  assert.equal(stuck.client.getState().status, 'idle', 'A call stuck in connecting is closed');
+  assert.equal(stuck.signals.at(-1).kind, 'hangup', 'The peer is told the call ended');
+  assert.match(stuck.errors.at(-1), /could not connect/);
+
   for (const connectFails of [false, true]) {
     const fixture = livekitFixture({ connectFails });
     vm.runInNewContext(fs.readFileSync(path.join(ui, 'group-voice-client.js'), 'utf8'), fixture.context);
