@@ -4,7 +4,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ui = path.resolve(__dirname, '../crates/desktop/ui');
 
-function directFixture(config, { failShare = false, relayOnly = false, relayResponds = true, deferConfig = false } = {}) {
+function directFixture(config, { failShare = false, relayOnly = false, relayResponds = true, deferConfig = false, shareFactory = null } = {}) {
   const pcs = []; const timers = []; const errors = []; let releaseConfig; let settingsFailures = 0; const configGate = new Promise(resolve => { releaseConfig = resolve; }); const probes = []; const signals = []; let micRequests = 0; let micSource = null; let screenRequests = 0; let shareLeaves = 0;
   class Peer {
     connectionState = 'new'; signalingState = 'stable'; transceivers = [];
@@ -29,7 +29,7 @@ function directFixture(config, { failShare = false, relayOnly = false, relayResp
     createDataChannel() { pcs.splice(pcs.indexOf(this), 1); probes.push(this); this.probe = true; return {}; }
     close() { this.connectionState = 'closed'; }
   }
-  const window = { GhostChatShare: { create: () => ({ start: async () => { if (failShare) throw new Error('TURN unavailable'); }, leave: async () => { shareLeaves++; } }) } };
+  const window = { GhostChatShare: { create: shareFactory || (() => ({ start: async () => { if (failShare) throw new Error('TURN unavailable'); }, leave: async () => { shareLeaves++; } })) } };
   const context = {
     window, RTCPeerConnection: Peer, console,
     navigator: { mediaDevices: {
@@ -193,6 +193,34 @@ async function run() {
   closedMidSignal.pcs[0].setRemoteDescription = async () => { closedMidSignal.client.hangup(); throw new Error('peer connection closed'); };
   await closedMidSignal.client.handleSignal({ conversation_id: 'conversation', from_user_id: 'b', kind: 'answer', payload: { type: 'answer', sdp: 'fixture' } });
   assert.equal(closedMidSignal.client.getState().status, 'idle', 'A call closed during a signal await does not make handleSignal throw');
+
+  // Stopping our own GhostShare must not drop the peer's share we are watching.
+  {
+    let shareApi; let leaves = 0; let sharing = false; let remote = null;
+    const remoteStream = { getVideoTracks: () => [] };
+    const fixture = directFixture({ ...plain, group_voice_available: true }, { shareFactory: options => {
+      shareApi = options;
+      return {
+        watch: async () => { remote = remoteStream; shareApi.onRemoteStream(remoteStream); },
+        start: async () => { sharing = true; shareApi.onLocalStream({ getTracks: () => [] }); },
+        stop: async () => { sharing = false; shareApi.onLocalStream(null); },
+        leave: async () => { leaves++; remote = null; shareApi.onLocalStream(null); shareApi.onRemoteStream(null); },
+        getState: () => ({ connected: true, sharing, localStream: null, remoteStream: remote }),
+      };
+    } });
+    await fixture.client.start({ id: 'conversation', peer_id: 'b' });
+    fixture.pcs[0].connectionState = 'connected'; fixture.pcs[0].onconnectionstatechange();
+    await fixture.client.handleSignal({ conversation_id: 'conversation', from_user_id: 'b', kind: 'ghostshare_started' });
+    assert.equal(fixture.client.getState().remoteVideoStream, remoteStream);
+    await fixture.client.toggleScreenSharing();
+    assert.equal(fixture.client.getState().screenSharing, true);
+    await fixture.client.toggleScreenSharing();
+    assert.equal(fixture.client.getState().screenSharing, false);
+    assert.equal(fixture.client.getState().remoteVideoStream, remoteStream, "stopping our share keeps showing the peer's share");
+    assert.equal(leaves, 0, 'the SFU room stays connected while the peer is still sharing');
+    fixture.client.hangup();
+    assert.equal(leaves, 1, 'hangup still leaves the SFU room');
+  }
 
   // A microphone opened for a call that ended while the capture was pending
   // (device switch, unmute, or a hangup during replaceTrack) must be released.

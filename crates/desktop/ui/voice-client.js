@@ -494,8 +494,12 @@
       try {
         if (activeCall.screenStream) {
           await share.stop();
-          await share.leave();
-          activeCall.ghostShare = null;
+          // Both callers can share at once over the same SFU room. Leaving it
+          // here would also tear down the peer's share we are still watching.
+          if (!share.getState?.().remoteStream) {
+            await share.leave();
+            activeCall.ghostShare = null;
+          }
           activeCall.screenStream = null;
           activeCall.screenQuality = null;
           activeCall.screenTransport = null;
