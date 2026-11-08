@@ -804,6 +804,7 @@ mod windows_credential {
     #[cfg(not(test))]
     use rand::RngCore;
     use std::{ptr, slice};
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_NOT_FOUND};
     use windows_sys::Win32::Security::Credentials::{
         CredDeleteW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE,
         CRED_TYPE_GENERIC,
@@ -825,7 +826,16 @@ mod windows_credential {
         let success =
             unsafe { CredReadW(target.as_mut_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) };
         if success == 0 {
-            return Ok(None);
+            // Only a missing credential means "nothing saved". Any other read
+            // failure must not be mistaken for absence: the MLS storage key
+            // would otherwise be regenerated and overwrite the real one.
+            let error = unsafe { GetLastError() };
+            if error == ERROR_NOT_FOUND {
+                return Ok(None);
+            }
+            return Err(format!(
+                "Windows Credential Manager could not be read (error {error}); saved data was left untouched."
+            ));
         }
         let result = unsafe {
             let record = &*credential;
