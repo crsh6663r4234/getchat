@@ -350,8 +350,10 @@
       });
     }
 
+    // LiveKit records the device for an unpublished or muted microphone and
+    // reacquires it on unmute, so switch even while the microphone is off.
     async function setMicrophoneDevice(deviceId) {
-      if (room && room.localParticipant.isMicrophoneEnabled && deviceId) await room.switchActiveDevice("audioinput", deviceId);
+      if (room && deviceId) await room.switchActiveDevice("audioinput", deviceId);
     }
 
     // LiveKit reads capture defaults while publishing the microphone. Re-publish

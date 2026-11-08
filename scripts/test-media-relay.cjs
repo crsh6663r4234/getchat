@@ -58,6 +58,7 @@ function livekitFixture({ connectFails = false } = {}) {
     on(event, handler) { this.events.set(event, handler); return this; }
     async connect(url, token, options) { this.connectOptions = options; if (connectFails) throw new Error('No TURN candidates'); }
     async startAudio() {}
+    async switchActiveDevice(kind, deviceId) { (this.switches ||= []).push([kind, deviceId]); return true; }
     async disconnect() { this.disconnected = true; this.events.get('Disconnected')?.(); }
     static async getLocalDevices() { return []; }
   }
@@ -270,6 +271,22 @@ async function run() {
     await pendingJoin.catch(() => {});
     assert.equal(group.getState().status, 'idle', `leave during ${stage} keeps the group idle`);
     assert(fixture.rooms.every(item => item.disconnected), `leave during ${stage} leaves no connected room`);
+  }
+
+  // Changing the microphone while muted must still reach LiveKit: an unmute
+  // only reacquires the track when a device change is pending.
+  {
+    const fixture = livekitFixture();
+    vm.runInNewContext(fs.readFileSync(path.join(ui, 'group-voice-client.js'), 'utf8'), fixture.context);
+    const group = fixture.window.GhostChatGroupVoice.create({
+      getToken: async () => ({ url: 'wss://fixture', token: 'fixture' }), getMembers: async () => [],
+      getSettings: () => ({}), getUserId: () => 'a', getDisplayName: () => 'Fixture', getAvatar: () => null,
+      isPeerMuted: () => false, onChange() {}, onAudioBlocked() {},
+    });
+    await group.join({ id: 'group' });
+    await group.setMicrophoneDevice('next-mic');
+    assert.deepEqual(fixture.rooms[0].switches, [['audioinput', 'next-mic']], 'a muted group member still switches microphone');
+    await group.leave();
   }
 
   // Exercise the actual checked-in SDK merge used for initial join and resumed
