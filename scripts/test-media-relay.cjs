@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const ui = path.resolve(__dirname, '../crates/desktop/ui');
 
 function directFixture(config, { failShare = false, relayOnly = false, relayResponds = true, deferConfig = false } = {}) {
-  const pcs = []; const timers = []; const errors = []; let releaseConfig; const configGate = new Promise(resolve => { releaseConfig = resolve; }); const probes = []; const signals = []; let micRequests = 0; let screenRequests = 0; let shareLeaves = 0;
+  const pcs = []; const timers = []; const errors = []; let releaseConfig; let settingsFailures = 0; const configGate = new Promise(resolve => { releaseConfig = resolve; }); const probes = []; const signals = []; let micRequests = 0; let screenRequests = 0; let shareLeaves = 0;
   class Peer {
     connectionState = 'new'; signalingState = 'stable'; transceivers = [];
     constructor(configuration) { this.configuration = configuration; pcs.push(this); }
@@ -42,11 +42,11 @@ function directFixture(config, { failShare = false, relayOnly = false, relayResp
   };
   vm.runInNewContext(fs.readFileSync(path.join(ui, 'voice-client.js'), 'utf8'), context);
   const client = window.GhostChatVoice.create({
-    getSettings: () => ({ relayOnly }), getIceConfiguration: async () => { if (deferConfig) await configGate; return config; },
+    getSettings: () => { if (settingsFailures > 0) { settingsFailures--; throw new Error('settings unavailable'); } return { relayOnly }; }, getIceConfiguration: async () => { if (deferConfig) await configGate; return config; },
     getUserId: () => 'a', getShareToken: async () => ({}), sendSignal: signal => signals.push(signal),
     onChange() {}, onError: message => errors.push(message), onIncoming() {},
   });
-  return { client, pcs, probes, signals, timers, errors, releaseConfig, counts: () => ({ micRequests, screenRequests, shareLeaves }) };
+  return { client, pcs, probes, signals, timers, errors, releaseConfig, failSettingsOnce: () => { settingsFailures = 1; }, counts: () => ({ micRequests, screenRequests, shareLeaves }) };
 }
 
 function livekitFixture({ connectFails = false } = {}) {
@@ -165,6 +165,19 @@ async function run() {
   assert.equal(stuck.client.getState().status, 'idle', 'A call stuck in connecting is closed');
   assert.equal(stuck.signals.at(-1).kind, 'hangup', 'The peer is told the call ended');
   assert.match(stuck.errors.at(-1), /could not connect/);
+
+  const recovering = directFixture(plain);
+  await recovering.client.start({ id: 'conversation', peer_id: 'b' });
+  const recoveringPeer = recovering.pcs[0];
+  recoveringPeer.setRemoteDescription = async () => {
+    recoveringPeer.connectionState = 'connected'; recoveringPeer.onconnectionstatechange();
+    recoveringPeer.connectionState = 'disconnected'; recoveringPeer.onconnectionstatechange();
+  };
+  await recovering.client.handleSignal({ conversation_id: 'conversation', from_user_id: 'b', kind: 'answer', payload: { type: 'answer', sdp: 'fixture' } });
+  recovering.timers.filter(timer => timer.ms === 30_000 && !timer.cleared).forEach(timer => timer.fn());
+  assert.equal(recovering.client.getState().status, 'reconnecting', 'A call that already connected is not hung up by the connect timeout');
+  assert(!recovering.signals.some(signal => signal.kind === 'hangup'));
+  recovering.client.hangup();
 
   const closedMidSignal = directFixture(plain);
   await closedMidSignal.client.start({ id: 'conversation', peer_id: 'b' });

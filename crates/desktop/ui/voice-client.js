@@ -587,7 +587,7 @@
       clearTimeout(connectTimer);
       connectTimer = setTimeout(() => {
         connectTimer = null;
-        if (call === activeCall && activeCall.pc?.connectionState !== "connected") {
+        if (call === activeCall && !activeCall.everConnected && activeCall.pc?.connectionState !== "connected") {
           closeCall({ notifyPeer: true, message: "The call could not connect. Check your connection and call again." });
         }
       }, CONNECT_TIMEOUT_MS);
@@ -713,6 +713,7 @@
         if (!call || call !== activeCall) return;
         if (pc.connectionState === "connected") {
           activeCall.status = "connected";
+          activeCall.everConnected = true;
           clearTimeout(ringTimer); ringTimer = null;
           clearTimeout(connectTimer); connectTimer = null;
           startConnectionMonitor(activeCall);
@@ -871,10 +872,10 @@
       for (const candidate of activeCall.pendingRemoteIce.splice(0)) await pc.addIceCandidate(candidate);
       if (description.type === "answer") {
         activeCall.initialNegotiation = false;
-        activeCall.status = "connecting";
+        if (!activeCall.everConnected) activeCall.status = "connecting";
         clearTimeout(ringTimer);
         ringTimer = null;
-        if (firstAnswer) startConnectTimer(activeCall);
+        if (firstAnswer && !activeCall.everConnected) startConnectTimer(activeCall);
         notify();
       } else if (description.type === "offer") {
         const answer = await pc.createAnswer();
