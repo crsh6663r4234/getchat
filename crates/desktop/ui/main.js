@@ -1948,6 +1948,9 @@
         state.cryptoEnabled.delete(conversation.id); updateCryptoStatus(conversation);
       }
     } catch (error) {
+      // The header button and status are shared; a late failure for a
+      // conversation the user already left must not overwrite the current one.
+      if (state.active?.id !== conversation.id) return;
       const locked = state.cryptoLocked.has(conversation.id);
       const canManage = state.cryptoCanManage.has(conversation.id);
       const complete = state.cryptoSetupComplete.has(conversation.id);
