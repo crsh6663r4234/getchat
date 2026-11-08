@@ -3262,6 +3262,86 @@ mod tests {
         );
     }
 
+    fn legacy_ref_for(current_ref: &[u8]) -> Vec<u8> {
+        let hash_ref: openmls::prelude::KeyPackageRef =
+            EncryptedJsonCodec::from_slice(current_ref).unwrap();
+        lookup_key_v1(
+            STORAGE_KEY.get().unwrap(),
+            &serde_json::to_vec(&hash_ref).unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// Bob in a two-member group with his own leave proposal queued.
+    async fn group_with_queued_proposal(root: &Path) -> (SqlitePool, String, String) {
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[GroupPeerKeyPackage {
+                user_id: bob_id.clone(),
+                device_id: bob_device.device_id.clone(),
+                payload: bob_device.payload.clone(),
+            }],
+        )
+        .await
+        .unwrap();
+        process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(1),
+            true,
+            &roster,
+            &start.welcome_payload,
+        )
+        .await
+        .unwrap();
+        prepare_group_leave_proposal(&bob_db, &bob_id, &conversation_id, &roster)
+            .await
+            .unwrap();
+        (bob_db, bob_id, conversation_id)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn legacy_digest_proposal_refs_are_migrated_and_group_reloads() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-propmig-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let (bob_db, bob_id, conversation_id) = group_with_queued_proposal(&root).await;
+        let current_ref =
+            sqlx::query_scalar::<_, Vec<u8>>("SELECT proposal_ref FROM openmls_proposal")
+                .fetch_one(&bob_db)
+                .await
+                .unwrap();
+        assert!(current_ref.starts_with(DECODABLE_LOOKUP_KEY_PREFIX));
+        sqlx::query("UPDATE openmls_proposal SET proposal_ref=?")
+            .bind(legacy_ref_for(&current_ref))
+            .execute(&bob_db)
+            .await
+            .unwrap();
+        assert!(has_direct_group(&bob_db, &bob_id, &conversation_id)
+            .await
+            .expect("A proposal saved by an older build should be migrated so the group loads"),);
+        let migrated =
+            sqlx::query_scalar::<_, Vec<u8>>("SELECT proposal_ref FROM openmls_proposal")
+                .fetch_one(&bob_db)
+                .await
+                .unwrap();
+        assert_eq!(migrated, current_ref);
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn legacy_digest_key_package_refs_are_migrated_and_still_join() {
         let root = std::env::temp_dir().join(format!("ghostchat-mls-migrate-{}", Uuid::new_v4()));
