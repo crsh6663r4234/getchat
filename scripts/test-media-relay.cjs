@@ -166,6 +166,12 @@ async function run() {
   assert.equal(stuck.signals.at(-1).kind, 'hangup', 'The peer is told the call ended');
   assert.match(stuck.errors.at(-1), /could not connect/);
 
+  const closedMidSignal = directFixture(plain);
+  await closedMidSignal.client.start({ id: 'conversation', peer_id: 'b' });
+  closedMidSignal.pcs[0].setRemoteDescription = async () => { closedMidSignal.client.hangup(); throw new Error('peer connection closed'); };
+  await closedMidSignal.client.handleSignal({ conversation_id: 'conversation', from_user_id: 'b', kind: 'answer', payload: { type: 'answer', sdp: 'fixture' } });
+  assert.equal(closedMidSignal.client.getState().status, 'idle', 'A call closed during a signal await does not make handleSignal throw');
+
   for (const connectFails of [false, true]) {
     const fixture = livekitFixture({ connectFails });
     vm.runInNewContext(fs.readFileSync(path.join(ui, 'group-voice-client.js'), 'utf8'), fixture.context);

@@ -941,7 +941,7 @@
           else call.pendingRemoteIce.push(event.payload);
         }
       } catch (error) {
-        if (!call.ignoreOffer) closeCall({ notifyPeer: true, message: explainMediaError(error) });
+        if (call && !call.ignoreOffer) closeCall({ notifyPeer: true, message: explainMediaError(error) });
       }
     }
 
