@@ -1016,7 +1016,13 @@ fn unregister_online_connection(state: &AppState, user_id: &str) -> bool {
     }
 }
 
+/// Connect/disconnect transition. For an invisible account friends already
+/// see offline, so they get no event (its timing would reveal the transition).
 async fn broadcast_current_presence(state: &AppState, user_id: &str) {
+    broadcast_presence(state, user_id, false).await;
+}
+
+async fn broadcast_presence(state: &AppState, user_id: &str, explicit_mode_change: bool) {
     let saved_mode =
         sqlx::query_scalar::<_, String>("SELECT mode FROM user_presence WHERE user_id=?")
             .bind(user_id)
@@ -1032,6 +1038,7 @@ async fn broadcast_current_presence(state: &AppState, user_id: &str) {
         .and_then(|users| users.get(user_id).copied())
         .unwrap_or(0)
         > 0;
+    let notify_friends = explicit_mode_change || saved_mode != "invisible";
     let mode = if connected {
         saved_mode
     } else {
@@ -1046,10 +1053,12 @@ async fn broadcast_current_presence(state: &AppState, user_id: &str) {
     } else {
         mode.clone()
     };
-    let _ = state.events.send(ServerEvent {
-        recipients: friends,
-        event: serde_json::json!({"type":"presence_updated","user_id":user_id,"mode":friend_mode}),
-    });
+    if notify_friends {
+        let _ = state.events.send(ServerEvent {
+            recipients: friends,
+            event: serde_json::json!({"type":"presence_updated","user_id":user_id,"mode":friend_mode}),
+        });
+    }
     let _ = state.events.send(ServerEvent {
         recipients: vec![user_id.to_owned()],
         event: serde_json::json!({"type":"presence_updated","user_id":user_id,"mode":mode}),
@@ -1072,7 +1081,7 @@ async fn update_presence(
         .execute(&state.db)
         .await
         .map_err(|_| ApiError::internal())?;
-    broadcast_current_presence(&state, &user.id).await;
+    broadcast_presence(&state, &user.id, true).await;
     Ok(Json(PresenceRow {
         user_id: user.id,
         mode,
@@ -6768,5 +6777,42 @@ mod tests {
             .find(|row| row["user_id"] == alice.id.as_str())
             .unwrap();
         assert_eq!(own_row["mode"], "invisible");
+    }
+
+    #[tokio::test]
+    async fn presence_connect_and_disconnect_of_invisible_user_send_friends_nothing() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        app.befriend(&alice, &bob).await;
+        let status = app
+            .request(Method::PUT, "/v1/me/presence", &alice)
+            .json(&serde_json::json!({"mode": "invisible"}))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::OK);
+        let mut events = app.state.events.subscribe();
+        // Alice opens the app (first WebSocket) and later closes it.
+        assert!(register_online_connection(&app.state, &alice.id));
+        broadcast_current_presence(&app.state, &alice.id).await;
+        assert!(unregister_online_connection(&app.state, &alice.id));
+        broadcast_current_presence(&app.state, &alice.id).await;
+        let mut own_events = 0;
+        while let Ok(Ok(event)) =
+            tokio::time::timeout(Duration::from_millis(300), events.recv()).await
+        {
+            assert!(
+                !event.recipients.contains(&bob.id),
+                "friend was notified of an invisible user's connect/disconnect: {}",
+                event.event
+            );
+            if event.recipients.contains(&alice.id) {
+                own_events += 1;
+            }
+        }
+        assert_eq!(own_events, 2, "the account itself still gets its presence");
     }
 }
