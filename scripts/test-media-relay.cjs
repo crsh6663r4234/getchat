@@ -224,6 +224,27 @@ async function run() {
     assert.equal(fixture.rooms[1].connectOptions.rtcConfig.iceTransportPolicy, 'relay');
   }
 
+  // Leaving a group while its join is still fetching the token or connecting
+  // must not leave a hidden room connected (listening) afterwards.
+  for (const stage of ['token', 'connect']) {
+    const fixture = livekitFixture();
+    vm.runInNewContext(fs.readFileSync(path.join(ui, 'group-voice-client.js'), 'utf8'), fixture.context);
+    let release; const gate = new Promise(resolve => { release = resolve; });
+    if (stage === 'connect') fixture.window.LivekitClient.Room.prototype.connect = async function (url, token, options) { this.connectOptions = options; await gate; };
+    const group = fixture.window.GhostChatGroupVoice.create({
+      getToken: async () => { if (stage === 'token') await gate; return { url: 'wss://fixture', token: 'fixture' }; }, getMembers: async () => [],
+      getSettings: () => ({}), getUserId: () => 'a', getDisplayName: () => 'Fixture', getAvatar: () => null,
+      isPeerMuted: () => false, onChange() {}, onAudioBlocked() {},
+    });
+    const pendingJoin = group.join({ id: 'group' });
+    await new Promise(resolve => setImmediate(resolve));
+    await group.leave();
+    release();
+    await pendingJoin.catch(() => {});
+    assert.equal(group.getState().status, 'idle', `leave during ${stage} keeps the group idle`);
+    assert(fixture.rooms.every(item => item.disconnected), `leave during ${stage} leaves no connected room`);
+  }
+
   // Exercise the actual checked-in SDK merge used for initial join and resumed
   // signaling responses, not only a mock's acceptance of an option object.
   const SDK = require(path.join(ui, 'vendor/livekit-client.umd.js'));

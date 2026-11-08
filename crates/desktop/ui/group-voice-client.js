@@ -22,6 +22,9 @@
     let micManuallyMuted = true;
     let pushToTalkPressed = false;
     let screenOperation = null;
+    // Bumped by leave() and by every join so a join still awaiting its token
+    // or connect cannot attach a room after the user left.
+    let joinGeneration = 0;
     const audioElements = new Map();
     const screenElements = new Map();
     const mutedAccounts = new Set();
@@ -171,6 +174,7 @@
         .on(E.Reconnecting, () => publishState({ status: "reconnecting" }))
         .on(E.Reconnected, () => publishState({ status: "connected" }))
         .on(E.Disconnected, () => {
+          if (room !== activeRoom) return;
           api.onScreenRemoved?.();
           for (const [sid, element] of audioElements) element.remove();
           for (const screen of screenElements.values()) screen.tile.remove();
@@ -187,6 +191,8 @@
         if (conversation?.id === nextConversation.id) return;
         await leave();
       }
+      const ticket = ++joinGeneration;
+      let activeRoom = null;
       conversation = nextConversation;
       mutedAccounts.clear();
       micManuallyMuted = true;
@@ -195,9 +201,10 @@
       api.onChange({ ...state });
       try {
         const [credentials, memberRows] = await Promise.all([api.getToken(nextConversation.id), api.getMembers(nextConversation.id)]);
+        if (ticket !== joinGeneration) return;
         members = new Map(memberRows.map(member => [member.id, member]));
         const settings = api.getSettings();
-        const activeRoom = new LK.Room({
+        activeRoom = new LK.Room({
           adaptiveStream: true,
           dynacast: true,
           audioCaptureDefaults: captureOptions(),
@@ -211,17 +218,19 @@
           rtcConfig: { iceTransportPolicy: "relay" },
           peerConnectionTimeout: 15_000,
         });
+        if (room !== activeRoom) return;
         await activeRoom.startAudio().catch(() => {});
         let micAvailable = true;
         try { micAvailable = (await LK.Room.getLocalDevices("audioinput", false)).length > 0; } catch {}
         // Joining a group never publishes the microphone automatically.
         await activeRoom.localParticipant.setMicrophoneEnabled(false);
+        if (room !== activeRoom) return;
         publishState({ status: "connected", micMuted: true, micManuallyMuted: true, pushToTalkPressed: false, micAvailable, screenSharing: false, screenStarting: false, error: "" });
       } catch (error) {
-        if (room) {
-          try { await room.disconnect(); } catch {}
-          room = null;
-        }
+        const superseded = ticket !== joinGeneration || (activeRoom && room !== activeRoom);
+        if (activeRoom && room === activeRoom) room = null;
+        if (activeRoom) { try { await activeRoom.disconnect(); } catch {} }
+        if (superseded) return;
         const message = "Group voice could not establish its required relay connection. Verify the media server and its authenticated TURN service.";
         publishState({ ...idleState(), error: message });
         throw new Error(message);
@@ -229,6 +238,7 @@
     }
 
     async function leave() {
+      joinGeneration += 1;
       api.onScreenRemoved?.();
       const activeRoom = room;
       room = null;
