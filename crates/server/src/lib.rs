@@ -5723,6 +5723,11 @@ async fn edit_message(
             "Messages must contain 1 to 4,000 characters.",
         ));
     }
+    if content.starts_with(ATTACHMENT_MARKER) {
+        return Err(ApiError::bad(
+            "Attachment messages must use the upload action.",
+        ));
+    }
     let msg = sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,u.avatar_data AS sender_avatar,m.client_message_id,m.content,m.created_at,m.edited_at,m.pinned_at,m.reply_to_id,(SELECT r.content FROM messages r WHERE r.id=m.reply_to_id) AS reply_to_content,(SELECT u.display_name FROM messages r JOIN users u ON u.id=r.sender_id WHERE r.id=m.reply_to_id) AS reply_to_sender FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.id=?")
         .bind(&id).fetch_optional(&state.db).await.map_err(|_| ApiError::internal())?.ok_or_else(ApiError::not_found)?;
     let crypto_locked = sqlx::query_scalar::<_, i64>(
@@ -6259,5 +6264,330 @@ mod tests {
 
         db.close().await;
         let _ = std::fs::remove_file(path);
+    }
+
+    // Route-level harness: a real router on a loopback port backed by a fresh
+    // SQLite file with all migrations, driven over HTTP with reqwest.
+    struct TestApp {
+        base: String,
+        state: AppState,
+        client: reqwest::Client,
+        dir: PathBuf,
+    }
+
+    struct TestUser {
+        id: String,
+        token: String,
+    }
+
+    impl Drop for TestApp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    impl TestApp {
+        async fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!("ghostchat-route-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let db = open_database(&dir.join("db.sqlite").to_string_lossy())
+                .await
+                .unwrap();
+            let state = build_state_with_attachment_dir(db, dir.join("attachments")).await;
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let app = router(state.clone());
+            tokio::spawn(async move {
+                let _ = axum::serve(listener, app).await;
+            });
+            let client = reqwest::Client::builder().no_proxy().build().unwrap();
+            Self {
+                base,
+                state,
+                client,
+                dir,
+            }
+        }
+
+        fn request(
+            &self,
+            method: reqwest::Method,
+            path: &str,
+            user: &TestUser,
+        ) -> reqwest::RequestBuilder {
+            self.client
+                .request(method, format!("{}{path}", self.base))
+                .bearer_auth(&user.token)
+        }
+
+        async fn user(&self, username: &str) -> TestUser {
+            let reply: serde_json::Value = self
+                .client
+                .post(format!("{}/v1/accounts", self.base))
+                .json(&serde_json::json!({"username": username, "display_name": username}))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            TestUser {
+                id: reply["user"]["id"].as_str().unwrap().to_owned(),
+                token: reply["session_token"].as_str().unwrap().to_owned(),
+            }
+        }
+
+        async fn befriend(&self, first: &TestUser, second: &TestUser) {
+            for (from, to) in [(first, second), (second, first)] {
+                let status = self
+                    .request(reqwest::Method::POST, "/v1/friends", from)
+                    .json(&serde_json::json!({"user_id": to.id}))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status();
+                assert_eq!(status, reqwest::StatusCode::NO_CONTENT);
+            }
+        }
+
+        async fn group(&self, owner: &TestUser, members: &[&TestUser]) -> String {
+            for member in members {
+                self.befriend(owner, member).await;
+            }
+            let reply: serde_json::Value = self
+                .request(reqwest::Method::POST, "/v1/conversations/groups", owner)
+                .json(&serde_json::json!({
+                    "name": "Test group",
+                    "member_ids": members.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
+                }))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            reply["id"].as_str().unwrap().to_owned()
+        }
+
+        async fn send_text(&self, user: &TestUser, conversation: &str, text: &str) -> String {
+            let reply: serde_json::Value = self
+                .request(
+                    reqwest::Method::POST,
+                    &format!("/v1/conversations/{conversation}/messages"),
+                    user,
+                )
+                .json(&serde_json::json!({
+                    "client_message_id": Uuid::new_v4().to_string(),
+                    "content": text,
+                }))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            reply["id"].as_str().unwrap().to_owned()
+        }
+
+        async fn upload(
+            &self,
+            user: &TestUser,
+            conversation: &str,
+            bytes: Vec<u8>,
+        ) -> reqwest::Response {
+            self.request(
+                reqwest::Method::POST,
+                &format!(
+                    "/v1/conversations/{conversation}/attachments?name=notes.txt&client_message_id={}",
+                    Uuid::new_v4()
+                ),
+                user,
+            )
+            .header(header::CONTENT_TYPE, "text/plain")
+            .body(bytes)
+            .send()
+            .await
+            .unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn message_routes_reject_non_member() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let mallory = app.user("mallory").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let message = app.send_text(&alice, &group, "hello").await;
+        let upload: serde_json::Value = app
+            .upload(&alice, &group, b"secret".to_vec())
+            .await
+            .json()
+            .await
+            .unwrap();
+        let attachment = upload["content"]
+            .as_str()
+            .unwrap()
+            .strip_prefix(ATTACHMENT_MARKER)
+            .unwrap()
+            .to_owned();
+        let checks: Vec<(Method, String, Option<serde_json::Value>)> = vec![
+            (
+                Method::GET,
+                format!("/v1/conversations/{group}/messages"),
+                None,
+            ),
+            (
+                Method::POST,
+                format!("/v1/conversations/{group}/messages"),
+                Some(serde_json::json!({"client_message_id":"x","content":"hi"})),
+            ),
+            (
+                Method::PATCH,
+                format!("/v1/messages/{message}"),
+                Some(serde_json::json!({"content":"edited"})),
+            ),
+            (Method::POST, format!("/v1/messages/{message}/pin"), None),
+            (Method::POST, format!("/v1/messages/{message}/save"), None),
+            (
+                Method::POST,
+                format!("/v1/messages/{message}/reactions"),
+                Some(serde_json::json!({"emoji":"👍"})),
+            ),
+            (
+                Method::POST,
+                format!("/v1/conversations/{group}/read"),
+                Some(serde_json::json!({"sequence":0})),
+            ),
+            (
+                Method::GET,
+                format!("/v1/conversations/{group}/reactions"),
+                None,
+            ),
+            (
+                Method::GET,
+                format!("/v1/conversations/{group}/members"),
+                None,
+            ),
+            (
+                Method::GET,
+                format!("/v1/conversations/{group}/crypto-events"),
+                None,
+            ),
+            (
+                Method::GET,
+                format!("/v1/conversations/{group}/crypto-lock"),
+                None,
+            ),
+            (
+                Method::GET,
+                format!("/v1/conversations/{group}/planner/polls"),
+                None,
+            ),
+            (
+                Method::GET,
+                format!("/v1/conversations/{group}/planner/events"),
+                None,
+            ),
+            (
+                Method::GET,
+                format!("/v1/conversations/{group}/invites"),
+                None,
+            ),
+            (Method::GET, format!("/v1/attachments/{attachment}"), None),
+            (
+                Method::POST,
+                format!("/v1/attachments/{attachment}/link"),
+                None,
+            ),
+        ];
+        for (method, path, body) in checks {
+            let mut request = app.request(method.clone(), &path, &mallory);
+            if let Some(body) = body {
+                request = request.json(&body);
+            }
+            let status = request.send().await.unwrap().status();
+            assert!(
+                matches!(status, StatusCode::NOT_FOUND | StatusCode::FORBIDDEN),
+                "{method} {path} returned {status} to a non-member"
+            );
+        }
+        let status = app.upload(&mallory, &group, b"x".to_vec()).await.status();
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let saved: serde_json::Value = app
+            .request(Method::GET, "/v1/me/saved-messages", &mallory)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(saved, serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn attachment_upload_accepts_bodies_above_json_limit() {
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let response = app.upload(&alice, &group, vec![7u8; 512 * 1024]).await;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn message_edit_rejects_attachment_marker() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let upload: serde_json::Value = app
+            .upload(&bob, &group, b"bob's file".to_vec())
+            .await
+            .json()
+            .await
+            .unwrap();
+        let attachment = upload["content"].as_str().unwrap().to_owned();
+        let carol_message = app.send_text(&carol, &group, "innocent text").await;
+        let status = app
+            .request(
+                Method::PATCH,
+                &format!("/v1/messages/{carol_message}"),
+                &carol,
+            )
+            .json(&serde_json::json!({"content": attachment}))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let status = app
+            .request(
+                Method::DELETE,
+                &format!("/v1/messages/{carol_message}"),
+                &carol,
+            )
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let attachment_id = attachment.strip_prefix(ATTACHMENT_MARKER).unwrap();
+        let download = app
+            .request(
+                Method::GET,
+                &format!("/v1/attachments/{attachment_id}"),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(download.status(), StatusCode::OK);
+        assert_eq!(download.bytes().await.unwrap().as_ref(), b"bob's file");
     }
 }
