@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const ui = path.resolve(__dirname, '../crates/desktop/ui');
 
 function directFixture(config, { failShare = false, relayOnly = false, relayResponds = true, deferConfig = false } = {}) {
-  const pcs = []; const timers = []; const errors = []; let releaseConfig; let settingsFailures = 0; const configGate = new Promise(resolve => { releaseConfig = resolve; }); const probes = []; const signals = []; let micRequests = 0; let screenRequests = 0; let shareLeaves = 0;
+  const pcs = []; const timers = []; const errors = []; let releaseConfig; let settingsFailures = 0; const configGate = new Promise(resolve => { releaseConfig = resolve; }); const probes = []; const signals = []; let micRequests = 0; let micSource = null; let screenRequests = 0; let shareLeaves = 0;
   class Peer {
     connectionState = 'new'; signalingState = 'stable'; transceivers = [];
     constructor(configuration) { this.configuration = configuration; pcs.push(this); }
@@ -34,7 +34,7 @@ function directFixture(config, { failShare = false, relayOnly = false, relayResp
     window, RTCPeerConnection: Peer, console,
     navigator: { mediaDevices: {
       getSupportedConstraints: () => ({}),
-      getUserMedia: async () => { micRequests++; throw { name: 'NotFoundError' }; },
+      getUserMedia: async () => { micRequests++; if (micSource) return micSource(); throw { name: 'NotFoundError' }; },
       getDisplayMedia: async () => { screenRequests++; throw new Error('Unexpected direct screen fallback'); },
     } },
     setTimeout: (fn, ms) => { timers.push({ fn, ms, cleared: false }); return timers.length; },
@@ -46,7 +46,7 @@ function directFixture(config, { failShare = false, relayOnly = false, relayResp
     getUserId: () => 'a', getShareToken: async () => ({}), sendSignal: signal => signals.push(signal),
     onChange() {}, onError: message => errors.push(message), onIncoming() {},
   });
-  return { client, pcs, probes, signals, timers, errors, releaseConfig, failSettingsOnce: () => { settingsFailures = 1; }, counts: () => ({ micRequests, screenRequests, shareLeaves }) };
+  return { client, pcs, probes, signals, timers, errors, releaseConfig, failSettingsOnce: () => { settingsFailures = 1; }, counts: () => ({ micRequests, screenRequests, shareLeaves }), setMic: fn => { micSource = fn; } };
 }
 
 function livekitFixture({ connectFails = false } = {}) {
@@ -192,6 +192,33 @@ async function run() {
   closedMidSignal.pcs[0].setRemoteDescription = async () => { closedMidSignal.client.hangup(); throw new Error('peer connection closed'); };
   await closedMidSignal.client.handleSignal({ conversation_id: 'conversation', from_user_id: 'b', kind: 'answer', payload: { type: 'answer', sdp: 'fixture' } });
   assert.equal(closedMidSignal.client.getState().status, 'idle', 'A call closed during a signal await does not make handleSignal throw');
+
+  // A microphone opened for a call that ended while the capture was pending
+  // (device switch, unmute, or a hangup during replaceTrack) must be released.
+  const micStream = () => {
+    const track = { kind: 'audio', enabled: true, stopped: false, stop() { this.stopped = true; }, getSettings: () => ({}) };
+    return { track, getAudioTracks: () => [track], getTracks: () => [track] };
+  };
+  for (const action of ['setMicrophoneDevice', 'toggleMicrophone', 'replaceTrack']) {
+    const fixture = directFixture(plain);
+    await fixture.client.start({ id: 'conversation', peer_id: 'b' });
+    const opened = micStream();
+    let pending;
+    if (action === 'replaceTrack') {
+      fixture.setMic(async () => opened);
+      fixture.pcs[0].transceivers[0].sender.replaceTrack = async () => { fixture.client.hangup(); };
+      pending = fixture.client.setMicrophoneDevice('next-mic');
+    } else {
+      let release; fixture.setMic(() => new Promise(resolve => { release = () => resolve(opened); }));
+      pending = fixture.client[action](action === 'setMicrophoneDevice' ? 'next-mic' : undefined);
+      await new Promise(resolve => setImmediate(resolve));
+      fixture.client.hangup();
+      release();
+    }
+    await pending.catch(() => {});
+    assert.equal(opened.track.stopped, true, `${action}: a microphone captured for an ended call is stopped`);
+    assert.equal(fixture.client.getState().status, 'idle');
+  }
 
   for (const connectFails of [false, true]) {
     const fixture = livekitFixture({ connectFails });

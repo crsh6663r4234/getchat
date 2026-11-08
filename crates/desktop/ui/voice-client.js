@@ -533,15 +533,21 @@
       const track = stream?.getAudioTracks()[0] || null;
       const transceiver = findAudioTransceiver(activeCall) || activeCall.pc.addTransceiver("audio", { direction: track ? "sendrecv" : "recvonly" });
       activeCall.audioTransceiver = transceiver;
-      try {
-        if (transceiver.sender.track !== track) await transceiver.sender.replaceTrack(track);
-      } catch (error) {
+      const discardPrepared = () => {
         stopAudioProcessor(prepared.processor);
         for (const stream of new Set([rawStream, prepared.stream])) {
           if (stream && stream !== previousStream && stream !== previousRawStream) stream.getTracks().forEach(item => item.stop());
         }
+      };
+      try {
+        if (transceiver.sender.track !== track) await transceiver.sender.replaceTrack(track);
+      } catch (error) {
+        discardPrepared();
         throw error;
       }
+      // The call may have closed while replaceTrack was pending; closeCall
+      // only stopped the previous streams, so release the new capture here.
+      if (call !== activeCall) { discardPrepared(); return; }
       stopAudioProcessor(previousProcessor);
       activeCall.localStream = stream || null;
       activeCall.rawStream = rawStream || null;
@@ -1086,7 +1092,9 @@
       if (!call) return;
       const settings = api.getSettings();
       if (!call.localAudioTrack) {
+        const activeCall = call;
         const microphone = await tryCaptureMicrophone(settings);
+        if (call !== activeCall) { microphone.stream?.getTracks().forEach(track => track.stop()); return; }
         if (!microphone.stream) {
           call.micUnavailableReason = microphone.error || "No microphone is available. You can still listen to the call.";
           notify();
@@ -1108,7 +1116,9 @@
       if (!call) return;
       const currentTrack = call.localAudioTrack;
       const keepMuted = currentTrack ? !!call.manualMute : true;
+      const activeCall = call;
       const microphone = await tryCaptureMicrophone({ ...api.getSettings(), microphoneId: deviceId || "" });
+      if (call !== activeCall) { microphone.stream?.getTracks().forEach(track => track.stop()); return; }
       if (!microphone.stream) {
         call.micUnavailableReason = microphone.error || "The selected microphone is unavailable. You are still in the call, muted.";
         notify();
