@@ -153,9 +153,8 @@ const test = (name, fn) => tests.push({ name, fn });
 test('Turkish language reaches dialogs that branch on state.language', async () => {
   const app = harness({ storage: { 'ghostchat.language': 'tr', 'ghostchat.server': 'https://a.example' } });
   await app.flush(() => app.invokes.some(item => item.command === 'credential_get_pending_recovery'));
-  await app.flush();
   void app.$('#revokeOtherSessions').onclick({ currentTarget: app.$('#revokeOtherSessions') });
-  await app.flush();
+  await app.flush(() => app.$('#appDecisionConfirm').textContent !== '');
   assert.equal(app.$('#appDecisionConfirm').textContent, 'Oturumları kapat', 'Turkish users must see the Turkish confirm label');
 });
 
@@ -166,7 +165,7 @@ test('translate never returns Object.prototype members for user text', async () 
   });
   await app.flush(() => app.invokes.some(item => item.command === 'credential_get_pending_recovery'));
   await app.$('#exportAccount').onclick();
-  await app.flush();
+  await app.flush(() => app.$('#toast').textContent !== '');
   assert.equal(app.$('#toast').textContent, 'constructor', 'A message equal to a prototype key must render unchanged');
 });
 
@@ -195,10 +194,11 @@ test('changing the server never sends the previous server token to the new one',
   assert.ok(app.timers.some(timer => !timer.done), 'reconnect is scheduled');
   app.$('#serverAddressInput').value = B;
   await app.$('#changeServerButton').onclick({ currentTarget: app.$('#changeServerButton') });
-  await app.flush();
+  await app.flush(() => app.store.get('ghostchat.server') === B && app.invokes.some(item => item.command === 'credential_get_pending_recovery' && item.args.serverKey === keyB));
   app.runTimers();
-  await app.flush();
-  for (const socket of app.sockets.filter(item => item.url.startsWith('wss://b.example'))) {
+  const bSockets = app.sockets.filter(item => item.url.startsWith('wss://b.example'));
+  assert.ok(bSockets.length > 0, 'the stale reconnect timer opened a socket to server B, so the race was exercised');
+  for (const socket of bSockets) {
     socket.emit('open');
     assert.ok(!socket.sent.some(data => data.includes('token-A')), 'server B must never receive server A token over WebSocket');
   }
@@ -230,6 +230,7 @@ async function openChatAndFailSend({ encrypted = false } = {}) {
   // The incoming-call path is the simplest real entry point into openConversation().
   app.voiceOptions.voice.onIncoming({ conversationId: 'c1' });
   await app.flush(() => app.fetches.some(item => item.url.includes('/conversations/c1/messages?')));
+  // loadMessages() has no observable end; let its remaining awaits settle.
   await app.flush();
   offline = true;
   app.$('#messageInput').value = 'hello there';
@@ -269,6 +270,7 @@ test('an available update still blocks startup and installs', async () => {
     hooks: { check_for_update: () => ({ configured: true, available: true, version: '9.9.9' }) },
   });
   await app.flush(() => app.invokes.some(item => item.command === 'install_update'));
+  // Asserting that boot does NOT continue needs a settle period, not a condition.
   await app.flush();
   assert.equal(app.invokes.find(item => item.command === 'install_update').args.expectedVersion, '9.9.9');
   assert.ok(!app.invokes.some(item => item.command === 'credential_get_pending_recovery'), 'boot stops while the mandatory update installs');
