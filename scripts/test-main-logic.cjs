@@ -126,12 +126,15 @@ function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {} } = 
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(source, sandbox, { filename: 'main.js' });
+  // crypto.subtle.digest settles on the libuv thread pool, so waits are
+  // bounded by wall time rather than a fixed number of event-loop turns.
   const flush = async (until = null, rounds = 400) => {
-    for (let i = 0; i < rounds; i += 1) {
-      if (until && until()) return;
-      await new Promise(resolve => setImmediate(resolve));
+    if (!until) { for (let i = 0; i < rounds; i += 1) await new Promise(resolve => setImmediate(resolve)); return; }
+    const deadline = Date.now() + 5000;
+    while (!until()) {
+      if (Date.now() > deadline) throw new Error('condition was not reached');
+      await new Promise(resolve => setTimeout(resolve, 2));
     }
-    if (until) throw new Error('condition was not reached');
   };
   const runTimers = () => { for (const timer of timers.splice(0)) if (!timer.done) { timer.done = true; timer.fn(); } };
   return { $, store, sockets, fetches, invokes, timers, flush, runTimers };
