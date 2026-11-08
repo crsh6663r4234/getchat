@@ -176,7 +176,9 @@ async fn prepare_crypto_storage(db: &SqlitePool) -> Result<(), String> {
         .map_err(|_| "GhostChat could not open its local encryption database.".to_string())?;
     SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *connection)
         .run_migrations()
-        .map_err(|_| "GhostChat could not initialize its encrypted MLS storage.".to_string())
+        .map_err(|_| "GhostChat could not initialize its encrypted MLS storage.".to_string())?;
+    drop(connection);
+    migrate_hash_reference_keys(db).await
 }
 
 fn normalized_uuid(value: &str, label: &str) -> Result<String, String> {
@@ -332,10 +334,169 @@ fn is_mls_storage_lookup_key(type_name: &str) -> bool {
     matches!(
         type_name,
         "openmls_basic_credential::StorageId"
-            | "openmls::ciphersuite::hash_ref::HashReference"
             | "openmls::group::GroupId"
             | "openmls::group::GroupEpoch"
     )
+}
+
+fn is_decodable_mls_storage_lookup_key(type_name: &str) -> bool {
+    // HashReference is both a lookup key (KeyPackage refs, proposal deletion)
+    // and a value the storage crate decodes again (openmls_proposal.proposal_ref
+    // is read back when a group with queued proposals is loaded). A one-way
+    // digest made every such group unloadable, so it uses deterministic AEAD.
+    type_name == "openmls::ciphersuite::hash_ref::HashReference"
+}
+
+const LOOKUP_KEY_V1_PREFIX: &[u8; 4] = b"GCK\x01";
+const DECODABLE_LOOKUP_KEY_PREFIX: &[u8; 4] = b"GCK\x02";
+
+fn lookup_key_v1(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, CryptoCodecError> {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key)
+        .map_err(|_| CryptoCodecError("Local storage key is invalid".into()))?;
+    mac.update(b"GhostChat MLS storage lookup key v1\0");
+    mac.update(plaintext);
+    let digest = mac.finalize().into_bytes();
+    let mut encoded = Vec::with_capacity(LOOKUP_KEY_V1_PREFIX.len() + digest.len());
+    encoded.extend_from_slice(LOOKUP_KEY_V1_PREFIX);
+    encoded.extend_from_slice(&digest);
+    Ok(encoded)
+}
+
+fn deterministic_subkey(
+    key: &[u8; 32],
+    label: &[u8],
+) -> Result<Zeroizing<[u8; 32]>, CryptoCodecError> {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key)
+        .map_err(|_| CryptoCodecError("Local storage key is invalid".into()))?;
+    mac.update(label);
+    let mut subkey = Zeroizing::new([0u8; 32]);
+    subkey.copy_from_slice(&mac.finalize().into_bytes());
+    Ok(subkey)
+}
+
+/// Deterministic, authenticated encryption (synthetic nonce) for lookup keys
+/// that must also be decodable. Equal plaintexts give equal bytes, which only
+/// reveals equality of these public references.
+fn encrypt_decodable_lookup_key(
+    key: &[u8; 32],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, CryptoCodecError> {
+    let nonce_key = deterministic_subkey(key, b"GhostChat MLS storage lookup nonce v2\0")?;
+    let encryption_key = deterministic_subkey(key, b"GhostChat MLS storage lookup key v2\0")?;
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&*nonce_key)
+        .map_err(|_| CryptoCodecError("Local storage key is invalid".into()))?;
+    mac.update(plaintext);
+    let nonce_bytes = mac.finalize().into_bytes();
+    let nonce = Nonce::from_slice(&nonce_bytes[..12]);
+    let ciphertext = Aes256Gcm::new_from_slice(&*encryption_key)
+        .map_err(|_| CryptoCodecError("Local storage key is invalid".into()))?
+        .encrypt(
+            nonce,
+            Payload {
+                msg: plaintext,
+                aad: DECODABLE_LOOKUP_KEY_PREFIX,
+            },
+        )
+        .map_err(|_| CryptoCodecError("Could not encrypt local MLS data".into()))?;
+    let mut encoded = Vec::with_capacity(DECODABLE_LOOKUP_KEY_PREFIX.len() + 12 + ciphertext.len());
+    encoded.extend_from_slice(DECODABLE_LOOKUP_KEY_PREFIX);
+    encoded.extend_from_slice(nonce);
+    encoded.extend_from_slice(&ciphertext);
+    Ok(encoded)
+}
+
+fn decrypt_decodable_lookup_key(
+    key: &[u8; 32],
+    slice: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, CryptoCodecError> {
+    let prefix = DECODABLE_LOOKUP_KEY_PREFIX.len();
+    if slice.len() < prefix + 12 + 16 {
+        return Err(CryptoCodecError(
+            "Encrypted MLS data has an invalid format".into(),
+        ));
+    }
+    let encryption_key = deterministic_subkey(key, b"GhostChat MLS storage lookup key v2\0")?;
+    Aes256Gcm::new_from_slice(&*encryption_key)
+        .map_err(|_| CryptoCodecError("Local storage key is invalid".into()))?
+        .decrypt(
+            Nonce::from_slice(&slice[prefix..prefix + 12]),
+            Payload {
+                msg: &slice[prefix + 12..],
+                aad: DECODABLE_LOOKUP_KEY_PREFIX,
+            },
+        )
+        .map(Zeroizing::new)
+        .map_err(|_| CryptoCodecError("Could not decrypt local MLS data".into()))
+}
+
+/// Older builds stored HashReference values as one-way `GCK\x01` digests.
+/// Rewrite KeyPackage and queued-proposal rows to the decodable encoding,
+/// recomputing each reference from its decrypted entity. A row whose
+/// recomputed digest does not match its stored key is left untouched.
+async fn migrate_hash_reference_keys(db: &SqlitePool) -> Result<(), String> {
+    let error = || "GhostChat could not upgrade its encrypted MLS storage.".to_string();
+    let key = STORAGE_KEY.get().ok_or_else(error)?;
+    let crypto = RustCrypto::default();
+    let mut transaction = db.begin().await.map_err(|_| error())?;
+    let key_packages = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
+        "SELECT key_package_ref,key_package FROM openmls_key_package WHERE substr(key_package_ref,1,4)=?",
+    )
+    .bind(LOOKUP_KEY_V1_PREFIX.as_slice())
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|_| error())?;
+    for (old_ref, bundle) in key_packages {
+        let Ok(bundle) =
+            EncryptedJsonCodec::from_slice::<openmls::prelude::KeyPackageBundle>(&bundle)
+        else {
+            continue;
+        };
+        let Ok(hash_ref) = bundle.key_package().hash_ref(&crypto) else {
+            continue;
+        };
+        let plaintext = Zeroizing::new(serde_json::to_vec(&hash_ref).map_err(|_| error())?);
+        if lookup_key_v1(key, &plaintext).map_err(|_| error())? != old_ref {
+            continue;
+        }
+        let new_ref = encrypt_decodable_lookup_key(key, &plaintext).map_err(|_| error())?;
+        sqlx::query("UPDATE openmls_key_package SET key_package_ref=? WHERE key_package_ref=?")
+            .bind(new_ref)
+            .bind(old_ref)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| error())?;
+    }
+    let proposals = sqlx::query_as::<_, (Vec<u8>, Vec<u8>, Vec<u8>)>(
+        "SELECT group_id,proposal_ref,proposal FROM openmls_proposal WHERE substr(proposal_ref,1,4)=?",
+    )
+    .bind(LOOKUP_KEY_V1_PREFIX.as_slice())
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|_| error())?;
+    for (group_id, old_ref, proposal) in proposals {
+        let Ok(proposal) =
+            EncryptedJsonCodec::from_slice::<openmls::prelude::QueuedProposal>(&proposal)
+        else {
+            continue;
+        };
+        let plaintext = Zeroizing::new(
+            serde_json::to_vec(proposal.proposal_reference_ref()).map_err(|_| error())?,
+        );
+        if lookup_key_v1(key, &plaintext).map_err(|_| error())? != old_ref {
+            continue;
+        }
+        let new_ref = encrypt_decodable_lookup_key(key, &plaintext).map_err(|_| error())?;
+        sqlx::query(
+            "UPDATE openmls_proposal SET proposal_ref=? WHERE group_id=? AND proposal_ref=?",
+        )
+        .bind(new_ref)
+        .bind(group_id)
+        .bind(old_ref)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| error())?;
+    }
+    transaction.commit().await.map_err(|_| error())
 }
 
 fn key_fingerprint(key: &[u8]) -> String {
@@ -451,6 +612,7 @@ pub async fn prepare_device(db: &SqlitePool, user_id: &str) -> Result<DevicePrep
             .run_migrations()
             .map_err(|_| "GhostChat could not initialize its encrypted MLS storage.".to_string())?;
     }
+    migrate_hash_reference_keys(db).await?;
 
     let mut transaction = db
         .begin()
@@ -2405,16 +2567,14 @@ impl Codec for EncryptedJsonCodec {
         // references as a keyed, deterministic digest instead; they are never
         // decoded from the database and this does not expose their raw values.
         if is_mls_storage_lookup_key(std::any::type_name::<T>()) {
-            let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&**key)
-                .map_err(|_| CryptoCodecError("Local storage key is invalid".into()))?;
-            mac.update(b"GhostChat MLS storage lookup key v1\0");
-            mac.update(&plaintext);
+            let encoded = lookup_key_v1(key, &plaintext);
             plaintext.zeroize();
-            let digest = mac.finalize().into_bytes();
-            let mut encoded = Vec::with_capacity(4 + digest.len());
-            encoded.extend_from_slice(b"GCK\x01");
-            encoded.extend_from_slice(&digest);
-            return Ok(encoded);
+            return encoded;
+        }
+        if is_decodable_mls_storage_lookup_key(std::any::type_name::<T>()) {
+            let encoded = encrypt_decodable_lookup_key(key, &plaintext);
+            plaintext.zeroize();
+            return encoded;
         }
         let cipher = Aes256Gcm::new_from_slice(&**key)
             .map_err(|_| CryptoCodecError("Local storage key is invalid".into()))?;
@@ -2442,6 +2602,14 @@ impl Codec for EncryptedJsonCodec {
     }
 
     fn from_slice<T: DeserializeOwned>(slice: &[u8]) -> Result<T, Self::Error> {
+        if slice.starts_with(DECODABLE_LOOKUP_KEY_PREFIX) {
+            let key = STORAGE_KEY
+                .get()
+                .ok_or_else(|| CryptoCodecError("Local storage key is unavailable".into()))?;
+            let plaintext = decrypt_decodable_lookup_key(key, slice)?;
+            return serde_json::from_slice(&plaintext)
+                .map_err(|error| CryptoCodecError(format!("Could not decode MLS data: {error}")));
+        }
         if slice.len() < 3 + 12 + 16 || &slice[..3] != b"GC\x01" {
             return Err(CryptoCodecError(
                 "Encrypted MLS data has an invalid format".into(),
@@ -2773,5 +2941,185 @@ mod tests {
         )
         .await
         .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn group_self_leave_proposal_keeps_group_loadable_and_owner_can_commit() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-leave-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let carol_db = open_database(&root.join("carol.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let carol_device = prepare_device(&carol_db, &carol_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[
+                GroupPeerKeyPackage {
+                    user_id: bob_id.clone(),
+                    device_id: bob_device.device_id.clone(),
+                    payload: bob_device.payload.clone(),
+                },
+                GroupPeerKeyPackage {
+                    user_id: carol_id.clone(),
+                    device_id: carol_device.device_id.clone(),
+                    payload: carol_device.payload.clone(),
+                },
+            ],
+        )
+        .await
+        .expect("Alice should create the encrypted group");
+        for (db, id) in [(&bob_db, &bob_id), (&carol_db, &carol_id)] {
+            let joined = process_crypto_event(
+                db,
+                id,
+                &conversation_id,
+                &alice_id,
+                None,
+                1,
+                true,
+                &roster,
+                &start.welcome_payload,
+            )
+            .await
+            .expect("Each member should join from the group Welcome");
+            assert_eq!(joined.kind, "welcome");
+        }
+
+        let leave = prepare_group_leave_proposal(&bob_db, &bob_id, &conversation_id, &roster)
+            .await
+            .expect("Bob should create a self-leave proposal");
+        assert!(
+            has_direct_group(&bob_db, &bob_id, &conversation_id)
+                .await
+                .expect("Bob's group must stay loadable after queuing his own proposal"),
+            "Bob keeps the group until the owner commits"
+        );
+        let retried = prepare_group_leave_proposal(&bob_db, &bob_id, &conversation_id, &roster)
+            .await
+            .expect("A retried leave request should return the saved proposal");
+        assert_eq!(retried.operation_id, leave.operation_id);
+
+        let request = process_crypto_event(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &bob_id,
+            Some(&leave.operation_id),
+            2,
+            true,
+            &roster,
+            &leave.commit_payload,
+        )
+        .await
+        .expect("The owner should accept Bob's authenticated leave proposal");
+        assert_eq!(request.kind, "leave_request");
+        // The relay broadcasts the proposal, so every remaining member queues it.
+        let carol_request = process_crypto_event(
+            &carol_db,
+            &carol_id,
+            &conversation_id,
+            &bob_id,
+            Some(&leave.operation_id),
+            2,
+            true,
+            &roster,
+            &leave.commit_payload,
+        )
+        .await
+        .expect("Other members should queue Bob's leave proposal");
+        assert_eq!(carol_request.kind, "leave_request");
+        assert!(has_direct_group(&carol_db, &carol_id, &conversation_id)
+            .await
+            .expect("Carol's group must stay loadable with a queued proposal"));
+        let commit = prepare_group_leave_commit(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &leave.operation_id,
+            &bob_id,
+            &roster,
+        )
+        .await
+        .expect("The owner should load the queued proposal and commit it");
+        assert_eq!(commit.action, "leave");
+        finalize_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &commit.operation_id,
+        )
+        .await
+        .expect("The owner should merge the confirmed leave commit");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn legacy_digest_key_package_refs_are_migrated_and_still_join() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-migrate-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+
+        // Rewrite Bob's KeyPackage row to the one-way digest older builds wrote.
+        let current_ref =
+            sqlx::query_scalar::<_, Vec<u8>>("SELECT key_package_ref FROM openmls_key_package")
+                .fetch_one(&bob_db)
+                .await
+                .unwrap();
+        assert!(current_ref.starts_with(DECODABLE_LOOKUP_KEY_PREFIX));
+        let hash_ref: openmls::prelude::KeyPackageRef =
+            EncryptedJsonCodec::from_slice(&current_ref).unwrap();
+        let legacy_ref = lookup_key_v1(
+            STORAGE_KEY.get().unwrap(),
+            &serde_json::to_vec(&hash_ref).unwrap(),
+        )
+        .unwrap();
+        sqlx::query("UPDATE openmls_key_package SET key_package_ref=?")
+            .bind(&legacy_ref)
+            .execute(&bob_db)
+            .await
+            .unwrap();
+
+        let welcome = create_direct_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &bob_id,
+            &bob_device.device_id,
+            &bob_device.payload,
+        )
+        .await
+        .unwrap();
+        let joined = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            1,
+            false,
+            &[alice_id.clone(), bob_id.clone()],
+            &welcome.welcome_payload,
+        )
+        .await
+        .expect("A KeyPackage saved by an older build should still accept its Welcome");
+        assert_eq!(joined.kind, "welcome");
     }
 }
