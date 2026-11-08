@@ -978,7 +978,11 @@ async fn list_presence(
         .map(|mut row| {
             // A remembered account session is not an online application. Friends
             // see offline until at least one authenticated WebSocket is alive.
-            if row.user_id != user.id && connected.get(&row.user_id).copied().unwrap_or(0) == 0 {
+            // Invisible must look exactly like offline to everyone else.
+            if row.user_id != user.id
+                && (connected.get(&row.user_id).copied().unwrap_or(0) == 0
+                    || row.mode == "invisible")
+            {
                 row.mode = "offline".into();
             }
             row
@@ -1033,11 +1037,21 @@ async fn broadcast_current_presence(state: &AppState, user_id: &str) {
     } else {
         "offline".into()
     };
-    let mut recipients = sqlx::query_scalar::<_, String>("SELECT CASE WHEN user_low=? THEN user_high ELSE user_low END FROM friendships WHERE user_low=? OR user_high=?")
+    let friends = sqlx::query_scalar::<_, String>("SELECT CASE WHEN user_low=? THEN user_high ELSE user_low END FROM friendships WHERE user_low=? OR user_high=?")
         .bind(user_id).bind(user_id).bind(user_id).fetch_all(&state.db).await.unwrap_or_default();
-    recipients.push(user_id.to_owned());
+    // Invisible must look exactly like offline to friends; only the account
+    // itself learns its saved mode.
+    let friend_mode = if mode == "invisible" {
+        "offline".to_owned()
+    } else {
+        mode.clone()
+    };
     let _ = state.events.send(ServerEvent {
-        recipients,
+        recipients: friends,
+        event: serde_json::json!({"type":"presence_updated","user_id":user_id,"mode":friend_mode}),
+    });
+    let _ = state.events.send(ServerEvent {
+        recipients: vec![user_id.to_owned()],
         event: serde_json::json!({"type":"presence_updated","user_id":user_id,"mode":mode}),
     });
 }
@@ -6687,5 +6701,72 @@ mod tests {
             .unwrap()
             .status();
         assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn presence_hides_invisible_mode_from_friends() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        app.befriend(&alice, &bob).await;
+        // Alice has the app open (an authenticated WebSocket).
+        register_online_connection(&app.state, &alice.id);
+        let mut events = app.state.events.subscribe();
+        let status = app
+            .request(Method::PUT, "/v1/me/presence", &alice)
+            .json(&serde_json::json!({"mode": "invisible"}))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::OK);
+        let mut seen_by_bob = None;
+        let mut seen_by_alice = None;
+        while let Ok(Ok(event)) =
+            tokio::time::timeout(Duration::from_millis(500), events.recv()).await
+        {
+            if event.event["type"] != "presence_updated" {
+                continue;
+            }
+            if event.recipients.contains(&bob.id) {
+                seen_by_bob = Some(event.event["mode"].clone());
+            }
+            if event.recipients.contains(&alice.id) {
+                seen_by_alice = Some(event.event["mode"].clone());
+            }
+        }
+        assert_eq!(seen_by_bob, Some(serde_json::json!("offline")));
+        assert_eq!(seen_by_alice, Some(serde_json::json!("invisible")));
+        let rows: serde_json::Value = app
+            .request(Method::GET, "/v1/me/presence", &bob)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let alice_row = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["user_id"] == alice.id.as_str())
+            .unwrap();
+        assert_eq!(alice_row["mode"], "offline");
+        let rows: serde_json::Value = app
+            .request(Method::GET, "/v1/me/presence", &alice)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let own_row = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["user_id"] == alice.id.as_str())
+            .unwrap();
+        assert_eq!(own_row["mode"], "invisible");
     }
 }
