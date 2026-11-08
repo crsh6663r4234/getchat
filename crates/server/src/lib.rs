@@ -5730,6 +5730,9 @@ async fn edit_message(
     }
     let msg = sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,u.avatar_data AS sender_avatar,m.client_message_id,m.content,m.created_at,m.edited_at,m.pinned_at,m.reply_to_id,(SELECT r.content FROM messages r WHERE r.id=m.reply_to_id) AS reply_to_content,(SELECT u.display_name FROM messages r JOIN users u ON u.id=r.sender_id WHERE r.id=m.reply_to_id) AS reply_to_sender FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.id=?")
         .bind(&id).fetch_optional(&state.db).await.map_err(|_| ApiError::internal())?.ok_or_else(ApiError::not_found)?;
+    if !is_member(&state.db, &msg.conversation_id, &user.id).await? {
+        return Err(ApiError::not_found());
+    }
     let crypto_locked = sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM conversation_crypto_locks WHERE conversation_id=?)",
     )
@@ -6589,5 +6592,52 @@ mod tests {
             .unwrap();
         assert_eq!(download.status(), StatusCode::OK);
         assert_eq!(download.bytes().await.unwrap().as_ref(), b"bob's file");
+    }
+
+    #[tokio::test]
+    async fn message_edit_rejects_removed_member() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let carol_message = app.send_text(&carol, &group, "original").await;
+        let status = app
+            .request(
+                Method::DELETE,
+                &format!("/v1/conversations/{group}/members/{}", carol.id),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let status = app
+            .request(
+                Method::PATCH,
+                &format!("/v1/messages/{carol_message}"),
+                &carol,
+            )
+            .json(&serde_json::json!({"content": "rewritten after removal"}))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let messages: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/messages"),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(messages[0]["content"], "original");
     }
 }
