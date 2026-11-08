@@ -800,8 +800,8 @@
     async function accept() {
       if (!incoming || call || incoming.accepting) return;
       const request = incoming;
-      request.accepting = true;
       const settings = api.getSettings();
+      request.accepting = true;
       let configuration;
       try { configuration = await loadIceConfiguration(settings); }
       catch (error) { request.accepting = false; throw error; }

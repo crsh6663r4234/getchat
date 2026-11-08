@@ -179,6 +179,14 @@ async function run() {
   assert(!recovering.signals.some(signal => signal.kind === 'hangup'));
   recovering.client.hangup();
 
+  const flaky = directFixture(plain);
+  await flaky.client.handleSignal(offerSignal);
+  flaky.failSettingsOnce();
+  await assert.rejects(flaky.client.accept(), /settings unavailable/);
+  await flaky.client.accept();
+  assert.equal(flaky.pcs.length, 1, 'accept works again after a settings failure');
+  flaky.client.hangup();
+
   const closedMidSignal = directFixture(plain);
   await closedMidSignal.client.start({ id: 'conversation', peer_id: 'b' });
   closedMidSignal.pcs[0].setRemoteDescription = async () => { closedMidSignal.client.hangup(); throw new Error('peer connection closed'); };
