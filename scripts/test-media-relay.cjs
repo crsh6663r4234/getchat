@@ -339,6 +339,29 @@ async function run() {
     await group.leave();
   }
 
+  // The ringtone stops when the incoming call is accepted, declined or hung up,
+  // including while its AudioContext is still resuming.
+  {
+    let releaseResume; let started = 0; const intervals = new Set(); let nextId = 1;
+    class FakeAudio {
+      state = 'suspended'; currentTime = 0; destination = {};
+      resume() { return new Promise(resolve => { releaseResume = () => { this.state = 'running'; resolve(); }; }); }
+      createOscillator() { return { frequency: {}, connect() {}, disconnect() {}, start() { started++; }, stop() {} }; }
+      createGain() { const param = { setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} }; return { gain: param, connect() {}, disconnect() {} }; }
+    }
+    const window = { AudioContext: FakeAudio, addEventListener() {} };
+    vm.runInNewContext(fs.readFileSync(path.join(ui, 'call-ringtone.js'), 'utf8'), {
+      window, console, document: { addEventListener() {} },
+      setInterval: () => { const id = nextId++; intervals.add(id); return id; }, clearInterval: id => intervals.delete(id),
+    });
+    window.GhostChatRingtone.setIncoming(true);
+    assert.equal(intervals.size, 1);
+    window.GhostChatRingtone.setIncoming(false);
+    releaseResume(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(started, 0, 'no ring plays after the call stopped ringing during resume');
+    assert.equal(intervals.size, 0, 'the ring repeat timer is cleared');
+  }
+
   // Exercise the actual checked-in SDK merge used for initial join and resumed
   // signaling responses, not only a mock's acceptance of an option object.
   const SDK = require(path.join(ui, 'vendor/livekit-client.umd.js'));
