@@ -4,8 +4,8 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ui = path.resolve(__dirname, '../crates/desktop/ui');
 
-function directFixture(config, { failShare = false, relayOnly = false, relayResponds = true } = {}) {
-  const pcs = []; const probes = []; const signals = []; let micRequests = 0; let screenRequests = 0; let shareLeaves = 0;
+function directFixture(config, { failShare = false, relayOnly = false, relayResponds = true, deferConfig = false } = {}) {
+  const pcs = []; const timers = []; const errors = []; let releaseConfig; const configGate = new Promise(resolve => { releaseConfig = resolve; }); const probes = []; const signals = []; let micRequests = 0; let screenRequests = 0; let shareLeaves = 0;
   class Peer {
     connectionState = 'new'; signalingState = 'stable'; transceivers = [];
     constructor(configuration) { this.configuration = configuration; pcs.push(this); }
@@ -21,6 +21,9 @@ function directFixture(config, { failShare = false, relayOnly = false, relayResp
       this.localDescription = value;
       if (this.probe) queueMicrotask(() => this.onicecandidate?.({ candidate: relayResponds ? { type: 'relay', candidate: 'candidate:1 1 udp 1 192.0.2.9 5009 typ relay' } : null }));
     }
+    async setRemoteDescription(value) { this.remoteDescription = value; }
+    async createAnswer() { return { type: 'answer', sdp: 'fixture' }; }
+    async addIceCandidate() {}
     async getStats() { return new Map(); }
     // The pre-call relay probe is the only peer that opens a data channel.
     createDataChannel() { pcs.splice(pcs.indexOf(this), 1); probes.push(this); this.probe = true; return {}; }
@@ -34,15 +37,16 @@ function directFixture(config, { failShare = false, relayOnly = false, relayResp
       getUserMedia: async () => { micRequests++; throw { name: 'NotFoundError' }; },
       getDisplayMedia: async () => { screenRequests++; throw new Error('Unexpected direct screen fallback'); },
     } },
-    setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
+    setTimeout: (fn, ms) => { timers.push({ fn, ms, cleared: false }); return timers.length; },
+    clearTimeout: id => { if (timers[id - 1]) timers[id - 1].cleared = true; }, setInterval: () => 1, clearInterval() {},
   };
   vm.runInNewContext(fs.readFileSync(path.join(ui, 'voice-client.js'), 'utf8'), context);
   const client = window.GhostChatVoice.create({
-    getSettings: () => ({ relayOnly }), getIceConfiguration: async () => config,
+    getSettings: () => ({ relayOnly }), getIceConfiguration: async () => { if (deferConfig) await configGate; return config; },
     getUserId: () => 'a', getShareToken: async () => ({}), sendSignal: signal => signals.push(signal),
-    onChange() {}, onError() {}, onIncoming() {},
+    onChange() {}, onError: message => errors.push(message), onIncoming() {},
   });
-  return { client, pcs, probes, signals, counts: () => ({ micRequests, screenRequests, shareLeaves }) };
+  return { client, pcs, probes, signals, timers, errors, releaseConfig, counts: () => ({ micRequests, screenRequests, shareLeaves }) };
 }
 
 function livekitFixture({ connectFails = false } = {}) {
@@ -128,6 +132,28 @@ async function run() {
   assert.equal(noTurn.probes.length, 0, 'Nothing to probe without TURN');
   assert.equal(noTurn.pcs[0].configuration.iceTransportPolicy, 'all');
   noTurn.client.hangup();
+
+  // Direct call lifecycle: accept racing a caller hangup, double accept, stuck connect.
+  const plain = { turn_available: false, ice_servers: [] };
+  const offerSignal = { conversation_id: 'conversation', from_user_id: 'b', kind: 'offer', payload: { type: 'offer', sdp: 'fixture' } };
+  const hungUp = directFixture(plain, { deferConfig: true });
+  await hungUp.client.handleSignal(offerSignal);
+  const pendingAccept = hungUp.client.accept();
+  await hungUp.client.handleSignal({ conversation_id: 'conversation', from_user_id: 'b', kind: 'hangup' });
+  hungUp.releaseConfig();
+  await pendingAccept;
+  assert.equal(hungUp.client.getState().status, 'idle', 'accept after caller hangup opens no call');
+  assert.equal(hungUp.pcs.length, 0, 'No peer connection is created for a cancelled call');
+  assert(!hungUp.signals.some(signal => signal.kind === 'answer'), 'No answer is sent for a cancelled call');
+
+  const twice = directFixture(plain, { deferConfig: true });
+  await twice.client.handleSignal(offerSignal);
+  const firstAccept = twice.client.accept(); const secondAccept = twice.client.accept();
+  twice.releaseConfig();
+  await Promise.all([firstAccept, secondAccept]);
+  assert.equal(twice.pcs.length, 1, 'Double accept creates one peer connection');
+  assert.equal(twice.signals.filter(signal => signal.kind === 'answer').length, 1, 'Double accept sends one answer');
+  twice.client.hangup();
 
   for (const connectFails of [false, true]) {
     const fixture = livekitFixture({ connectFails });
