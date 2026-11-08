@@ -3502,7 +3502,18 @@
     } catch (error) { toast(error.message, true); }
     finally { submit.disabled = false; }
   });
-  $("#composer").addEventListener("submit", async event => { event.preventDefault(); const input = $("#messageInput"); const content = input.value; if (!content.trim()) return; const reply = state.replyingTo; input.value = ""; input.style.height = "auto"; if (await sendMessage(content, crypto.randomUUID(), reply?.id || null) && state.replyingTo?.id === reply?.id) setReplyTarget(null); });
+  $("#composer").addEventListener("submit", async event => {
+    event.preventDefault(); const input = $("#messageInput"); const content = input.value; if (!content.trim()) return; const reply = state.replyingTo; input.value = ""; input.style.height = "auto";
+    const conversation = state.active; const clientId = crypto.randomUUID();
+    if (await sendMessage(content, clientId, reply?.id || null, conversation)) { if (state.replyingTo?.id === reply?.id) setReplyTarget(null); return; }
+    // Give a failed message back, unless the user moved on or typed again, or
+    // its ciphertext is already queued for automatic retry (restoring it would
+    // let the same message be sent twice).
+    if (!conversation || state.active?.id !== conversation.id || input.value) return;
+    let queued = false;
+    try { queued = JSON.parse(localStorage.getItem(encryptedMessagePendingKey(conversation.id)) || "null")?.clientMessageId === clientId; } catch {}
+    if (!queued) input.value = content;
+  });
   $("#cancelReply").onclick = () => setReplyTarget(null);
   $("#attachFileButton").onclick = () => {
     if (state.active && state.cryptoEnabled.has(state.active.id)) void uploadEncryptedAttachment();

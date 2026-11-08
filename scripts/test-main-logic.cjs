@@ -105,12 +105,14 @@ function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {} } = 
     const { status = 200, body = [] } = reply || {};
     return { ok: status >= 200 && status < 300, status, json: async () => body };
   }
-  const voiceStub = () => new Proxy({ getState: () => ({ status: 'idle', participants: [] }) }, {
+  const voiceOptions = {};
+  const voiceStub = name => options => { voiceOptions[name] = options; return stubClient(); };
+  const stubClient = () => new Proxy({ getState: () => ({ status: 'idle', participants: [] }) }, {
     get(target, prop) { return prop in target ? target[prop] : () => Promise.resolve(); },
   });
   const window = {
     __TAURI__: { core: { invoke }, event: { listen: () => Promise.resolve(() => {}) } },
-    GhostChatVoice: { create: voiceStub }, GhostChatGroupVoice: { create: voiceStub }, GhostChatWatchParty: { create: voiceStub },
+    GhostChatVoice: { create: voiceStub('voice') }, GhostChatGroupVoice: { create: voiceStub('group') }, GhostChatWatchParty: { create: voiceStub('watch') },
     GhostChatRingtone: { setIncoming: () => {} },
     addEventListener: () => {}, innerWidth: 1280, innerHeight: 800,
   };
@@ -137,7 +139,7 @@ function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {} } = 
     }
   };
   const runTimers = () => { for (const timer of timers.splice(0)) if (!timer.done) { timer.done = true; timer.fn(); } };
-  return { $, store, sockets, fetches, invokes, timers, flush, runTimers };
+  return { $, store, sockets, fetches, invokes, timers, flush, runTimers, voiceOptions };
 }
 
 async function serverKey(base) {
@@ -202,6 +204,51 @@ test('changing the server never sends the previous server token to the new one',
   }
   const leaked = app.fetches.filter(item => item.url.startsWith(B) && item.authorization === 'Bearer token-A');
   assert.deepEqual(leaked, [], 'server B must never receive server A token over HTTP');
+});
+
+async function openChatAndFailSend({ encrypted = false } = {}) {
+  let offline = false;
+  const conversation = { id: 'c1', kind: 'direct', peer_id: 'peer', display_name: 'Peer', username: 'peer' };
+  const base = 'https://a.example';
+  const hooks = encrypted ? {
+    crypto_has_direct_group: () => true,
+    crypto_direct_peer_fingerprint: () => 'fp-peer',
+    crypto_encrypt_text: () => ({ payload: 'ciphertext' }),
+  } : {};
+  const app = harness({
+    storage: { 'ghostchat.server': base, ...(encrypted ? { [`ghostchat.cryptoPeerTrusted.${base}.me.c1`]: 'fp-peer' } : {}) },
+    credentials: { [await serverKey(base)]: 'token-A' },
+    hooks,
+    fetchHandler: (url, options) => {
+      if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
+      if (url.endsWith('/v1/conversations')) return { body: [conversation] };
+      if (offline && options.method === 'POST' && url.includes('/messages')) throw new TypeError('Failed to fetch');
+      return { body: [] };
+    },
+  });
+  await app.flush(() => app.sockets.length > 0);
+  // The incoming-call path is the simplest real entry point into openConversation().
+  app.voiceOptions.voice.onIncoming({ conversationId: 'c1' });
+  await app.flush(() => app.fetches.some(item => item.url.includes('/conversations/c1/messages?')));
+  await app.flush();
+  offline = true;
+  app.$('#messageInput').value = 'hello there';
+  const [submit] = app.$('#composer').__listeners.get('submit');
+  await submit({ preventDefault() {} });
+  assert.ok(app.fetches.some(item => item.method === 'POST' && item.url.endsWith('/conversations/c1/messages')), 'the send was attempted');
+  return app;
+}
+
+test('a failed send puts the typed text back into the composer', async () => {
+  const app = await openChatAndFailSend();
+  assert.equal(app.$('#messageInput').value, 'hello there', 'a failed send must not discard the typed message');
+});
+
+test('a failed encrypted send that is queued for retry is not restored', async () => {
+  const app = await openChatAndFailSend({ encrypted: true });
+  const pending = JSON.parse(app.store.get('ghostchat.cryptoMessagePending.https://a.example.me.c1') || 'null');
+  assert.equal(pending?.payload, 'ciphertext', 'the ciphertext is queued for automatic retry');
+  assert.equal(app.$('#messageInput').value, '', 'restoring a queued message would let it be sent twice');
 });
 
 (async () => {
