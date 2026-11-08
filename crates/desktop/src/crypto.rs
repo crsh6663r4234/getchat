@@ -464,9 +464,19 @@ async fn migrate_hash_reference_keys(db: &SqlitePool) -> Result<(), String> {
             continue;
         }
         let new_ref = encrypt_decodable_lookup_key(key, &plaintext).map_err(|_| error())?;
-        sqlx::query("UPDATE openmls_key_package SET key_package_ref=? WHERE key_package_ref=?")
-            .bind(new_ref)
-            .bind(old_ref)
+        // If a decodable row for the same reference already exists, the
+        // update is ignored and the duplicate legacy row is dropped below, so
+        // a conflict cannot fail every later crypto call.
+        sqlx::query(
+            "UPDATE OR IGNORE openmls_key_package SET key_package_ref=? WHERE key_package_ref=?",
+        )
+        .bind(new_ref)
+        .bind(&old_ref)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| error())?;
+        sqlx::query("DELETE FROM openmls_key_package WHERE key_package_ref=?")
+            .bind(&old_ref)
             .execute(&mut *transaction)
             .await
             .map_err(|_| error())?;
@@ -492,14 +502,20 @@ async fn migrate_hash_reference_keys(db: &SqlitePool) -> Result<(), String> {
         }
         let new_ref = encrypt_decodable_lookup_key(key, &plaintext).map_err(|_| error())?;
         sqlx::query(
-            "UPDATE openmls_proposal SET proposal_ref=? WHERE group_id=? AND proposal_ref=?",
+            "UPDATE OR IGNORE openmls_proposal SET proposal_ref=? WHERE group_id=? AND proposal_ref=?",
         )
         .bind(new_ref)
-        .bind(group_id)
-        .bind(old_ref)
+        .bind(&group_id)
+        .bind(&old_ref)
         .execute(&mut *transaction)
         .await
         .map_err(|_| error())?;
+        sqlx::query("DELETE FROM openmls_proposal WHERE group_id=? AND proposal_ref=?")
+            .bind(&group_id)
+            .bind(&old_ref)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| error())?;
     }
     transaction.commit().await.map_err(|_| error())
 }
@@ -3340,6 +3356,58 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(migrated, current_ref);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn migration_drops_legacy_rows_that_duplicate_existing_refs() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-dupmig-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let (bob_db, bob_id, conversation_id) = group_with_queued_proposal(&root).await;
+        // Bob still holds an unused KeyPackage from prepare_device's second call.
+        prepare_device(&bob_db, &bob_id).await.unwrap();
+        let (package_ref, package) = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
+            "SELECT key_package_ref,key_package FROM openmls_key_package LIMIT 1",
+        )
+        .fetch_one(&bob_db)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO openmls_key_package(key_package_ref,key_package) VALUES(?,?)")
+            .bind(legacy_ref_for(&package_ref))
+            .bind(&package)
+            .execute(&bob_db)
+            .await
+            .unwrap();
+        let (group_id, proposal_ref, proposal) = sqlx::query_as::<_, (Vec<u8>, Vec<u8>, Vec<u8>)>(
+            "SELECT group_id,proposal_ref,proposal FROM openmls_proposal",
+        )
+        .fetch_one(&bob_db)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO openmls_proposal(group_id,proposal_ref,proposal) VALUES(?,?,?)")
+            .bind(&group_id)
+            .bind(legacy_ref_for(&proposal_ref))
+            .bind(&proposal)
+            .execute(&bob_db)
+            .await
+            .unwrap();
+
+        assert!(has_direct_group(&bob_db, &bob_id, &conversation_id)
+            .await
+            .expect("A legacy duplicate must not make every crypto call fail"),);
+        for (table, column) in [
+            ("openmls_key_package", "key_package_ref"),
+            ("openmls_proposal", "proposal_ref"),
+        ] {
+            let legacy = sqlx::query_scalar::<_, i64>(&format!(
+                "SELECT count(*) FROM {table} WHERE substr({column},1,4)=?"
+            ))
+            .bind(LOOKUP_KEY_V1_PREFIX.as_slice())
+            .fetch_one(&bob_db)
+            .await
+            .unwrap();
+            assert_eq!(legacy, 0, "{table} should keep no legacy duplicate");
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
