@@ -60,7 +60,9 @@ fn update_endpoint() -> Option<&'static str> {
     // staging, but always retain the production feed as a safe fallback.
     option_env!("GHOSTCHAT_UPDATE_ENDPOINT")
         .filter(|endpoint| !endpoint.trim().is_empty())
-        .or(Some("https://github.com/crsh6663r4234/getchat/releases/latest/download/latest.json"))
+        .or(Some(
+            "https://github.com/crsh6663r4234/getchat/releases/latest/download/latest.json",
+        ))
 }
 
 fn make_updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {

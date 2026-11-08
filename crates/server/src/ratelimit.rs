@@ -2,7 +2,10 @@
 //! bypass a limit. Redis durability/eviction policy remains an operator duty.
 use std::{fmt, sync::Arc, time::Duration};
 
-use redis::{aio::MultiplexedConnection, cluster::ClusterClient, cluster_async::ClusterConnection, FromRedisValue, Script, ScriptInvocation};
+use redis::{
+    aio::MultiplexedConnection, cluster::ClusterClient, cluster_async::ClusterConnection,
+    FromRedisValue, Script, ScriptInvocation,
+};
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Semaphore};
 
@@ -56,7 +59,15 @@ return 1
 "#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LimitError { Configuration, InvalidPolicy, Unavailable, TimedOut, Busy, Capacity, Replay }
+pub enum LimitError {
+    Configuration,
+    InvalidPolicy,
+    Unavailable,
+    TimedOut,
+    Busy,
+    Capacity,
+    Replay,
+}
 impl fmt::Display for LimitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -89,25 +100,45 @@ pub struct RateLimiter {
 }
 
 #[derive(Clone)]
-enum RedisClient { Single(redis::Client), Cluster(ClusterClient) }
+enum RedisClient {
+    Single(redis::Client),
+    Cluster(ClusterClient),
+}
 #[derive(Clone)]
-enum RedisConnection { Single(MultiplexedConnection), Cluster(ClusterConnection) }
+enum RedisConnection {
+    Single(MultiplexedConnection),
+    Cluster(ClusterConnection),
+}
 impl RedisConnection {
-    async fn invoke<T: FromRedisValue>(&mut self, invocation: &ScriptInvocation<'_>) -> Result<T, LimitError> {
+    async fn invoke<T: FromRedisValue>(
+        &mut self,
+        invocation: &ScriptInvocation<'_>,
+    ) -> Result<T, LimitError> {
         match self {
             Self::Single(connection) => invocation.invoke_async(connection).await,
             Self::Cluster(connection) => invocation.invoke_async(connection).await,
-        }.map_err(|_| LimitError::Unavailable)
+        }
+        .map_err(|_| LimitError::Unavailable)
     }
 }
 
 fn label(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 64 && value.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
 }
-fn digest(value: &str) -> String { format!("{:x}", Sha256::digest(value.as_bytes())) }
+fn digest(value: &str) -> String {
+    format!("{:x}", Sha256::digest(value.as_bytes()))
+}
 fn bounded_ms(value: Duration, maximum: u64) -> Result<u64, LimitError> {
     let ms = u64::try_from(value.as_millis()).map_err(|_| LimitError::InvalidPolicy)?;
-    if ms == 0 || ms > maximum { Err(LimitError::InvalidPolicy) } else { Ok(ms) }
+    if ms == 0 || ms > maximum {
+        Err(LimitError::InvalidPolicy)
+    } else {
+        Ok(ms)
+    }
 }
 
 impl RateLimiter {
@@ -125,14 +156,21 @@ impl RateLimiter {
             Ok(_) | Err(std::env::VarError::NotPresent) => return Ok(None),
             Err(_) => return Err(LimitError::Configuration),
         };
-        let namespace = std::env::var("GHOSTCHAT_REDIS_NAMESPACE").unwrap_or_else(|_| "ghostchat-v1".into());
-        let timeout = std::env::var("GHOSTCHAT_REDIS_TIMEOUT_MS").unwrap_or_else(|_| "1500".into())
-            .parse::<u64>().map_err(|_| LimitError::Configuration)?;
+        let namespace =
+            std::env::var("GHOSTCHAT_REDIS_NAMESPACE").unwrap_or_else(|_| "ghostchat-v1".into());
+        let timeout = std::env::var("GHOSTCHAT_REDIS_TIMEOUT_MS")
+            .unwrap_or_else(|_| "1500".into())
+            .parse::<u64>()
+            .map_err(|_| LimitError::Configuration)?;
         if let Some(nodes) = cluster {
-            if !url.is_empty() { return Err(LimitError::Configuration); }
+            if !url.is_empty() {
+                return Err(LimitError::Configuration);
+            }
             let urls: Vec<_> = nodes.split(',').map(str::trim).collect();
             Self::new_cluster(&urls, &namespace, Duration::from_millis(timeout)).map(Some)
-        } else { Self::new(&url, &namespace, Duration::from_millis(timeout)).map(Some) }
+        } else {
+            Self::new(&url, &namespace, Duration::from_millis(timeout)).map(Some)
+        }
     }
 
     pub fn new(url: &str, namespace: &str, timeout: Duration) -> Result<Self, LimitError> {
@@ -142,75 +180,168 @@ impl RateLimiter {
         // TLS support is selected by Cargo features; unsupported redis schemes
         // fail configuration/connection rather than falling back to plaintext.
         let client = redis::Client::open(url).map_err(|_| LimitError::Configuration)?;
-        Ok(Self { client: RedisClient::Single(client), namespace: namespace.into(), timeout,
-            connection: Arc::new(Mutex::new(None)), permits: Arc::new(Semaphore::new(32)) })
+        Ok(Self {
+            client: RedisClient::Single(client),
+            namespace: namespace.into(),
+            timeout,
+            connection: Arc::new(Mutex::new(None)),
+            permits: Arc::new(Semaphore::new(32)),
+        })
     }
 
-    pub fn new_cluster(urls: &[&str], namespace: &str, timeout: Duration) -> Result<Self, LimitError> {
-        if !label(namespace) || !(50..=10_000).contains(&timeout.as_millis()) || urls.is_empty() || urls.len() > 16 || urls.iter().any(|url| url.is_empty() || url.len() > 2048) { return Err(LimitError::Configuration); }
+    pub fn new_cluster(
+        urls: &[&str],
+        namespace: &str,
+        timeout: Duration,
+    ) -> Result<Self, LimitError> {
+        if !label(namespace)
+            || !(50..=10_000).contains(&timeout.as_millis())
+            || urls.is_empty()
+            || urls.len() > 16
+            || urls.iter().any(|url| url.is_empty() || url.len() > 2048)
+        {
+            return Err(LimitError::Configuration);
+        }
         let client = ClusterClient::new(urls.to_vec()).map_err(|_| LimitError::Configuration)?;
-        Ok(Self { client: RedisClient::Cluster(client), namespace: namespace.into(), timeout,
-            connection: Arc::new(Mutex::new(None)), permits: Arc::new(Semaphore::new(32)) })
+        Ok(Self {
+            client: RedisClient::Cluster(client),
+            namespace: namespace.into(),
+            timeout,
+            connection: Arc::new(Mutex::new(None)),
+            permits: Arc::new(Semaphore::new(32)),
+        })
     }
 
     async fn connection(&self) -> Result<RedisConnection, LimitError> {
         let mut connection = self.connection.lock().await;
-        if let Some(value) = &*connection { return Ok(value.clone()); }
+        if let Some(value) = &*connection {
+            return Ok(value.clone());
+        }
         let value = match &self.client {
-            RedisClient::Single(client) => RedisConnection::Single(client.get_multiplexed_async_connection().await.map_err(|_| LimitError::Unavailable)?),
-            RedisClient::Cluster(client) => RedisConnection::Cluster(client.get_async_connection().await.map_err(|_| LimitError::Unavailable)?),
+            RedisClient::Single(client) => RedisConnection::Single(
+                client
+                    .get_multiplexed_async_connection()
+                    .await
+                    .map_err(|_| LimitError::Unavailable)?,
+            ),
+            RedisClient::Cluster(client) => RedisConnection::Cluster(
+                client
+                    .get_async_connection()
+                    .await
+                    .map_err(|_| LimitError::Unavailable)?,
+            ),
         };
-        *connection = Some(value.clone()); Ok(value)
+        *connection = Some(value.clone());
+        Ok(value)
     }
 
     fn keys(&self, scope: &str, subject: &str) -> Result<(String, String, String), LimitError> {
-        if !label(scope) || subject.is_empty() || subject.len() > 512 { return Err(LimitError::InvalidPolicy); }
+        if !label(scope) || subject.is_empty() || subject.len() > 512 {
+            return Err(LimitError::InvalidPolicy);
+        }
         let tag = digest(&format!("{}:{scope}", self.namespace));
         let subject = digest(subject);
-        Ok((format!("{}:{{{tag}}}:events:{subject}", self.namespace), format!("{}:{{{tag}}}:subjects", self.namespace), subject))
+        Ok((
+            format!("{}:{{{tag}}}:events:{subject}", self.namespace),
+            format!("{}:{{{tag}}}:subjects", self.namespace),
+            subject,
+        ))
     }
 
     /// Exact log over (now-window, now], counting accepted requests. Policy
     /// scope names and per-scope limit/window must be deployment constants.
-    pub async fn check(&self, scope: &str, subject: &str, limit: u32, window: Duration) -> Result<Decision, LimitError> {
-        if limit == 0 || limit > MAX_EVENTS { return Err(LimitError::InvalidPolicy); }
+    pub async fn check(
+        &self,
+        scope: &str,
+        subject: &str,
+        limit: u32,
+        window: Duration,
+    ) -> Result<Decision, LimitError> {
+        if limit == 0 || limit > MAX_EVENTS {
+            return Err(LimitError::InvalidPolicy);
+        }
         let window = bounded_ms(window, MAX_WINDOW_MS)?;
         let (key, registry, subject) = self.keys(scope, subject)?;
-        let _permit = self.permits.clone().try_acquire_owned().map_err(|_| LimitError::Busy)?;
+        let _permit = self
+            .permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| LimitError::Busy)?;
         let result = tokio::time::timeout(self.timeout, async {
             let mut connection = self.connection().await?;
             let script = Script::new(WINDOW_SCRIPT);
             let mut invocation = script.prepare_invoke();
-            invocation.key(key).key(registry).arg(window).arg(limit).arg(MAX_SUBJECTS)
-                .arg(subject).arg(uuid::Uuid::new_v4().to_string());
-            let (accepted, remaining, retry): (i64, i64, i64) = connection.invoke(&invocation).await?;
+            invocation
+                .key(key)
+                .key(registry)
+                .arg(window)
+                .arg(limit)
+                .arg(MAX_SUBJECTS)
+                .arg(subject)
+                .arg(uuid::Uuid::new_v4().to_string());
+            let (accepted, remaining, retry): (i64, i64, i64) =
+                connection.invoke(&invocation).await?;
             match accepted {
-                0 | 1 if remaining >= 0 && retry >= 0 => Ok(Decision { allowed: accepted == 1, remaining: remaining as u32, retry_after: Duration::from_millis(retry as u64) }),
+                0 | 1 if remaining >= 0 && retry >= 0 => Ok(Decision {
+                    allowed: accepted == 1,
+                    remaining: remaining as u32,
+                    retry_after: Duration::from_millis(retry as u64),
+                }),
                 2 => Err(LimitError::Capacity),
                 _ => Err(LimitError::Unavailable),
             }
-        }).await.map_err(|_| LimitError::TimedOut)?;
-        if matches!(result, Err(LimitError::Unavailable)) { self.connection.lock().await.take(); }
+        })
+        .await
+        .map_err(|_| LimitError::TimedOut)?;
+        if matches!(result, Err(LimitError::Unavailable)) {
+            self.connection.lock().await.take();
+        }
         result
     }
 
     /// Call ONLY after verifying a signature against a trusted device/session
     /// binding and applying a per-session admission limit. No enrollment here.
-    pub async fn claim_replay(&self, trusted_session: &str, request_id: &str, ttl: Duration) -> Result<(), LimitError> {
-        if trusted_session.is_empty() || trusted_session.len() > 1024 { return Err(LimitError::InvalidPolicy); }
-        let request_id = uuid::Uuid::parse_str(request_id).map_err(|_| LimitError::InvalidPolicy)?.to_string();
+    pub async fn claim_replay(
+        &self,
+        trusted_session: &str,
+        request_id: &str,
+        ttl: Duration,
+    ) -> Result<(), LimitError> {
+        if trusted_session.is_empty() || trusted_session.len() > 1024 {
+            return Err(LimitError::InvalidPolicy);
+        }
+        let request_id = uuid::Uuid::parse_str(request_id)
+            .map_err(|_| LimitError::InvalidPolicy)?
+            .to_string();
         let ttl = bounded_ms(ttl, 300_000)?;
         let key = format!("{}:replay:{{{}}}", self.namespace, digest(trusted_session));
-        let _permit = self.permits.clone().try_acquire_owned().map_err(|_| LimitError::Busy)?;
+        let _permit = self
+            .permits
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| LimitError::Busy)?;
         let result = tokio::time::timeout(self.timeout, async {
             let mut connection = self.connection().await?;
             let script = Script::new(REPLAY_SCRIPT);
             let mut invocation = script.prepare_invoke();
-            invocation.key(key).arg(ttl).arg(MAX_EVENTS).arg(&request_id);
+            invocation
+                .key(key)
+                .arg(ttl)
+                .arg(MAX_EVENTS)
+                .arg(&request_id);
             let value: i64 = connection.invoke(&invocation).await?;
-            match value { 1 => Ok(()), 0 => Err(LimitError::Replay), 2 => Err(LimitError::Capacity), _ => Err(LimitError::Unavailable) }
-        }).await.map_err(|_| LimitError::TimedOut)?;
-        if matches!(result, Err(LimitError::Unavailable)) { self.connection.lock().await.take(); }
+            match value {
+                1 => Ok(()),
+                0 => Err(LimitError::Replay),
+                2 => Err(LimitError::Capacity),
+                _ => Err(LimitError::Unavailable),
+            }
+        })
+        .await
+        .map_err(|_| LimitError::TimedOut)?;
+        if matches!(result, Err(LimitError::Unavailable)) {
+            self.connection.lock().await.take();
+        }
         result
     }
 }
@@ -220,10 +351,15 @@ mod tests {
     use super::*;
     #[test]
     fn bounded_keys_share_a_cluster_slot_without_exposing_subject() {
-        let limiter = RateLimiter::new("redis://127.0.0.1/", "test", Duration::from_secs(1)).unwrap();
+        let limiter =
+            RateLimiter::new("redis://127.0.0.1/", "test", Duration::from_secs(1)).unwrap();
         let (a, b, subject) = limiter.keys("send", "private-user-id").unwrap();
-        assert_eq!(a.split('{').nth(1).unwrap().split('}').next(), b.split('{').nth(1).unwrap().split('}').next());
-        assert!(!a.contains("private-user-id")); assert_eq!(subject.len(), 64);
+        assert_eq!(
+            a.split('{').nth(1).unwrap().split('}').next(),
+            b.split('{').nth(1).unwrap().split('}').next()
+        );
+        assert!(!a.contains("private-user-id"));
+        assert_eq!(subject.len(), 64);
         assert!(limiter.keys("attacker:{slot}", "x").is_err());
         assert!(limiter.keys("send", &"x".repeat(513)).is_err());
         assert!(bounded_ms(Duration::ZERO, MAX_WINDOW_MS).is_err());
@@ -232,9 +368,18 @@ mod tests {
     async fn unavailable_redis_never_grants_permission() {
         // Reserve then release a local port; no Redis service is started.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port(); drop(listener);
-        let limiter = RateLimiter::new(&format!("redis://127.0.0.1:{port}/"), "test", Duration::from_millis(100)).unwrap();
-        assert!(limiter.check("send", "user", 2, Duration::from_secs(1)).await.is_err());
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let limiter = RateLimiter::new(
+            &format!("redis://127.0.0.1:{port}/"),
+            "test",
+            Duration::from_millis(100),
+        )
+        .unwrap();
+        assert!(limiter
+            .check("send", "user", 2, Duration::from_secs(1))
+            .await
+            .is_err());
     }
     /// Real Redis required. Uses a unique namespace and short-lived keys only.
     #[tokio::test]
@@ -245,15 +390,49 @@ mod tests {
         let a = RateLimiter::new(&url, &ns, Duration::from_secs(3)).unwrap();
         let b = RateLimiter::new(&url, &ns, Duration::from_secs(3)).unwrap();
         let mut tasks = Vec::new();
-        for index in 0..20 { let l = if index % 2 == 0 { a.clone() } else { b.clone() }; tasks.push(tokio::spawn(async move { l.check("send", "one-user", 5, Duration::from_secs(10)).await.unwrap().allowed })); }
-        let mut allowed = 0; for task in tasks { if task.await.unwrap() { allowed += 1; } }
+        for index in 0..20 {
+            let l = if index % 2 == 0 { a.clone() } else { b.clone() };
+            tasks.push(tokio::spawn(async move {
+                l.check("send", "one-user", 5, Duration::from_secs(10))
+                    .await
+                    .unwrap()
+                    .allowed
+            }));
+        }
+        let mut allowed = 0;
+        for task in tasks {
+            if task.await.unwrap() {
+                allowed += 1;
+            }
+        }
         assert_eq!(allowed, 5);
-        assert!(a.check("expiry", "one-user", 1, Duration::from_millis(100)).await.unwrap().allowed);
-        assert!(!b.check("expiry", "one-user", 1, Duration::from_millis(100)).await.unwrap().allowed);
+        assert!(
+            a.check("expiry", "one-user", 1, Duration::from_millis(100))
+                .await
+                .unwrap()
+                .allowed
+        );
+        assert!(
+            !b.check("expiry", "one-user", 1, Duration::from_millis(100))
+                .await
+                .unwrap()
+                .allowed
+        );
         tokio::time::sleep(Duration::from_millis(150)).await;
-        assert!(b.check("expiry", "one-user", 1, Duration::from_millis(100)).await.unwrap().allowed);
+        assert!(
+            b.check("expiry", "one-user", 1, Duration::from_millis(100))
+                .await
+                .unwrap()
+                .allowed
+        );
         let request = uuid::Uuid::new_v4().to_string();
-        a.claim_replay("trusted-session", &request, Duration::from_secs(1)).await.unwrap();
-        assert_eq!(b.claim_replay("trusted-session", &request, Duration::from_secs(1)).await, Err(LimitError::Replay));
+        a.claim_replay("trusted-session", &request, Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(
+            b.claim_replay("trusted-session", &request, Duration::from_secs(1))
+                .await,
+            Err(LimitError::Replay)
+        );
     }
 }
