@@ -311,9 +311,14 @@ fn existing_group_identities_unchanged(
     let Some(updated) = group_account_identities(group) else {
         return false;
     };
-    existing
-        .iter()
-        .all(|(user_id, identity)| updated.get(user_id) == Some(identity))
+    // A member that left or was removed is absent from the new roster; that is
+    // checked against the server roster separately. A member that is still
+    // present must keep exactly the credential and signature key it had.
+    existing.iter().all(|(user_id, identity)| {
+        updated
+            .get(user_id)
+            .is_none_or(|updated_identity| updated_identity == identity)
+    })
 }
 
 fn group_id_for_conversation(conversation_id: &str) -> GroupId {
@@ -3062,6 +3067,46 @@ mod tests {
         )
         .await
         .expect("The owner should merge the confirmed leave commit");
+
+        let remaining = vec![alice_id.clone(), carol_id.clone()];
+        let applied = process_crypto_event(
+            &carol_db,
+            &carol_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            3,
+            true,
+            &remaining,
+            &commit.commit_payload,
+        )
+        .await
+        .expect("Carol should apply the owner's leave commit");
+        assert_eq!(applied.kind, "commit");
+        assert_eq!(
+            group_fingerprint(&carol_db, &carol_id, &conversation_id)
+                .await
+                .unwrap(),
+            group_fingerprint(&alice_db, &alice_id, &conversation_id)
+                .await
+                .unwrap(),
+            "Remaining members must agree on the new group roster"
+        );
+        // A replay of the applied commit is a duplicate, not a state change.
+        let replayed = process_crypto_event(
+            &carol_db,
+            &carol_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            3,
+            true,
+            &remaining,
+            &commit.commit_payload,
+        )
+        .await
+        .unwrap();
+        assert_eq!(replayed.kind, "duplicate");
     }
 
     #[tokio::test(flavor = "multi_thread")]
