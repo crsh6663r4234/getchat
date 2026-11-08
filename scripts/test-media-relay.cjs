@@ -289,6 +289,28 @@ async function run() {
     await group.leave();
   }
 
+  // Switching the speaker must keep a peer the user muted for themself muted.
+  {
+    const fixture = livekitFixture();
+    vm.runInNewContext(fs.readFileSync(path.join(ui, 'group-voice-client.js'), 'utf8'), fixture.context);
+    const group = fixture.window.GhostChatGroupVoice.create({
+      getToken: async () => ({ url: 'wss://fixture', token: 'fixture' }), getMembers: async () => [],
+      getSettings: () => ({ volume: 100 }), getUserId: () => 'a', getDisplayName: () => 'Fixture', getAvatar: () => null,
+      isPeerMuted: () => false, onChange() {}, onAudioBlocked() {},
+    });
+    await group.join({ id: 'group' });
+    const element = { dataset: {}, muted: false, volume: 1, play: async () => {}, remove() {}, setSinkId: async () => {} };
+    const track = { sid: 'TR_peer', kind: 'audio', attach: () => element, detach() {} };
+    const participant = { identity: 'peer-device', metadata: JSON.stringify({ account_id: 'peer' }), isMicrophoneEnabled: true, trackPublications: new Map([['TR_peer', { track }]]) };
+    fixture.rooms[0].remoteParticipants.set('peer-device', participant);
+    fixture.rooms[0].events.get('TrackSubscribed')(track, {}, participant);
+    group.setPeerMuted('peer', true);
+    assert.equal(element.muted, true);
+    await group.setSpeakerDevice('next-speaker');
+    assert.equal(element.muted, true, 'a speaker change keeps a locally muted peer muted');
+    await group.leave();
+  }
+
   // Exercise the actual checked-in SDK merge used for initial join and resumed
   // signaling responses, not only a mock's acceptance of an option object.
   const SDK = require(path.join(ui, 'vendor/livekit-client.umd.js'));

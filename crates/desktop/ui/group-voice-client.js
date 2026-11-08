@@ -371,7 +371,9 @@
       if (room && deviceId) await room.switchActiveDevice("audiooutput", deviceId);
       for (const [sid, element] of audioElements) {
         const track = room?.remoteParticipants ? [...room.remoteParticipants.values()].flatMap(p => [...p.trackPublications.values()].map(x => x.track)).find(item => item?.sid === sid) : null;
-        if (track) applyAudioPreferences(element, identityAccountId(track.participant || {}));
+        // LiveKit tracks carry no participant reference; the element records
+        // the account so per-peer mutes survive a speaker change.
+        if (track) applyAudioPreferences(element, element.dataset.accountId || "");
         else if (typeof element.setSinkId === "function" && deviceId) await element.setSinkId(deviceId).catch(() => {});
       }
     }
