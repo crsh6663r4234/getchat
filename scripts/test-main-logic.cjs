@@ -443,6 +443,64 @@ test('the group owner removes a deleted account leaf and others tolerate it', as
   await app.flush(() => app.invokes.some(item => item.command === 'crypto_finalize_group_membership_update'));
 });
 
+async function deletedLeafHarness({ role = 'owner', deletedAt = '2000-01-01T00:00:00.000Z', removeStatus = 204, removeError = 'refused' } = {}) {
+  const base = 'https://a.example';
+  const group = { id: 'g1', kind: 'group', display_name: 'Group' };
+  let prepared = 0;
+  const app = harness({
+    storage: { 'ghostchat.server': base },
+    credentials: { [await serverKey(base)]: 'token-A' },
+    hooks: {
+      crypto_has_direct_group: () => true,
+      crypto_group_fingerprint: () => 'fp-group',
+      crypto_get_event_cursor: () => 0,
+      crypto_advance_event_cursor: args => args.sequence,
+      crypto_prepare_deleted_member_removal: () => {
+        prepared += 1;
+        return { operationId: `op-${prepared}`, action: 'remove_deleted', memberIds: ['carol'], expectedMemberIds: ['bob', 'me', 'olga'], commitPayload: 'commit', welcomePayload: '' };
+      },
+      crypto_finalize_group_membership_update: () => 'fp-after',
+    },
+    fetchHandler: (url, options) => {
+      if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
+      if (url.endsWith('/v1/conversations')) return { body: [group] };
+      if (url.endsWith('/conversations/g1/crypto-lock')) return { body: { locked: true, setupComplete: true, lockedBy: 'olga', deletedMemberIds: ['carol'], deletedMembers: [{ userId: 'carol', deletedAt, removalCommittedAt: null }] } };
+      if (url.endsWith('/conversations/g1/members')) {
+        return { body: role === 'owner'
+          ? [{ id: 'me', role: 'owner', joined_seq: 1 }, { id: 'bob', role: 'member', joined_seq: 2 }]
+          : [{ id: 'olga', role: 'owner', joined_seq: 1 }, { id: 'bob', role: 'admin', joined_seq: 2 }, { id: 'me', role: 'admin', joined_seq: 3 }] };
+      }
+      if (options.method === 'POST' && url.includes('/crypto-membership/remove/')) return { status: removeStatus, body: removeStatus === 204 ? {} : { error: removeError } };
+      return { body: [] };
+    },
+  });
+  await app.flush(() => app.sockets.length > 0);
+  app.voiceOptions.voice.onIncoming({ conversationId: 'g1' });
+  await app.flush(() => app.fetches.some(item => item.url.includes('/conversations/g1/crypto-events')));
+  await app.flush();
+  app.removals = () => app.fetches.filter(item => item.method === 'POST' && item.url.includes('/crypto-membership/remove/'));
+  app.discards = () => app.invokes.filter(item => item.command === 'crypto_discard_group_membership_update');
+  app.prepared = () => prepared;
+  return app;
+}
+
+test('a definitively refused staged removal is dropped once and not retried', async () => {
+  const app = await deletedLeafHarness({ removeStatus: 409, removeError: 'The encrypted group membership changed. Refresh the group and try again.' });
+  await app.flush(() => app.discards().length > 0);
+  assert.equal(app.removals().length, 1, 'the refused removal is not retried in a loop');
+  assert.equal(app.discards()[0].args.operationId, 'op-1');
+  assert.ok(!app.invokes.some(item => item.command === 'crypto_finalize_group_membership_update'));
+  assert.equal(app.$('#toast').classList.contains('error'), true, 'the refusal is reported once');
+});
+
+test('a removal another owner/admin already committed counts as done', async () => {
+  const app = await deletedLeafHarness({ removeStatus: 410, removeError: 'This deleted account was already removed from the encrypted group.' });
+  await app.flush(() => app.discards().length > 0);
+  assert.equal(app.removals().length, 1);
+  assert.equal(app.prepared(), 1, 'no further removal is staged; the accepted commit arrives on the relay');
+  assert.ok(!app.$('#toast').textContent.includes('refused'), 'no error is shown for an already removed leaf');
+});
+
 test('pending encrypted rows are decoded before a relay commit is applied', async () => {
   const base = 'https://a.example';
   const group = { id: 'g1', kind: 'group', display_name: 'Group' };

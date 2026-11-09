@@ -243,6 +243,7 @@
     "GhostChat is up to date.": "GhostChat güncel.",
     "Could not check for updates. Try again when you’re online.": "Güncellemeler kontrol edilemedi. Çevrimiçiyken tekrar dene.",
     "Could not read your saved session": "Kayıtlı oturumun okunamadı",
+    "The server refused this encrypted membership change, so it was discarded.": "Sunucu bu şifreli üyelik değişikliğini reddetti; değişiklik iptal edildi.",
     "Windows Credential Manager could not be read. Your session was not removed; try again.": "Windows Kimlik Bilgisi Yöneticisi okunamadı. Oturumun silinmedi; tekrar dene.",
     "The update could not be installed.": "Güncelleme yüklenemedi.",
     "New friend request": "Yeni arkadaşlık isteği", "{name} sent you a friend request.": "{name} sana arkadaşlık isteği gönderdi."
@@ -1769,6 +1770,14 @@
   // The group owner removes leaves of deleted accounts, one staged commit at
   // a time, through the ordinary membership outbox. Only the owner does it so
   // two admins never race conflicting commits for the same epoch.
+  const deletedLeafRefusals = new Map();
+  function scheduleDeletedLeafCheck(conversationId, delay) {
+    if (deletedLeafChecks.has(conversationId)) return;
+    deletedLeafChecks.set(conversationId, setTimeout(() => {
+      deletedLeafChecks.delete(conversationId);
+      if (state.user) void syncCryptoEvents(conversationId);
+    }, Math.max(1000, delay)));
+  }
   async function removeDeletedCryptoMembers(conversation) {
     const conversationId = conversation.id;
     const deletedMemberIds = await deletedCryptoMemberIds(conversationId);
@@ -1776,12 +1785,17 @@
     const members = await request(`/v1/conversations/${encodeURIComponent(conversationId)}/members`);
     if (members.find(member => member.id === state.user?.id)?.role !== "owner") return;
     const expectedMemberIds = members.map(member => member.id).sort();
+    // After a refusal (or a 410) the same removal is not staged again until
+    // the roster or the deleted list changes, so the error shows only once.
+    const attemptKey = `${expectedMemberIds.join(",")}|${deletedMemberIds.join(",")}`;
+    if (deletedLeafRefusals.get(conversationId) === attemptKey) return;
     for (let attempt = 0; attempt < 16; attempt++) {
       const update = await invoke("crypto_prepare_deleted_member_removal", {
         userId: state.user.id, conversationId, expectedMemberIds, deletedMemberIds,
       });
       if (!update) return;
-      await publishGroupMembershipUpdate(conversation, update);
+      const result = await publishGroupMembershipUpdate(conversation, update);
+      if (result === "already_removed" || result === "refused") { deletedLeafRefusals.set(conversationId, attemptKey); return; }
       if (update.action !== "remove_deleted") return;
     }
   }
@@ -2114,7 +2128,8 @@
     const inFlight = state.cryptoMembershipOperations.get(conversationId);
     if (inFlight) return inFlight;
     state.cryptoMembershipPending.add(conversationId);
-    const task = (async () => {
+    let accepted = false;
+    const task = (async () => { try {
       if (pending.action === "remove" || pending.action === "remove_deleted") {
         if (!Array.isArray(pending.memberIds) || pending.memberIds.length !== 1) throw new Error(translate("The saved encrypted removal is invalid."));
         await request(`/v1/conversations/${encodeURIComponent(conversationId)}/crypto-membership/remove/${encodeURIComponent(pending.memberIds[0])}`, {
@@ -2168,6 +2183,7 @@
       } else {
         throw new Error(translate("The saved encrypted membership action is not supported."));
       }
+      accepted = true;
       const fingerprint = await invoke("crypto_finalize_group_membership_update", {
         userId: state.user.id, conversationId, operationId: pending.operationId,
       });
@@ -2180,7 +2196,21 @@
       localStorage.setItem(cryptoObservedFingerprintKey(conversationId), fingerprint);
       updateCryptoStatus(conversation);
       return fingerprint;
-    })();
+    } catch (error) {
+      // A definitive refusal (a 4xx other than an expired session or a rate
+      // limit) never succeeds on retry: drop the staged commit once instead
+      // of retrying it forever. A deleted leaf already removed by another
+      // owner/admin (410) counts as done; its commit arrives on the relay.
+      const status = error?.status;
+      const definitive = !accepted && Number.isInteger(status) && status >= 400 && status < 500 && status !== 401 && status !== 429
+        && ["add", "remove", "remove_deleted", "leave"].includes(pending.action);
+      if (!definitive) throw error;
+      await invoke("crypto_discard_group_membership_update", { userId: state.user.id, conversationId, operationId: pending.operationId });
+      state.cryptoMembershipPending.delete(conversationId);
+      if (status === 410 && pending.action === "remove_deleted") return "already_removed";
+      toast(`${translate("The server refused this encrypted membership change, so it was discarded.")} ${translate(error.message) || ""}`.trim(), true);
+      return "refused";
+    } })();
     state.cryptoMembershipOperations.set(conversationId, task);
     try {
       return await task;
