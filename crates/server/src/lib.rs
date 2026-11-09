@@ -1750,8 +1750,11 @@ async fn delete_account(
     .map_err(|_| ApiError::internal())?;
     // Direct conversations are removed with the account (unchanged). In a
     // group only this membership is removed, like a leave: ownership passes
-    // to the oldest admin, else the oldest member (conversation_members rowid
-    // is join order). A group is deleted only once nobody is left in it.
+    // to the admin, else the member, with the lowest conversation_members
+    // rowid. Members added later get higher rowids, but the founding members
+    // are inserted sorted by user id, so among founders the choice is
+    // effectively arbitrary rather than join order. A group is deleted only
+    // once nobody is left in it.
     let mut deleted_conversations = Vec::new();
     let mut remaining_groups = Vec::new();
     for (conversation_id, kind, role) in memberships {
