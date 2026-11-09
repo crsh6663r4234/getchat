@@ -2047,7 +2047,20 @@
         state.cryptoMemberIds.set(conversation.id, memberIds);
         const canStart = !cryptoLock.locked && members.some(member => member.id === state.user.id && ["owner", "admin"].includes(member.role));
         const canResume = cryptoLock.locked && !cryptoLock.setupComplete && cryptoLock.lockedBy === state.user.id;
-        if (canStart || canResume) state.cryptoCanManage.add(conversation.id); else state.cryptoCanManage.delete(conversation.id);
+        // A setup left unfinished by a deleted account is taken over by the
+        // owner, or by the oldest admin when the group has no owner.
+        const successor = members.filter(member => ["owner", "admin"].includes(member.role))
+          .sort((left, right) => (left.role === "owner" ? 0 : 1) - (right.role === "owner" ? 0 : 1) || (Number(left.joined_seq) || 0) - (Number(right.joined_seq) || 0))[0];
+        const canTakeOver = cryptoLock.locked && !cryptoLock.setupComplete && cryptoLock.lockedByDeletedAccount === true && successor?.id === state.user.id;
+        if (canStart || canResume || canTakeOver) state.cryptoCanManage.add(conversation.id); else state.cryptoCanManage.delete(conversation.id);
+        // If this device already joined that setup's group from its Welcome,
+        // taking over only needs the lock and the completion.
+        if (canTakeOver && await invoke("crypto_has_direct_group", { userId: state.user.id, conversationId: conversation.id })) {
+          await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/crypto-lock`, { method: "POST", body: JSON.stringify({ member_ids: memberIds }) });
+          await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/crypto-lock/complete`, { method: "POST" });
+          state.cryptoSetupComplete.add(conversation.id);
+          state.cryptoCanManage.delete(conversation.id);
+        }
       } else {
         const cryptoLock = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/crypto-lock`);
         if (cryptoLock.locked) state.cryptoLocked.add(conversation.id); else state.cryptoLocked.delete(conversation.id);

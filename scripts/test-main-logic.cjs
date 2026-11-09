@@ -510,6 +510,48 @@ test('an admin removes a deleted leaf after the owner\'s grace period', async ()
   assert.ok(early.timers.some(timer => !timer.done && timer.ms > 0), 'and checks again when its turn comes');
 });
 
+async function deletedLockerHarness(role) {
+  const base = 'https://a.example';
+  const group = { id: 'g1', kind: 'group', display_name: 'Group' };
+  const app = harness({
+    storage: { 'ghostchat.server': base },
+    credentials: { [await serverKey(base)]: 'token-A' },
+    hooks: {
+      crypto_has_direct_group: () => true,
+      crypto_group_fingerprint: () => 'fp-group',
+      crypto_get_event_cursor: () => 0,
+      crypto_advance_event_cursor: args => args.sequence,
+    },
+    fetchHandler: (url, options) => {
+      if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
+      if (url.endsWith('/v1/conversations')) return { body: [group] };
+      if (url.endsWith('/conversations/g1/crypto-lock') && options.method === 'POST') return { body: { locked: true, setupComplete: false, lockedBy: 'me', deletedMemberIds: [], deletedMembers: [], lockedByDeletedAccount: false } };
+      if (url.endsWith('/conversations/g1/crypto-lock/complete')) return { body: { locked: true, setupComplete: true, lockedBy: 'me', deletedMemberIds: [], deletedMembers: [], lockedByDeletedAccount: false } };
+      if (url.endsWith('/conversations/g1/crypto-lock')) return { body: { locked: true, setupComplete: false, lockedBy: 'carol', deletedMemberIds: [], deletedMembers: [], lockedByDeletedAccount: true } };
+      if (url.endsWith('/conversations/g1/members')) {
+        return { body: role === 'owner'
+          ? [{ id: 'me', role: 'owner', joined_seq: 1 }, { id: 'bob', role: 'admin', joined_seq: 2 }]
+          : [{ id: 'olga', role: 'owner', joined_seq: 1 }, { id: 'me', role: 'admin', joined_seq: 2 }] };
+      }
+      return { body: [] };
+    },
+  });
+  await app.flush(() => app.sockets.length > 0);
+  app.voiceOptions.voice.onIncoming({ conversationId: 'g1' });
+  await app.flush(() => app.fetches.some(item => item.url.endsWith('/conversations/g1/members')));
+  await app.flush();
+  return app;
+}
+
+test('the owner completes an encrypted setup left unfinished by a deleted account', async () => {
+  const app = await deletedLockerHarness('owner');
+  await app.flush(() => app.fetches.some(item => item.url.endsWith('/conversations/g1/crypto-lock/complete')));
+  const takeover = app.fetches.find(item => item.method === 'POST' && item.url.endsWith('/conversations/g1/crypto-lock'));
+  assert.deepEqual(JSON.parse(takeover.body).member_ids, ['bob', 'me'], 'the owner takes the lock over for the current roster');
+  const admin = await deletedLockerHarness('admin');
+  assert.ok(!admin.fetches.some(item => item.method === 'POST' && item.url.includes('/crypto-lock')), 'an admin does not while there is an owner');
+});
+
 test('pending encrypted rows are decoded before a relay commit is applied', async () => {
   const base = 'https://a.example';
   const group = { id: 'g1', kind: 'group', display_name: 'Group' };
