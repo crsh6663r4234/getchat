@@ -1755,11 +1755,9 @@ async fn delete_account(
     .map_err(|_| ApiError::internal())?;
     // Direct conversations are removed with the account (unchanged). In a
     // group only this membership is removed, like a leave: ownership passes
-    // to the admin, else the member, with the lowest conversation_members
-    // rowid. Members added later get higher rowids, but the founding members
-    // are inserted sorted by user id, so among founders the choice is
-    // effectively arbitrary rather than join order. A group is deleted only
-    // once nobody is left in it.
+    // to the oldest admin, else the oldest member, by the stored join
+    // sequence (founders in the order given at creation, after the
+    // creator). A group is deleted only once nobody is left in it.
     let mut deleted_conversations = Vec::new();
     let mut remaining_groups = Vec::new();
     for (conversation_id, kind, role) in memberships {
@@ -1786,8 +1784,9 @@ async fn delete_account(
         }
         if role == "owner" {
             sqlx::query(
-                "UPDATE conversation_members SET role='owner' WHERE rowid=(SELECT rowid FROM conversation_members WHERE conversation_id=? ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, rowid LIMIT 1) AND NOT EXISTS(SELECT 1 FROM conversation_members WHERE conversation_id=? AND role='owner')",
+                "UPDATE conversation_members SET role='owner' WHERE conversation_id=? AND user_id=(SELECT user_id FROM conversation_members WHERE conversation_id=? ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, joined_seq, user_id LIMIT 1) AND NOT EXISTS(SELECT 1 FROM conversation_members WHERE conversation_id=? AND role='owner')",
             )
+            .bind(&conversation_id)
             .bind(&conversation_id)
             .bind(&conversation_id)
             .execute(&mut *tx)
@@ -2422,8 +2421,9 @@ async fn create_group_conversation(
         return Err(ApiError::bad("Choose 2 to 15 friends for a group."));
     }
     member_ids.retain(|id| id != &user.id);
-    member_ids.sort();
-    member_ids.dedup();
+    // Keep the given order (it is the founders' join order); drop repeats.
+    let mut seen = std::collections::HashSet::new();
+    member_ids.retain(|id| seen.insert(id.clone()));
     if !(2..=15).contains(&member_ids.len()) {
         return Err(ApiError::bad("Choose 2 to 15 friends for a group."));
     }
@@ -7254,13 +7254,21 @@ mod tests {
         let alice = app.user("alice").await;
         let bob = app.user("bob").await;
         let carol = app.user("carol").await;
-        // Carol owns two groups: in the first Bob is an admin, in the second
-        // nobody is, so ownership falls to the oldest remaining member.
+        // Carol owns two groups: in the first Bob, the newer member, is an
+        // admin and wins over the older plain member Alice; in the second
+        // nobody is, so ownership falls to the oldest remaining member. The
+        // founders are given with the larger ID first, so join order and ID
+        // order disagree.
         let with_admin = app.group(&carol, &[&alice, &bob]).await;
+        let (oldest, newest) = if alice.id > bob.id {
+            (&alice, &bob)
+        } else {
+            (&bob, &alice)
+        };
         let without_admin = {
             let reply: serde_json::Value = app
                 .request(Method::POST, "/v1/conversations/groups", &carol)
-                .json(&serde_json::json!({"name": "Second", "member_ids": [alice.id, bob.id]}))
+                .json(&serde_json::json!({"name": "Second", "member_ids": [oldest.id, newest.id]}))
                 .send()
                 .await
                 .unwrap()
@@ -7369,13 +7377,7 @@ mod tests {
             role_of(with_admin.clone(), alice.id.clone()).await,
             "member"
         );
-        // create_group_conversation inserts members in sorted ID order, so the
-        // oldest remaining member is the one with the smaller ID.
-        let (oldest, newest) = if alice.id < bob.id {
-            (&alice, &bob)
-        } else {
-            (&bob, &alice)
-        };
+        // Founders join in the order given (creator first), whatever their IDs.
         assert_eq!(
             role_of(without_admin.clone(), oldest.id.clone()).await,
             "owner"
