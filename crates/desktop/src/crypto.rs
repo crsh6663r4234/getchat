@@ -2175,6 +2175,68 @@ pub async fn process_crypto_event_with_deleted(
     deleted_member_ids: &[String],
     payload: &str,
 ) -> Result<CryptoEventResult, String> {
+    process_crypto_event_core(
+        db,
+        user_id,
+        conversation_id,
+        sender_id,
+        client_message_id,
+        event_sequence,
+        conversation_is_group,
+        Some(expected_member_ids),
+        deleted_member_ids,
+        payload,
+    )
+    .await
+}
+
+/// Decrypts an encrypted history row before the client applies pending
+/// relay commits, so text sent in the current local epoch is cached before
+/// that epoch is left (OpenMLS keeps no past-epoch secrets). The server
+/// roster may already reflect the pending membership change, so the row is
+/// checked against the roster this device accepted for its current epoch
+/// (validated against the server roster when that epoch was entered)
+/// instead. Only application messages from history are accepted, and the
+/// relay cursor is never moved.
+pub async fn decode_history_before_pending_commits(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    sender_id: &str,
+    client_message_id: &str,
+    conversation_is_group: bool,
+    payload: &str,
+) -> Result<CryptoEventResult, String> {
+    process_crypto_event_core(
+        db,
+        user_id,
+        conversation_id,
+        sender_id,
+        Some(client_message_id),
+        None,
+        conversation_is_group,
+        None,
+        &[],
+        payload,
+    )
+    .await
+}
+
+/// `expected_member_ids` is `None` only for
+/// [`decode_history_before_pending_commits`].
+#[allow(clippy::too_many_arguments)]
+async fn process_crypto_event_core(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    sender_id: &str,
+    client_message_id: Option<&str>,
+    event_sequence: Option<i64>,
+    conversation_is_group: bool,
+    expected_member_ids: Option<&[String]>,
+    deleted_member_ids: &[String],
+    payload: &str,
+) -> Result<CryptoEventResult, String> {
     let _operation = CRYPTO_OPERATION_LOCK.lock().await;
     let user_id = normalized_uuid(user_id, "account")?;
     let conversation_id = normalized_uuid(conversation_id, "conversation")?;
@@ -2187,11 +2249,16 @@ pub async fn process_crypto_event_with_deleted(
         return Err("The encrypted event sequence is invalid.".into());
     }
     let from_history = event_sequence.is_none();
+    let local_epoch_roster = expected_member_ids.is_none();
+    if local_epoch_roster && !from_history {
+        return Err("Only message history may be decoded before pending commits.".into());
+    }
     let expected_member_ids = expected_member_ids
+        .unwrap_or_default()
         .iter()
         .map(|member_id| normalized_uuid(member_id, "conversation member"))
         .collect::<Result<std::collections::HashSet<_>, _>>()?;
-    if expected_member_ids.len() < 2 || expected_member_ids.len() > 16 {
+    if !local_epoch_roster && (expected_member_ids.len() < 2 || expected_member_ids.len() > 16) {
         return Err("The expected MLS conversation roster is invalid.".into());
     }
     let deleted_member_ids = normalized_deleted_member_ids(deleted_member_ids)?;
@@ -2418,15 +2485,26 @@ pub async fn process_crypto_event_with_deleted(
                 }
                 match processed.into_content() {
                     ProcessedMessageContent::ApplicationMessage(application) => {
-                        if !group_roster_matches(
-                            &group,
-                            &expected_member_ids,
-                            &deleted_member_ids,
-                            &own_identity,
-                        ) || !existing_group_identities_unchanged(
-                            &group,
-                            &existing_group_identities,
-                        ) {
+                        let roster_ok = if local_epoch_roster {
+                            group_account_identities(&group).is_some_and(|identities| {
+                                identities
+                                    .values()
+                                    .any(|(credential, _)| credential == own_identity.as_bytes())
+                            })
+                        } else {
+                            group_roster_matches(
+                                &group,
+                                &expected_member_ids,
+                                &deleted_member_ids,
+                                &own_identity,
+                            )
+                        };
+                        if !roster_ok
+                            || !existing_group_identities_unchanged(
+                                &group,
+                                &existing_group_identities,
+                            )
+                        {
                             return Err(
                                 "The encrypted group does not match the current server roster."
                                     .into(),
@@ -3924,5 +4002,168 @@ mod tests {
         .await
         .expect("Bob should decrypt with the exact server roster");
         assert_eq!(decrypted.content.as_deref(), Some("after removal"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pending_history_message_decrypts_before_a_membership_commit() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-precommit-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let carol_db = open_database(&root.join("carol.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let carol_device = prepare_device(&carol_db, &carol_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[
+                GroupPeerKeyPackage {
+                    user_id: bob_id.clone(),
+                    device_id: bob_device.device_id.clone(),
+                    payload: bob_device.payload.clone(),
+                },
+                GroupPeerKeyPackage {
+                    user_id: carol_id.clone(),
+                    device_id: carol_device.device_id.clone(),
+                    payload: carol_device.payload.clone(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        for (db, id) in [(&bob_db, &bob_id), (&carol_db, &carol_id)] {
+            process_crypto_event(
+                db,
+                id,
+                &conversation_id,
+                &alice_id,
+                None,
+                Some(1),
+                true,
+                &roster,
+                &start.welcome_payload,
+            )
+            .await
+            .unwrap();
+        }
+
+        // Alice sends while Bob is elsewhere, then removes Carol.
+        let missed_id = Uuid::new_v4().to_string();
+        let missed = encrypt_text(&alice_db, &alice_id, &conversation_id, &missed_id, "missed")
+            .await
+            .unwrap();
+        let mut remaining = vec![alice_id.clone(), bob_id.clone()];
+        remaining.sort();
+        let removal = prepare_group_removal_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &roster,
+            std::slice::from_ref(&carol_id),
+        )
+        .await
+        .unwrap();
+        finalize_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &removal.operation_id,
+        )
+        .await
+        .unwrap();
+
+        // Bob opens the group: the server roster already lacks Carol and the
+        // removal commit is pending on the relay. Decoding the pending
+        // history first, against the local epoch's roster, keeps the text.
+        // The ordinary history path compares with the changed server roster.
+        assert!(process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            Some(&missed_id),
+            None,
+            true,
+            &remaining,
+            &missed.payload,
+        )
+        .await
+        .is_err());
+        let decoded = decode_history_before_pending_commits(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            &missed_id,
+            true,
+            &missed.payload,
+        )
+        .await
+        .expect("A message from the current local epoch should decrypt before the commit");
+        assert_eq!(decoded.content.as_deref(), Some("missed"));
+        assert_eq!(
+            get_crypto_event_cursor(&bob_db, &bob_id, &conversation_id)
+                .await
+                .unwrap(),
+            Some(1),
+            "history decoding never moves the relay cursor"
+        );
+        let applied = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(2),
+            true,
+            &remaining,
+            &removal.commit_payload,
+        )
+        .await
+        .unwrap();
+        assert_eq!(applied.kind, "commit");
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &missed_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("missed"),
+            "the plaintext stays in the local cache after the epoch moved on"
+        );
+        // Without the earlier decode the past-epoch ciphertext is unreadable.
+        assert!(process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            Some(&Uuid::new_v4().to_string()),
+            None,
+            true,
+            &remaining,
+            &missed.payload,
+        )
+        .await
+        .is_err());
+        // The local-epoch mode only decodes history text, never relay events.
+        assert!(decode_history_before_pending_commits(
+            &carol_db,
+            &carol_id,
+            &conversation_id,
+            &alice_id,
+            &Uuid::new_v4().to_string(),
+            true,
+            &removal.commit_payload,
+        )
+        .await
+        .is_err());
     }
 }

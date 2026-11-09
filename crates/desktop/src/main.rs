@@ -449,6 +449,28 @@ async fn crypto_process_event(
 }
 
 #[tauri::command]
+async fn crypto_decode_pending_history(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    sender_id: String,
+    client_message_id: String,
+    conversation_is_group: bool,
+    payload: String,
+) -> Result<crypto::CryptoEventResult, String> {
+    crypto::decode_history_before_pending_commits(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &sender_id,
+        &client_message_id,
+        conversation_is_group,
+        &payload,
+    )
+    .await
+}
+
+#[tauri::command]
 async fn crypto_get_event_cursor(
     state: State<'_, DesktopState>,
     user_id: String,
@@ -770,6 +792,7 @@ fn main() {
             crypto_encrypt_text,
             crypto_get_cached_sent_text,
             crypto_process_event,
+            crypto_decode_pending_history,
             crypto_get_event_cursor,
             crypto_advance_event_cursor,
             crypto_upload_encrypted_attachment,
