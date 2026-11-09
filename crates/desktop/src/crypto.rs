@@ -2186,6 +2186,7 @@ pub async fn process_crypto_event_with_deleted(
         Some(expected_member_ids),
         deleted_member_ids,
         payload,
+        false,
     )
     .await
 }
@@ -2218,6 +2219,40 @@ pub async fn decode_history_before_pending_commits(
         None,
         &[],
         payload,
+        false,
+    )
+    .await
+}
+
+/// Runs every check `process_crypto_event_with_deleted` runs on a relay event
+/// (decryption, sender authentication, roster checks after the merge) inside
+/// a transaction that is always rolled back: nothing is applied, cached or
+/// moved. The client uses it to learn that the next relay event is a valid
+/// commit from a current member before it decodes pending history rows.
+#[allow(clippy::too_many_arguments)]
+pub async fn inspect_crypto_event(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    sender_id: &str,
+    event_sequence: i64,
+    conversation_is_group: bool,
+    expected_member_ids: &[String],
+    deleted_member_ids: &[String],
+    payload: &str,
+) -> Result<CryptoEventResult, String> {
+    process_crypto_event_core(
+        db,
+        user_id,
+        conversation_id,
+        sender_id,
+        None,
+        Some(event_sequence),
+        conversation_is_group,
+        Some(expected_member_ids),
+        deleted_member_ids,
+        payload,
+        true,
     )
     .await
 }
@@ -2236,6 +2271,7 @@ async fn process_crypto_event_core(
     expected_member_ids: Option<&[String]>,
     deleted_member_ids: &[String],
     payload: &str,
+    dry_run: bool,
 ) -> Result<CryptoEventResult, String> {
     let _operation = CRYPTO_OPERATION_LOCK.lock().await;
     let user_id = normalized_uuid(user_id, "account")?;
@@ -2324,6 +2360,13 @@ async fn process_crypto_event_core(
         };
         if !group_exists && from_history {
             return Err("Encryption has not been set up for this conversation.".into());
+        }
+        if !group_exists && dry_run {
+            return Ok(CryptoEventResult {
+                kind: "pending_group".into(),
+                content: None,
+                peer_identity_fingerprint: None,
+            });
         }
         if !group_exists {
             sqlx::query(
@@ -2642,6 +2685,13 @@ async fn process_crypto_event_core(
             }
         }
     };
+    if dry_run {
+        transaction
+            .rollback()
+            .await
+            .map_err(|_| "GhostChat could not close the inspection transaction.".to_string())?;
+        return Ok(result);
+    }
     if let (Some(client_message_id), Some(content)) =
         (client_message_id.as_deref(), cache_content.as_deref())
     {
@@ -4186,6 +4236,154 @@ mod tests {
             before,
             "the refused commit must not be merged"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inspecting_a_relay_commit_authenticates_it_without_applying_it() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-inspect-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let carol_db = open_database(&root.join("carol.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let carol_device = prepare_device(&carol_db, &carol_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[
+                GroupPeerKeyPackage {
+                    user_id: bob_id.clone(),
+                    device_id: bob_device.device_id.clone(),
+                    payload: bob_device.payload.clone(),
+                },
+                GroupPeerKeyPackage {
+                    user_id: carol_id.clone(),
+                    device_id: carol_device.device_id.clone(),
+                    payload: carol_device.payload.clone(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(1),
+            true,
+            &roster,
+            &start.welcome_payload,
+        )
+        .await
+        .unwrap();
+        let missed_id = Uuid::new_v4().to_string();
+        let missed = encrypt_text(&alice_db, &alice_id, &conversation_id, &missed_id, "missed")
+            .await
+            .unwrap();
+        let mut remaining = vec![alice_id.clone(), bob_id.clone()];
+        remaining.sort();
+        let removal = prepare_group_removal_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &roster,
+            std::slice::from_ref(&carol_id),
+        )
+        .await
+        .unwrap();
+        finalize_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &removal.operation_id,
+        )
+        .await
+        .unwrap();
+        let before = group_fingerprint(&bob_db, &bob_id, &conversation_id)
+            .await
+            .unwrap();
+
+        // A relay event claiming the wrong sender is not an authenticated commit.
+        assert!(inspect_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &carol_id,
+            2,
+            true,
+            &remaining,
+            &[],
+            &removal.commit_payload,
+        )
+        .await
+        .is_err());
+        let inspected = inspect_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            2,
+            true,
+            &remaining,
+            &[],
+            &removal.commit_payload,
+        )
+        .await
+        .expect("a valid commit from a current member is recognised");
+        assert_eq!(inspected.kind, "commit");
+        assert_eq!(
+            group_fingerprint(&bob_db, &bob_id, &conversation_id)
+                .await
+                .unwrap(),
+            before,
+            "inspection must not apply the commit"
+        );
+        assert_eq!(
+            get_crypto_event_cursor(&bob_db, &bob_id, &conversation_id)
+                .await
+                .unwrap(),
+            Some(1),
+            "inspection must not move the relay cursor"
+        );
+        // The current epoch is intact: the pending row still decrypts, and
+        // the commit then applies for real.
+        let decoded = decode_history_before_pending_commits(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            &missed_id,
+            true,
+            &missed.payload,
+        )
+        .await
+        .unwrap();
+        assert_eq!(decoded.content.as_deref(), Some("missed"));
+        let applied = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(2),
+            true,
+            &remaining,
+            &removal.commit_payload,
+        )
+        .await
+        .unwrap();
+        assert_eq!(applied.kind, "commit");
     }
 
     #[tokio::test(flavor = "multi_thread")]

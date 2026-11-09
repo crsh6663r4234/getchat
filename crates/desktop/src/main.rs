@@ -449,6 +449,32 @@ async fn crypto_process_event(
 }
 
 #[tauri::command]
+async fn crypto_inspect_event(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    sender_id: String,
+    event_sequence: i64,
+    conversation_is_group: bool,
+    expected_member_ids: Vec<String>,
+    deleted_member_ids: Option<Vec<String>>,
+    payload: String,
+) -> Result<crypto::CryptoEventResult, String> {
+    crypto::inspect_crypto_event(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &sender_id,
+        event_sequence,
+        conversation_is_group,
+        &expected_member_ids,
+        deleted_member_ids.as_deref().unwrap_or_default(),
+        &payload,
+    )
+    .await
+}
+
+#[tauri::command]
 async fn crypto_decode_pending_history(
     state: State<'_, DesktopState>,
     user_id: String,
@@ -793,6 +819,7 @@ fn main() {
             crypto_get_cached_sent_text,
             crypto_process_event,
             crypto_decode_pending_history,
+            crypto_inspect_event,
             crypto_get_event_cursor,
             crypto_advance_event_cursor,
             crypto_upload_encrypted_attachment,
