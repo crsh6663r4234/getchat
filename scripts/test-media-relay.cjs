@@ -182,6 +182,32 @@ async function run() {
     fixture.client.hangup();
   }
 
+  // The same caller re-sends its offer while accept() probes the relay: the
+  // pending accept continues with the newest offer instead of doing nothing.
+  {
+    const fixture = directFixture(plain, { deferConfig: true });
+    await fixture.client.handleSignal(offerSignal);
+    const pending = fixture.client.accept();
+    await fixture.client.handleSignal({ ...offerSignal, payload: { type: 'offer', sdp: 'renewed' } });
+    fixture.releaseConfig();
+    await pending;
+    assert.equal(fixture.pcs.length, 1, 'the accept opens the call after a duplicate offer');
+    assert.equal(fixture.pcs[0].remoteDescription.sdp, 'renewed', 'the newest offer is answered');
+    assert.equal(fixture.signals.filter(signal => signal.kind === 'answer').length, 1);
+    fixture.client.hangup();
+  }
+  // An offer from someone else meanwhile still cancels the pending accept.
+  {
+    const fixture = directFixture(plain, { deferConfig: true });
+    await fixture.client.handleSignal(offerSignal);
+    const pending = fixture.client.accept();
+    await fixture.client.handleSignal({ conversation_id: 'conversation', from_user_id: 'b', kind: 'hangup' });
+    await fixture.client.handleSignal({ ...offerSignal, conversation_id: 'other', from_user_id: 'c' });
+    fixture.releaseConfig();
+    await pending;
+    assert.equal(fixture.pcs.length, 0, 'an accept never answers a different caller');
+  }
+
   const stuck = directFixture(plain);
   await stuck.client.start({ id: 'conversation', peer_id: 'b' });
   await stuck.client.handleSignal({ conversation_id: 'conversation', from_user_id: 'b', kind: 'answer', payload: { type: 'answer', sdp: 'fixture' } });

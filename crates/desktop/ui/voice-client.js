@@ -810,14 +810,20 @@
 
     async function accept() {
       if (!incoming || call || incoming.accepting) return;
-      const request = incoming;
+      let request = incoming;
       const settings = api.getSettings();
       request.accepting = true;
       let configuration;
       try { configuration = await loadIceConfiguration(settings); }
-      catch (error) { request.accepting = false; throw error; }
+      catch (error) { if (incoming) incoming.accepting = false; throw error; }
       // The caller may have hung up (or another call began) while the relay was probed.
-      if (incoming !== request || call) return;
+      if (!incoming || call) return;
+      if (incoming !== request) {
+        // The same caller re-sent its offer meanwhile: answer the newest one.
+        if (incoming.conversationId !== request.conversationId || incoming.peerId !== request.peerId) return;
+        request = incoming;
+        request.accepting = true;
+      }
       const activeCall = {
         conversationId: request.conversationId,
         peerId: request.peerId,
