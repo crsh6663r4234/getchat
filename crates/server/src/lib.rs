@@ -1792,6 +1792,17 @@ async fn delete_account(
             .await
             .map_err(|_| ApiError::internal())?;
         }
+        // In an MLS-locked group this account's leaf stays in the MLS roster
+        // until an owner/admin client commits its removal; record it so the
+        // remaining clients can tell it from an unknown member.
+        sqlx::query(
+            "INSERT OR IGNORE INTO crypto_group_deleted_members(conversation_id,user_id) SELECT conversation_id,? FROM conversation_crypto_locks WHERE conversation_id=?",
+        )
+        .bind(&user.id)
+        .bind(&conversation_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ApiError::internal())?;
         media_revocation::enqueue(&mut tx, &conversation_id, &user.id).await?;
         remaining_groups.push((conversation_id, remaining));
     }
@@ -3486,8 +3497,24 @@ async fn remove_encrypted_group_member(
     .bind(&target_id)
     .fetch_optional(&mut *tx)
     .await
-    .map_err(|_| ApiError::internal())?
-    .ok_or_else(ApiError::not_found)?;
+    .map_err(|_| ApiError::internal())?;
+    // A deleted account is no longer a member, but its MLS leaf stays in the
+    // group until one removal commit for it is accepted here.
+    let deleted_target = target_role.is_none()
+        && sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM crypto_group_deleted_members WHERE conversation_id=? AND user_id=? AND removal_committed_at IS NULL)",
+        )
+        .bind(&id)
+        .bind(&target_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| ApiError::internal())?
+            != 0;
+    let target_role = match target_role {
+        Some(role) => role,
+        None if deleted_target => "member".to_owned(),
+        None => return Err(ApiError::not_found()),
+    };
     if target_role == "owner" || (actor_role == "admin" && target_role != "member") {
         return Err(ApiError::forbidden());
     }
@@ -3517,12 +3544,23 @@ async fn remove_encrypted_group_member(
         ));
     }
 
-    sqlx::query("DELETE FROM conversation_members WHERE conversation_id=? AND user_id=?")
+    if deleted_target {
+        sqlx::query(
+            "UPDATE crypto_group_deleted_members SET removal_committed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE conversation_id=? AND user_id=?",
+        )
         .bind(&id)
         .bind(&target_id)
         .execute(&mut *tx)
         .await
         .map_err(|_| ApiError::internal())?;
+    } else {
+        sqlx::query("DELETE FROM conversation_members WHERE conversation_id=? AND user_id=?")
+            .bind(&id)
+            .bind(&target_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal())?;
+    }
     let mut crypto_events = Vec::new();
     for (index, recipient_id) in current_member_ids
         .iter()
@@ -3564,11 +3602,16 @@ async fn remove_encrypted_group_member(
     .execute(&mut *tx)
     .await
     .map_err(|_| ApiError::internal())?;
-    media_revocation::enqueue(&mut tx, &id, &target_id).await?;
+    // A deleted account's media access was revoked when it was deleted.
+    if !deleted_target {
+        media_revocation::enqueue(&mut tx, &id, &target_id).await?;
+    }
     tx.commit().await.map_err(|_| ApiError::internal())?;
 
-    if let Err(error) = remove_livekit_participant(&state, &id, &target_id).await {
-        tracing::warn!(conversation_id = %id, account_id = %target_id, %error, "could not remove group member from LiveKit");
+    if !deleted_target {
+        if let Err(error) = remove_livekit_participant(&state, &id, &target_id).await {
+            tracing::warn!(conversation_id = %id, account_id = %target_id, %error, "could not remove group member from LiveKit");
+        }
     }
     for event in &crypto_events {
         publish_crypto_event(&state, event).await?;
@@ -3781,6 +3824,22 @@ struct GroupCryptoLockStatus {
     locked: bool,
     locked_by: Option<String>,
     setup_complete: bool,
+    /// Accounts deleted while members of this MLS-locked group, whose MLS
+    /// leaves remaining clients may tolerate until they are removed.
+    deleted_member_ids: Vec<String>,
+}
+
+async fn deleted_crypto_member_ids(
+    db: &SqlitePool,
+    conversation_id: &str,
+) -> Result<Vec<String>, ApiError> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT user_id FROM crypto_group_deleted_members WHERE conversation_id=? ORDER BY user_id",
+    )
+    .bind(conversation_id)
+    .fetch_all(db)
+    .await
+    .map_err(|_| ApiError::internal())
 }
 
 async fn get_group_crypto_lock(
@@ -3795,14 +3854,16 @@ async fn get_group_crypto_lock(
     let lock = sqlx::query_as::<_, (String, i64)>(
         "SELECT locked_by,setup_complete FROM conversation_crypto_locks WHERE conversation_id=?",
     )
-    .bind(conversation_id)
+    .bind(&conversation_id)
     .fetch_optional(&state.db)
     .await
     .map_err(|_| ApiError::internal())?;
+    let deleted_member_ids = deleted_crypto_member_ids(&state.db, &conversation_id).await?;
     Ok(Json(GroupCryptoLockStatus {
         locked: lock.is_some(),
         locked_by: lock.as_ref().map(|(locked_by, _)| locked_by.clone()),
         setup_complete: lock.is_some_and(|(_, complete)| complete != 0),
+        deleted_member_ids,
     }))
 }
 
@@ -3882,6 +3943,8 @@ async fn lock_group_crypto_roster(
             locked: true,
             locked_by: Some(user.id),
             setup_complete: false,
+            // A direct conversation is deleted with either account.
+            deleted_member_ids: Vec::new(),
         }));
     }
     let actor_role = sqlx::query_scalar::<_, String>(
@@ -3950,6 +4013,7 @@ async fn lock_group_crypto_roster(
         locked: true,
         locked_by: Some(user.id),
         setup_complete: false,
+        deleted_member_ids: deleted_crypto_member_ids(&state.db, &conversation_id).await?,
     }))
 }
 
@@ -3984,6 +4048,7 @@ async fn complete_group_crypto_setup(
         locked: true,
         locked_by: Some(user.id),
         setup_complete: true,
+        deleted_member_ids: deleted_crypto_member_ids(&state.db, &conversation_id).await?,
     }))
 }
 
@@ -7150,5 +7215,129 @@ mod tests {
             remaining, 2,
             "only the group with no members left is deleted"
         );
+    }
+
+    #[tokio::test]
+    async fn owner_or_admin_removes_deleted_account_from_encrypted_group() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let dave = app.user("dave").await;
+        let mallory = app.user("mallory").await;
+        let group = app.group(&alice, &[&bob, &carol, &dave]).await;
+        let plain_group = app.group(&alice, &[&bob, &carol]).await;
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete) VALUES(?,?,1)",
+        )
+        .bind(&group)
+        .bind(&alice.id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        let status = app
+            .request(Method::DELETE, "/v1/me/account", &carol)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let deleted_ids = |conversation: String, viewer: &TestUser| {
+            app.request(
+                Method::GET,
+                &format!("/v1/conversations/{conversation}/crypto-lock"),
+                viewer,
+            )
+            .send()
+        };
+        let lock: serde_json::Value = deleted_ids(group.clone(), &bob)
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(lock["deletedMemberIds"], serde_json::json!([carol.id]));
+        let plain: serde_json::Value = deleted_ids(plain_group.clone(), &bob)
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(plain["deletedMemberIds"], serde_json::json!([]));
+
+        let mut remaining = vec![alice.id.clone(), bob.id.clone(), dave.id.clone()];
+        remaining.sort();
+        let remove = |actor: &TestUser, target: &str, operation: String| {
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/crypto-membership/remove/{target}"),
+                actor,
+            )
+            .json(&serde_json::json!({
+                "operation_id": operation,
+                "expected_member_ids": remaining,
+                "commit_payload": "AAAA",
+                "welcome_payload": "",
+            }))
+            .send()
+        };
+        // A plain member cannot remove the deleted account.
+        let status = remove(&bob, &carol.id, Uuid::new_v4().to_string())
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        // An account that was never a member, and an unknown ID, are not
+        // recorded deleted members.
+        for target in [mallory.id.clone(), Uuid::new_v4().to_string()] {
+            let status = remove(&alice, &target, Uuid::new_v4().to_string())
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, StatusCode::NOT_FOUND, "target {target}");
+        }
+        // The owner's removal is accepted once and relayed to the others.
+        let operation = Uuid::new_v4().to_string();
+        let status = remove(&alice, &carol.id, operation.clone())
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let status = remove(&alice, &carol.id, operation).await.unwrap().status();
+        assert_eq!(status, StatusCode::NO_CONTENT, "a retry is idempotent");
+        let recipients = sqlx::query_scalar::<_, String>(
+            "SELECT recipient_id FROM crypto_events WHERE conversation_id=? ORDER BY recipient_id",
+        )
+        .bind(&group)
+        .fetch_all(&app.state.db)
+        .await
+        .unwrap();
+        let mut expected_recipients = vec![bob.id.clone(), dave.id.clone()];
+        expected_recipients.sort();
+        assert_eq!(recipients, expected_recipients);
+        // A second, different removal commit for the same leaf is refused.
+        let status = remove(&alice, &carol.id, Uuid::new_v4().to_string())
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        // The record stays visible so older-epoch messages still decrypt.
+        let lock: serde_json::Value = deleted_ids(group.clone(), &dave)
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(lock["deletedMemberIds"], serde_json::json!([carol.id]));
+        let members = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM conversation_members WHERE conversation_id=?",
+        )
+        .bind(&group)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+        assert_eq!(members, 3);
     }
 }
