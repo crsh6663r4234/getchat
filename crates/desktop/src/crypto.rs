@@ -2455,6 +2455,14 @@ async fn process_crypto_event_core(
                     group_account_identities(&group).ok_or_else(|| {
                         "The local MLS group contains invalid or duplicate identities.".to_string()
                     })?;
+                // A deleted account's leaf may stay in the group or be removed
+                // by a commit, but never be added: only leaves already present
+                // before this event are tolerated.
+                let deleted_present_before = deleted_member_ids
+                    .iter()
+                    .filter(|user_id| existing_group_identities.contains_key(*user_id))
+                    .cloned()
+                    .collect::<std::collections::HashSet<_>>();
                 let protocol_message = message.try_into_protocol_message().map_err(|_| {
                     "This MLS event is not a processable group message.".to_string()
                 })?;
@@ -2529,7 +2537,7 @@ async fn process_crypto_event_core(
                         if !group_roster_matches(
                             &group,
                             &expected_member_ids,
-                            &deleted_member_ids,
+                            &deleted_present_before,
                             &own_identity,
                         ) || !existing_group_identities_unchanged(
                             &group,
@@ -2553,7 +2561,7 @@ async fn process_crypto_event_core(
                         if !group_roster_matches(
                             &group,
                             &expected_member_ids,
-                            &deleted_member_ids,
+                            &deleted_present_before,
                             &own_identity,
                         ) {
                             return Err(
@@ -4002,6 +4010,182 @@ mod tests {
         .await
         .expect("Bob should decrypt with the exact server roster");
         assert_eq!(decrypted.content.as_deref(), Some("after removal"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn removed_deleted_account_cannot_be_re_added_by_a_commit() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-readd-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let carol_db = open_database(&root.join("carol.sqlite")).await;
+        let carol_again_db = open_database(&root.join("carol-again.sqlite")).await;
+        let dave_db = open_database(&root.join("dave.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let dave_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let carol_device = prepare_device(&carol_db, &carol_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[
+                GroupPeerKeyPackage {
+                    user_id: bob_id.clone(),
+                    device_id: bob_device.device_id.clone(),
+                    payload: bob_device.payload.clone(),
+                },
+                GroupPeerKeyPackage {
+                    user_id: carol_id.clone(),
+                    device_id: carol_device.device_id.clone(),
+                    payload: carol_device.payload.clone(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(1),
+            true,
+            &roster,
+            &start.welcome_payload,
+        )
+        .await
+        .unwrap();
+
+        // Carol is deleted and her leaf is removed by the owner.
+        let mut remaining = vec![alice_id.clone(), bob_id.clone()];
+        remaining.sort();
+        let deleted = vec![carol_id.clone()];
+        let removal = prepare_deleted_member_removal(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &remaining,
+            &deleted,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        finalize_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &removal.operation_id,
+        )
+        .await
+        .unwrap();
+        process_crypto_event_with_deleted(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(2),
+            true,
+            &remaining,
+            &deleted,
+            &removal.commit_payload,
+        )
+        .await
+        .unwrap();
+
+        // A legitimate add of Dave is still accepted while Carol stays listed.
+        let dave_device = prepare_device(&dave_db, &dave_id).await.unwrap();
+        let add_dave = prepare_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &remaining,
+            &[GroupPeerKeyPackage {
+                user_id: dave_id.clone(),
+                device_id: dave_device.device_id.clone(),
+                payload: dave_device.payload.clone(),
+            }],
+        )
+        .await
+        .unwrap();
+        finalize_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &add_dave.operation_id,
+        )
+        .await
+        .unwrap();
+        let mut with_dave = vec![alice_id.clone(), bob_id.clone(), dave_id.clone()];
+        with_dave.sort();
+        let applied = process_crypto_event_with_deleted(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(3),
+            true,
+            &with_dave,
+            &deleted,
+            &add_dave.commit_payload,
+        )
+        .await
+        .expect("a legitimate add commit is accepted");
+        assert_eq!(applied.kind, "commit");
+
+        // A commit that adds a new leaf for deleted Carol must be refused,
+        // although the server still lists her as a deleted account.
+        let carol_again = prepare_device(&carol_again_db, &carol_id).await.unwrap();
+        let readd = prepare_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &with_dave,
+            &[GroupPeerKeyPackage {
+                user_id: carol_id.clone(),
+                device_id: carol_again.device_id.clone(),
+                payload: carol_again.payload.clone(),
+            }],
+        )
+        .await
+        .unwrap();
+        let before = group_fingerprint(&bob_db, &bob_id, &conversation_id)
+            .await
+            .unwrap();
+        assert!(
+            process_crypto_event_with_deleted(
+                &bob_db,
+                &bob_id,
+                &conversation_id,
+                &alice_id,
+                None,
+                Some(4),
+                true,
+                &with_dave,
+                &deleted,
+                &readd.commit_payload,
+            )
+            .await
+            .is_err(),
+            "a deleted account's leaf may stay or be removed, never be added"
+        );
+        assert_eq!(
+            group_fingerprint(&bob_db, &bob_id, &conversation_id)
+                .await
+                .unwrap(),
+            before,
+            "the refused commit must not be merged"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
