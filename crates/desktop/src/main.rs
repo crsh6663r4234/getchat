@@ -431,6 +431,24 @@ async fn crypto_get_cached_sent_text(
 }
 
 #[tauri::command]
+async fn crypto_get_cached_text_state(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    sender_id: String,
+    client_message_id: String,
+) -> Result<crypto::CachedTextState, String> {
+    crypto::get_cached_text_state(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &sender_id,
+        &client_message_id,
+    )
+    .await
+}
+
+#[tauri::command]
 async fn crypto_process_event(
     state: State<'_, DesktopState>,
     user_id: String,
@@ -827,6 +845,7 @@ fn main() {
             crypto_clear_pending_bootstrap,
             crypto_encrypt_text,
             crypto_get_cached_sent_text,
+            crypto_get_cached_text_state,
             crypto_process_event,
             crypto_decode_pending_history,
             crypto_inspect_event,
