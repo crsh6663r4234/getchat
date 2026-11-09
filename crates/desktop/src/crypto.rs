@@ -26,6 +26,77 @@ const MLS_CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_
 
 static STORAGE_KEY: OnceLock<Zeroizing<[u8; 32]>> = OnceLock::new();
 static CRYPTO_OPERATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+// MLS group state is stored under the wire GroupId, which every member of a
+// group shares, so two GhostChat accounts on one desktop profile that are in
+// the same conversation would collide in the shared storage. The storage
+// lookup key of a GroupId is therefore bound to the account the current
+// crypto operation runs for. Operations hold CRYPTO_OPERATION_LOCK for their
+// whole duration, so one account scope is active at a time.
+static STORAGE_ACCOUNT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+static LEGACY_LAYOUT_ACCOUNTS: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
+    std::sync::Mutex::new(None);
+
+/// Test hook: store this account's groups like builds before account-bound
+/// group storage did.
+#[cfg(test)]
+fn use_legacy_storage_layout(user_id: &str, legacy: bool) {
+    let mut accounts = LEGACY_LAYOUT_ACCOUNTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let accounts = accounts.get_or_insert_with(Default::default);
+    if legacy {
+        accounts.insert(user_id.to_owned());
+    } else {
+        accounts.remove(user_id);
+    }
+}
+
+struct StorageAccountScope(Option<String>);
+
+impl StorageAccountScope {
+    fn set(account: Option<String>) -> Self {
+        let mut current = STORAGE_ACCOUNT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self(std::mem::replace(&mut *current, account))
+    }
+
+    fn enter(user_id: &str) -> Self {
+        #[cfg(test)]
+        if LEGACY_LAYOUT_ACCOUNTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .is_some_and(|accounts| accounts.contains(user_id))
+        {
+            return Self::set(None);
+        }
+        Self::set(Some(user_id.to_owned()))
+    }
+
+    /// The account-less layout of earlier builds, for adopting their groups.
+    fn legacy() -> Self {
+        Self::set(None)
+    }
+}
+
+impl Drop for StorageAccountScope {
+    fn drop(&mut self) {
+        *STORAGE_ACCOUNT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.0.take();
+    }
+}
+
+fn current_storage_account() -> Option<String> {
+    STORAGE_ACCOUNT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
 /// Database files whose HashReference migration completed cleanly in this
 /// process. Legacy rows are only written by older builds, so one clean pass
 /// per file per process is enough; a failed pass is not recorded.
@@ -331,6 +402,8 @@ pub async fn advance_crypto_event_cursor(
         return Err("The encrypted event sequence is invalid.".into());
     }
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let mut transaction = db
         .begin()
         .await
@@ -503,6 +576,95 @@ fn lookup_key_v1(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, CryptoCode
     encoded.extend_from_slice(LOOKUP_KEY_V1_PREFIX);
     encoded.extend_from_slice(&digest);
     Ok(encoded)
+}
+
+/// The storage lookup key of a GroupId for one account (see STORAGE_ACCOUNT).
+fn account_group_lookup_key(
+    key: &[u8; 32],
+    account: &str,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, CryptoCodecError> {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key)
+        .map_err(|_| CryptoCodecError("Local storage key is invalid".into()))?;
+    mac.update(b"GhostChat MLS account group lookup key v1\0");
+    mac.update(account.as_bytes());
+    mac.update(b"\0");
+    mac.update(plaintext);
+    let digest = mac.finalize().into_bytes();
+    let mut encoded = Vec::with_capacity(LOOKUP_KEY_V1_PREFIX.len() + digest.len());
+    encoded.extend_from_slice(LOOKUP_KEY_V1_PREFIX);
+    encoded.extend_from_slice(&digest);
+    Ok(encoded)
+}
+
+/// Moves a group an earlier build stored without an account binding to this
+/// account's storage key, if this account owns it (its own leaf is this
+/// account's device). A legacy group of another account on the profile is
+/// left alone. Runs inside the caller's CRYPTO_OPERATION_LOCK.
+async fn adopt_legacy_group(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+) -> Result<(), String> {
+    let error = || "GhostChat could not load the local MLS group state.".to_string();
+    let key = get_storage_key()?;
+    let group_id = group_id_for_conversation(conversation_id);
+    let plaintext = Zeroizing::new(serde_json::to_vec(&group_id).map_err(|_| error())?);
+    let legacy = lookup_key_v1(&key, &plaintext).map_err(|_| error())?;
+    let scoped = account_group_lookup_key(&key, user_id, &plaintext).map_err(|_| error())?;
+    let mut transaction = db.begin().await.map_err(|_| error())?;
+    let (legacy_exists, scoped_exists) = sqlx::query_as::<_, (bool, bool)>(
+        "SELECT EXISTS(SELECT 1 FROM openmls_group_data WHERE group_id=?),EXISTS(SELECT 1 FROM openmls_group_data WHERE group_id=?)",
+    )
+    .bind(&legacy)
+    .bind(&scoped)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|_| error())?;
+    if !legacy_exists || scoped_exists {
+        return Ok(());
+    }
+    let Some(device_id) = sqlx::query_scalar::<_, String>(
+        "SELECT device_id FROM ghostchat_crypto_identities WHERE user_id=?",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| error())?
+    else {
+        return Ok(());
+    };
+    let own_identity = format!("ghostchat:v1:{user_id}:{device_id}");
+    let owned = {
+        let _legacy = StorageAccountScope::legacy();
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        MlsGroup::load(&storage, &group_id)
+            .ok()
+            .flatten()
+            .and_then(|group| {
+                group
+                    .own_leaf_node()
+                    .map(|leaf| leaf.credential().serialized_content() == own_identity.as_bytes())
+            })
+            .unwrap_or(false)
+    };
+    if !owned {
+        return Ok(());
+    }
+    for table in [
+        "openmls_group_data",
+        "openmls_proposal",
+        "openmls_own_leaf_node",
+        "openmls_epoch_key_pairs",
+    ] {
+        sqlx::query(&format!("UPDATE {table} SET group_id=? WHERE group_id=?"))
+            .bind(&scoped)
+            .bind(&legacy)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| error())?;
+    }
+    transaction.commit().await.map_err(|_| error())
 }
 
 fn deterministic_subkey(
@@ -930,6 +1092,8 @@ pub async fn create_direct_group(
         return Err("An encrypted direct conversation needs two different accounts.".into());
     }
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
 
     let mut transaction = db
         .begin()
@@ -1052,6 +1216,8 @@ pub async fn create_group(
         })
         .collect::<Result<Vec<_>, String>>()?;
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
 
     let mut transaction = db
         .begin()
@@ -1341,6 +1507,8 @@ async fn prepare_group_membership_change(
     }
 
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let mut transaction = db
         .begin()
         .await
@@ -1533,6 +1701,8 @@ pub async fn prepare_group_leave_proposal(
     }
 
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let mut transaction = db
         .begin()
         .await
@@ -1709,6 +1879,8 @@ pub async fn prepare_group_leave_commit(
     }
 
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let mut transaction = db
         .begin()
         .await
@@ -1851,6 +2023,8 @@ pub async fn forget_group_state(
     let user_id = normalized_uuid(user_id, "account")?;
     let conversation_id = normalized_uuid(conversation_id, "conversation")?;
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let mut transaction = db
         .begin()
         .await
@@ -1895,6 +2069,8 @@ pub async fn finalize_group_membership_update(
     let conversation_id = normalized_uuid(conversation_id, "conversation")?;
     let operation_id = normalized_uuid(operation_id, "membership operation")?;
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let mut transaction = db
         .begin()
         .await
@@ -2083,6 +2259,8 @@ pub async fn encrypt_text(
     let cached_content = EncryptedJsonCodec::to_vec(&content.to_string())
         .map_err(|_| "GhostChat could not encrypt the local message cache.".to_string())?;
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let mut transaction = db
         .begin()
         .await
@@ -2436,6 +2614,8 @@ async fn process_crypto_event_core(
         .map(|message_id| normalized_uuid(message_id, "message"))
         .transpose()?;
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let bytes = URL_SAFE_NO_PAD
         .decode(payload.as_bytes())
         .map_err(|_| "The encrypted event has invalid encoding.".to_string())?;
@@ -2895,6 +3075,8 @@ pub async fn has_direct_group(
     let user_id = normalized_uuid(user_id, "account")?;
     let conversation_id = normalized_uuid(conversation_id, "conversation")?;
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let local_identity_exists = sqlx::query_scalar::<_, i64>(
         "SELECT count(*) FROM ghostchat_crypto_identities WHERE user_id=?",
     )
@@ -2936,6 +3118,8 @@ pub async fn direct_peer_fingerprint(
         return Err("An encrypted direct conversation needs two different accounts.".into());
     }
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let device_id = sqlx::query_scalar::<_, String>(
         "SELECT device_id FROM ghostchat_crypto_identities WHERE user_id=?",
     )
@@ -2994,6 +3178,8 @@ pub async fn group_fingerprint(
     let user_id = normalized_uuid(user_id, "account")?;
     let conversation_id = normalized_uuid(conversation_id, "conversation")?;
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let device_id = sqlx::query_scalar::<_, String>(
         "SELECT device_id FROM ghostchat_crypto_identities WHERE user_id=?",
     )
@@ -3091,6 +3277,13 @@ impl Codec for EncryptedJsonCodec {
         // SQLite equality lookups miss every time. Store those public lookup
         // references as a keyed, deterministic digest instead; they are never
         // decoded from the database and this does not expose their raw values.
+        if std::any::type_name::<T>() == "openmls::group::GroupId" {
+            if let Some(account) = current_storage_account() {
+                let encoded = account_group_lookup_key(key, &account, &plaintext);
+                plaintext.zeroize();
+                return encoded;
+            }
+        }
         if is_mls_storage_lookup_key(std::any::type_name::<T>()) {
             let encoded = lookup_key_v1(key, &plaintext);
             plaintext.zeroize();
@@ -3470,6 +3663,153 @@ mod tests {
         )
         .await
         .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_accounts_on_one_profile_both_join_a_group_and_legacy_groups_still_load() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-profile-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        // Bob and Carol use the same desktop profile (one local database).
+        let shared_db = open_database(&root.join("shared.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+
+        // A group joined by Bob with the storage layout of earlier builds.
+        let legacy_conversation = Uuid::new_v4().to_string();
+        let mut pair = vec![alice_id.clone(), bob_id.clone()];
+        pair.sort();
+        use_legacy_storage_layout(&bob_id, true);
+        let bob_device = prepare_device(&shared_db, &bob_id).await.unwrap();
+        let legacy_start = create_direct_group(
+            &alice_db,
+            &alice_id,
+            &legacy_conversation,
+            &bob_id,
+            &bob_device.device_id,
+            &bob_device.payload,
+        )
+        .await
+        .unwrap();
+        process_crypto_event(
+            &shared_db,
+            &bob_id,
+            &legacy_conversation,
+            &alice_id,
+            None,
+            Some(1),
+            false,
+            &pair,
+            &legacy_start.welcome_payload,
+        )
+        .await
+        .unwrap();
+        use_legacy_storage_layout(&bob_id, false);
+        let old_text = encrypt_text(
+            &alice_db,
+            &alice_id,
+            &legacy_conversation,
+            &Uuid::new_v4().to_string(),
+            "from an earlier build",
+        )
+        .await
+        .unwrap();
+        assert!(has_direct_group(&shared_db, &bob_id, &legacy_conversation)
+            .await
+            .unwrap());
+        let decoded = process_crypto_event(
+            &shared_db,
+            &bob_id,
+            &legacy_conversation,
+            &alice_id,
+            None,
+            Some(2),
+            false,
+            &pair,
+            &old_text.payload,
+        )
+        .await
+        .expect("a group stored by an earlier build stays usable");
+        assert_eq!(decoded.content.as_deref(), Some("from an earlier build"));
+
+        // Bob and Carol, both on the shared profile, join the same group.
+        let conversation_id = Uuid::new_v4().to_string();
+        let bob_package = prepare_device(&shared_db, &bob_id).await.unwrap();
+        let carol_package = prepare_device(&shared_db, &carol_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[
+                GroupPeerKeyPackage {
+                    user_id: bob_id.clone(),
+                    device_id: bob_package.device_id.clone(),
+                    payload: bob_package.payload.clone(),
+                },
+                GroupPeerKeyPackage {
+                    user_id: carol_id.clone(),
+                    device_id: carol_package.device_id.clone(),
+                    payload: carol_package.payload.clone(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        for id in [&bob_id, &carol_id] {
+            let joined = process_crypto_event(
+                &shared_db,
+                id,
+                &conversation_id,
+                &alice_id,
+                None,
+                Some(1),
+                true,
+                &roster,
+                &start.welcome_payload,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                joined.kind, "welcome",
+                "account {id} joins on the shared profile"
+            );
+        }
+        let sent = encrypt_text(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &Uuid::new_v4().to_string(),
+            "hello both",
+        )
+        .await
+        .unwrap();
+        for id in [&bob_id, &carol_id] {
+            let received = process_crypto_event(
+                &shared_db,
+                id,
+                &conversation_id,
+                &alice_id,
+                None,
+                Some(2),
+                true,
+                &roster,
+                &sent.payload,
+            )
+            .await
+            .unwrap();
+            assert_eq!(received.content.as_deref(), Some("hello both"));
+        }
+        // Carol never sees Bob's legacy group as hers.
+        assert!(
+            !has_direct_group(&shared_db, &carol_id, &legacy_conversation)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
