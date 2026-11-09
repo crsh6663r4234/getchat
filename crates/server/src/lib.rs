@@ -1815,7 +1815,19 @@ async fn delete_account(
     .fetch_all(&mut *tx)
     .await
     .map_err(|_| ApiError::internal())?;
+    let mut removed_for_peers = Vec::new();
     for conversation_id in &deleted_conversations {
+        let peers = sqlx::query_scalar::<_, String>(
+            "SELECT user_id FROM conversation_members WHERE conversation_id=? AND user_id<>?",
+        )
+        .bind(conversation_id)
+        .bind(&user.id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|_| ApiError::internal())?;
+        if !peers.is_empty() {
+            removed_for_peers.push((conversation_id.clone(), peers));
+        }
         attachment_ids.extend(
             sqlx::query_scalar::<_, String>(
                 "SELECT id FROM attachments WHERE stored_on_disk=1 AND conversation_id=? AND uploaded_by<>?",
@@ -1848,6 +1860,14 @@ async fn delete_account(
         recipients: vec![user.id.clone()],
         event: serde_json::json!({"type":"session_revoked"}),
     });
+    // Peers of the removed direct conversations drop the chat, as after any
+    // other removal (the conversation is gone, so their refresh omits it).
+    for (conversation_id, recipients) in removed_for_peers {
+        let _ = state.events.send(ServerEvent {
+            recipients,
+            event: serde_json::json!({"type":"conversation_updated","conversation_id":conversation_id}),
+        });
+    }
     for (conversation_id, recipients) in remaining_groups {
         if let Err(error) = remove_livekit_participant(&state, &conversation_id, &user.id).await {
             tracing::warn!(conversation_id = %conversation_id, account_id = %user.id, %error, "could not remove deleted account from LiveKit");
@@ -7817,5 +7837,37 @@ mod tests {
             .unwrap();
         assert_eq!(rows, 0);
         assert!(blob(&bobs).exists(), "an unrelated upload is kept");
+    }
+
+    #[tokio::test]
+    async fn account_deletion_tells_direct_peers_the_conversation_is_gone() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let direct = app.direct(&alice, &bob).await;
+        let mut events = app.state.events.subscribe();
+        let status = app
+            .request(Method::DELETE, "/v1/me/account", &bob)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let mut told = false;
+        while let Ok(Ok(event)) =
+            tokio::time::timeout(Duration::from_millis(300), events.recv()).await
+        {
+            if event.recipients.contains(&alice.id)
+                && event.event["type"] == "conversation_updated"
+                && event.event["conversation_id"] == direct.as_str()
+            {
+                told = true;
+            }
+        }
+        assert!(
+            told,
+            "the peer must learn that the direct conversation was removed"
+        );
     }
 }
