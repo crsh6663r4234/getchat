@@ -219,6 +219,19 @@ fn base_url(server_base: &str) -> Result<reqwest::Url, String> {
     Ok(url)
 }
 
+/// Joins an API path onto the configured server address. The path is joined
+/// relative to the base (which is treated as a directory), so a server hosted
+/// under a path prefix such as `https://host/chat/` keeps that prefix.
+fn api_url(server_base: &str, path_and_query: &str) -> Result<reqwest::Url, String> {
+    let mut base = base_url(server_base)?;
+    if !base.path().ends_with('/') {
+        let path = format!("{}/", base.path());
+        base.set_path(&path);
+    }
+    base.join(path_and_query.trim_start_matches('/'))
+        .map_err(|_| "The selected server address is invalid.".to_string())
+}
+
 fn safe_file_name(value: &str) -> String {
     let name = value.rsplit(['/', '\\']).next().unwrap_or("file");
     let clean = name
@@ -372,12 +385,12 @@ pub async fn upload(
         }
         Ok(Some((encrypted, state)))
     });
-    let base = base_url(&server_base)?;
-    let url = base
-        .join(&format!(
+    let url = api_url(
+        &server_base,
+        &format!(
             "/v1/conversations/{conversation_id}/encrypted-attachments?attachment_id={attachment_id}&plain_size={size_bytes}&chunk_size={CHUNK_SIZE}&chunk_count={chunk_count}"
-        ))
-        .map_err(|_| "The selected server address is invalid.".to_string())?;
+        ),
+    )?;
     let response = client()?
         .post(url)
         .bearer_auth(&token)
@@ -470,10 +483,7 @@ pub async fn download(
         .await
         .map_err(|_| "The save dialog could not be opened.".to_string())?;
     let Some(path) = path else { return Ok(None) };
-    let base = base_url(&server_base)?;
-    let url = base
-        .join(&format!("/v1/attachments/{attachment_id}"))
-        .map_err(|_| "The selected server address is invalid.".to_string())?;
+    let url = api_url(&server_base, &format!("/v1/attachments/{attachment_id}"))?;
     let response = client()?
         .get(url)
         .bearer_auth(&token)
@@ -586,4 +596,50 @@ pub async fn download(
     _manifest: EncryptedAttachmentManifest,
 ) -> Result<Option<String>, String> {
     Err("Encrypted file transfers are currently available in the Windows app.".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn api_urls_keep_the_server_path_prefix() {
+        for (base, expected) in [
+            (
+                "https://host.example",
+                "https://host.example/v1/attachments/abc",
+            ),
+            (
+                "https://host.example/",
+                "https://host.example/v1/attachments/abc",
+            ),
+            (
+                "https://host.example/chat",
+                "https://host.example/chat/v1/attachments/abc",
+            ),
+            (
+                "https://host.example/chat/",
+                "https://host.example/chat/v1/attachments/abc",
+            ),
+            (
+                "http://127.0.0.1:38241/a/b",
+                "http://127.0.0.1:38241/a/b/v1/attachments/abc",
+            ),
+        ] {
+            assert_eq!(
+                api_url(base, "/v1/attachments/abc").unwrap().as_str(),
+                expected,
+                "base {base}"
+            );
+        }
+        let with_query = api_url(
+            "https://host.example/chat/",
+            "/v1/conversations/c/encrypted-attachments?attachment_id=a&plain_size=1",
+        )
+        .unwrap();
+        assert_eq!(
+            with_query.as_str(),
+            "https://host.example/chat/v1/conversations/c/encrypted-attachments?attachment_id=a&plain_size=1"
+        );
+    }
 }
