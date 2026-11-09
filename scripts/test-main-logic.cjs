@@ -324,6 +324,39 @@ test('the group owner removes a deleted account leaf and others tolerate it', as
   await app.flush(() => app.invokes.some(item => item.command === 'crypto_finalize_group_membership_update'));
 });
 
+test('pending encrypted rows are decoded before a relay commit is applied', async () => {
+  const base = 'https://a.example';
+  const group = { id: 'g1', kind: 'group', display_name: 'Group' };
+  const order = [];
+  const app = harness({
+    storage: { 'ghostchat.server': base },
+    credentials: { [await serverKey(base)]: 'token-A' },
+    hooks: {
+      crypto_has_direct_group: () => true,
+      crypto_group_fingerprint: () => 'fp-group',
+      crypto_get_event_cursor: () => 0,
+      crypto_advance_event_cursor: args => args.sequence,
+      crypto_get_cached_sent_text: () => null,
+      crypto_decode_pending_history: args => { order.push(`history:${args.clientMessageId}`); return { kind: 'application', content: 'missed' }; },
+      crypto_process_event: args => { order.push(args.eventSequence == null ? `row:${args.clientMessageId}` : `relay:${args.eventSequence}`); return { kind: 'commit' }; },
+    },
+    fetchHandler: url => {
+      if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
+      if (url.endsWith('/v1/conversations')) return { body: [group] };
+      if (url.endsWith('/conversations/g1/crypto-lock')) return { body: { locked: true, setupComplete: true, lockedBy: 'bob', deletedMemberIds: [] } };
+      if (url.endsWith('/conversations/g1/members')) return { body: [{ id: 'me', role: 'member' }, { id: 'bob', role: 'owner' }] };
+      if (url.includes('/conversations/g1/crypto-events?after=0')) return { body: [{ sequence: 1, id: 'e1', sender_id: 'bob', recipient_id: 'me', payload: 'commit', created_at: '' }] };
+      if (url.includes('/conversations/g1/messages?')) return { body: [{ sequence: 7, id: 'm7', conversation_id: 'g1', sender_id: 'bob', client_message_id: 'c7', content: 'e2e1:cipher', created_at: '' }] };
+      return { body: [] };
+    },
+  });
+  await app.flush(() => app.sockets.length > 0);
+  app.voiceOptions.voice.onIncoming({ conversationId: 'g1' });
+  await app.flush(() => order.includes('relay:1'));
+  assert.ok(order.includes('history:c7'), 'the pending row was decoded');
+  assert.ok(order.indexOf('history:c7') < order.indexOf('relay:1'), `the row must be decoded before the commit (order: ${order.join(', ')})`);
+});
+
 test('an unreachable update host does not block startup', async () => {
   const app = harness({
     storage: { 'ghostchat.server': 'https://a.example' },

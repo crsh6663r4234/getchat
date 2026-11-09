@@ -1825,6 +1825,35 @@
     localStorage.setItem(cryptoTrustedFingerprintKey(conversationId), fingerprint);
     return true;
   }
+  // OpenMLS keeps no past-epoch secrets, so encrypted rows that arrived while
+  // this chat was not open must be decrypted (and cached) before a relay
+  // commit moves the group to the next epoch. Rows are decoded oldest first;
+  // paging stops at the first already cached row.
+  async function decodePendingEncryptedRows(conversationId) {
+    if (!await invoke("crypto_has_direct_group", { userId: state.user.id, conversationId })) return;
+    const pages = [];
+    let before = null;
+    for (let page = 0; page < 10; page++) {
+      let path = `/v1/conversations/${encodeURIComponent(conversationId)}/messages?limit=50`;
+      if (before != null) path += `&before=${encodeURIComponent(before)}`;
+      const rows = await request(path);
+      if (!Array.isArray(rows) || !rows.length) break;
+      const pending = [];
+      let reachedCached = false;
+      for (const row of rows) {
+        if (typeof row.content !== "string" || !row.content.startsWith("e2e1:") || !row.client_message_id || row.sender_id === state.user.id) continue;
+        if (await invoke("crypto_get_cached_sent_text", { clientMessageId: row.client_message_id }) != null) reachedCached = true;
+        else pending.push(row);
+      }
+      pages.unshift(pending);
+      if (reachedCached || rows.length < 50) break;
+      before = rows[0].sequence;
+    }
+    for (const row of pages.flat()) {
+      try { await decodeMessageRow({ ...row, conversation_id: row.conversation_id || conversationId }, { beforePendingCommits: true }); }
+      catch (error) { console.warn("An encrypted message could not be decoded before a membership update.", error); }
+    }
+  }
   async function syncCryptoEvents(conversationId) {
     if (!state.user || !invoke) return;
     if (!state.cryptoEnabled.has(conversationId) && !state.cryptoLocked.has(conversationId)) return;
@@ -1847,9 +1876,14 @@
       }
       localStorage.setItem(cryptoEventCursorKey(conversationId), String(cursor));
       let holdForVerification = false;
+      let pendingRowsDecoded = false;
       for (let page = 0; page < 20; page++) {
         const events = await request(`/v1/conversations/${encodeURIComponent(conversationId)}/crypto-events?after=${cursor}&limit=100`);
         if (!Array.isArray(events) || !events.length) break;
+        if (!pendingRowsDecoded && events.some(event => Number(event.sequence) > cursor && event.sender_id !== state.user.id)) {
+          pendingRowsDecoded = true;
+          await decodePendingEncryptedRows(conversationId);
+        }
         for (const event of events) {
           const sequence = Number(event.sequence);
           if (!Number.isSafeInteger(sequence) || sequence <= cursor) continue;
@@ -2247,13 +2281,23 @@
     }
   }
   $("#enableEncryptionButton").onclick = () => void enableEncryption();
-  async function decodeMessageRow(message) {
+  // beforePendingCommits decodes a row against this device's current MLS
+  // epoch, right before pending relay commits move the group to a new epoch.
+  async function decodeMessageRow(message, { beforePendingCommits = false } = {}) {
     if (typeof message.content !== "string" || !message.content.startsWith("e2e1:")) return message;
     const messageKey = message.client_message_id || message.id;
     if (state.cryptoMessageDecoding.has(messageKey)) return state.cryptoMessageDecoding.get(messageKey);
     const task = (async () => {
       let content = await invoke("crypto_get_cached_sent_text", { clientMessageId: message.client_message_id });
-      if (content == null) {
+      if (content == null && beforePendingCommits) {
+        const result = await invoke("crypto_decode_pending_history", {
+          userId: state.user.id, conversationId: message.conversation_id, senderId: message.sender_id,
+          clientMessageId: message.client_message_id,
+          conversationIsGroup: (state.active?.id === message.conversation_id ? state.active : state.conversations.find(item => item.id === message.conversation_id))?.kind === "group",
+          payload: message.content.slice(5),
+        });
+        if (result.kind === "application") content = result.content;
+      } else if (content == null) {
         const result = await invoke("crypto_process_event", {
           userId: state.user.id, conversationId: message.conversation_id, senderId: message.sender_id,
           clientMessageId: message.client_message_id,
