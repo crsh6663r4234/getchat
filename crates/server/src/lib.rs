@@ -7870,4 +7870,139 @@ mod tests {
             "the peer must learn that the direct conversation was removed"
         );
     }
+
+    // Minimal RFC 6455 client over a raw TcpStream (no extra crates): enough
+    // to authenticate a session socket and read the server's frames.
+    struct RawWebSocket(tokio::net::TcpStream);
+
+    impl RawWebSocket {
+        async fn connect(base: &str, token: &str) -> Self {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let addr = base.trim_start_matches("http://");
+            let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let request = format!(
+                "GET /v1/ws HTTP/1.1\r\nHost: {addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            );
+            stream.write_all(request.as_bytes()).await.unwrap();
+            let mut response = Vec::new();
+            while !response.ends_with(b"\r\n\r\n") {
+                let mut byte = [0u8; 1];
+                stream.read_exact(&mut byte).await.unwrap();
+                response.push(byte[0]);
+            }
+            assert!(
+                response.starts_with(b"HTTP/1.1 101"),
+                "{}",
+                String::from_utf8_lossy(&response)
+            );
+            let mut socket = Self(stream);
+            socket
+                .send_text(&serde_json::json!({ "token": token }).to_string())
+                .await;
+            let (opcode, ready) = socket.read_frame().await;
+            assert_eq!(opcode, 1);
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&ready).unwrap()["type"],
+                "ready"
+            );
+            socket
+        }
+
+        async fn send_text(&mut self, text: &str) {
+            use tokio::io::AsyncWriteExt;
+            let payload = text.as_bytes();
+            let mask = [0x12u8, 0x34, 0x56, 0x78];
+            let mut frame = vec![0x81u8];
+            if payload.len() < 126 {
+                frame.push(0x80 | payload.len() as u8);
+            } else {
+                frame.push(0x80 | 126);
+                frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+            }
+            frame.extend_from_slice(&mask);
+            frame.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+            self.0.write_all(&frame).await.unwrap();
+        }
+
+        async fn read_frame(&mut self) -> (u8, Vec<u8>) {
+            use tokio::io::AsyncReadExt;
+            let mut head = [0u8; 2];
+            self.0.read_exact(&mut head).await.unwrap();
+            let mut len = u64::from(head[1] & 0x7f);
+            if len == 126 {
+                let mut ext = [0u8; 2];
+                self.0.read_exact(&mut ext).await.unwrap();
+                len = u64::from(u16::from_be_bytes(ext));
+            } else if len == 127 {
+                let mut ext = [0u8; 8];
+                self.0.read_exact(&mut ext).await.unwrap();
+                len = u64::from_be_bytes(ext);
+            }
+            let mut payload = vec![0u8; len as usize];
+            self.0.read_exact(&mut payload).await.unwrap();
+            (head[0] & 0x0f, payload)
+        }
+
+        /// The next text frame's JSON within `wait`, skipping other frames.
+        async fn next_event(&mut self, wait: Duration) -> Option<serde_json::Value> {
+            let deadline = tokio::time::Instant::now() + wait;
+            loop {
+                let frame = tokio::time::timeout_at(deadline, self.read_frame())
+                    .await
+                    .ok()?;
+                match frame {
+                    (1, text) => return serde_json::from_slice(&text).ok(),
+                    (8, _) => return Some(serde_json::json!({ "type": "__closed" })),
+                    _ => continue,
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn logout_revokes_only_the_logged_out_socket() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let laptop = app.user("alice").await;
+        let desktop = TestUser {
+            id: laptop.id.clone(),
+            token: add_session(&app.state.db, &laptop.id).await.unwrap(),
+        };
+        let mut laptop_socket = RawWebSocket::connect(&app.base, &laptop.token).await;
+        let mut desktop_socket = RawWebSocket::connect(&app.base, &desktop.token).await;
+        let status = app
+            .request(Method::DELETE, "/v1/sessions", &laptop)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let revoked = laptop_socket.next_event(Duration::from_secs(2)).await;
+        assert_eq!(
+            revoked.as_ref().map(|event| event["type"].clone()),
+            Some(serde_json::json!("session_revoked"))
+        );
+        let closed = laptop_socket.next_event(Duration::from_secs(2)).await;
+        assert_eq!(
+            closed.map(|event| event["type"].clone()),
+            Some(serde_json::json!("__closed")),
+            "the logged-out socket is closed"
+        );
+        // The other device's socket gets neither event and still relays.
+        while let Some(event) = desktop_socket.next_event(Duration::from_millis(500)).await {
+            assert!(
+                event["type"] != "session_revoked" && event["type"] != "__closed",
+                "the other session's socket was revoked: {event}"
+            );
+        }
+        let _ = app.state.events.send(ServerEvent {
+            recipients: vec![desktop.id.clone()],
+            event: serde_json::json!({"type": "contacts_updated"}),
+        });
+        let event = desktop_socket.next_event(Duration::from_secs(2)).await;
+        assert_eq!(
+            event.map(|event| event["type"].clone()),
+            Some(serde_json::json!("contacts_updated"))
+        );
+    }
 }
