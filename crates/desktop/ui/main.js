@@ -2665,14 +2665,16 @@
     if (!raw) return true;
     const pending = JSON.parse(raw);
     const sent = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/messages`, {
-      method: "POST", body: JSON.stringify({ client_message_id: pending.clientMessageId, content: `e2e1:${pending.payload}`, reply_to_id: null }),
+      method: "POST", body: JSON.stringify({ client_message_id: pending.clientMessageId, content: `e2e1:${pending.payload}`, reply_to_id: null, attachment_ids: Array.isArray(pending.attachmentIds) ? pending.attachmentIds : [] }),
     });
     localStorage.removeItem(key);
     const plaintext = await invoke("crypto_get_cached_sent_text", { userId: state.user.id, conversationId: conversation.id, senderId: state.user.id, clientMessageId: pending.clientMessageId });
     if (state.active?.id === conversation.id && plaintext) appendMessage({ ...sent, content: plaintext, encrypted: true });
     return true;
   }
-  async function sendMessage(content, clientId = crypto.randomUUID(), replyToId = null, targetConversation = state.active) {
+  // attachmentIds: encrypted uploads whose keys this encrypted message carries;
+  // the server links them so deleting the message deletes them too.
+  async function sendMessage(content, clientId = crypto.randomUUID(), replyToId = null, targetConversation = state.active, attachmentIds = []) {
     if (!targetConversation || !content.trim()) return;
     if (state.cryptoMembershipPending.has(targetConversation.id)) {
       toast(translate("Pending encrypted membership update is being retried…"), true);
@@ -2696,9 +2698,9 @@
         const encrypted = await invoke("crypto_encrypt_text", {
           userId: state.user.id, conversationId: conversation.id, clientMessageId: clientId, content,
         });
-        localStorage.setItem(encryptedMessagePendingKey(conversation.id), JSON.stringify({ clientMessageId: clientId, payload: encrypted.payload }));
+        localStorage.setItem(encryptedMessagePendingKey(conversation.id), JSON.stringify({ clientMessageId: clientId, payload: encrypted.payload, attachmentIds }));
         const message = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/messages`, {
-          method: "POST", body: JSON.stringify({ client_message_id: clientId, content: `e2e1:${encrypted.payload}`, reply_to_id: null }),
+          method: "POST", body: JSON.stringify({ client_message_id: clientId, content: `e2e1:${encrypted.payload}`, reply_to_id: null, attachment_ids: attachmentIds }),
         });
         localStorage.removeItem(encryptedMessagePendingKey(conversation.id));
         if (state.active?.id === conversation.id) {
@@ -2942,7 +2944,7 @@
       });
       if (!manifest) return;
       const content = ENCRYPTED_ATTACHMENT_MARKER + JSON.stringify(manifest);
-      if (await sendMessage(content, crypto.randomUUID(), null, conversation)) toast(translate("Secure file sent."));
+      if (await sendMessage(content, crypto.randomUUID(), null, conversation, [manifest.attachmentId])) toast(translate("Secure file sent."));
     } catch (error) {
       toast(translate(error.message) || error.message || translate("Could not load this file."), true);
     } finally {

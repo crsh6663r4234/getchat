@@ -208,7 +208,7 @@ test('changing the server never sends the previous server token to the new one',
   assert.deepEqual(leaked, [], 'server B must never receive server A token over HTTP');
 });
 
-async function openChatAndFailSend({ encrypted = false, history = [], beforeSend = null } = {}) {
+async function openChatAndFailSend({ encrypted = false, history = [], beforeSend = null, extraHooks = {} } = {}) {
   let offline = false;
   const conversation = { id: 'c1', kind: 'direct', peer_id: 'peer', display_name: 'Peer', username: 'peer' };
   const base = 'https://a.example';
@@ -216,6 +216,7 @@ async function openChatAndFailSend({ encrypted = false, history = [], beforeSend
     crypto_has_direct_group: () => true,
     crypto_direct_peer_fingerprint: () => 'fp-peer',
     crypto_encrypt_text: () => ({ payload: 'ciphertext' }),
+    ...extraHooks,
   } : {};
   const app = harness({
     storage: { 'ghostchat.server': base, ...(encrypted ? { [`ghostchat.cryptoPeerTrusted.${base}.me.c1`]: 'fp-peer' } : {}) },
@@ -310,6 +311,26 @@ test('a failed encrypted send that is queued for retry is not restored', async (
   assert.equal(pending?.payload, 'ciphertext', 'the ciphertext is queued for automatic retry');
   assert.equal(app.$('#messageInput').value, '', 'restoring a queued message would let it be sent twice');
 });
+
+test('an encrypted file message names its encrypted attachment for the server', async () => {
+  const attachmentId = '0b3c9a52-6f1e-4c55-9d43-3f6d2f6c1a10';
+  const app = await openChatAndFailSend({
+    encrypted: true,
+    extraHooks: { crypto_upload_encrypted_attachment: () => ({ attachmentId, sizeBytes: 0, chunkSize: 1048576, chunkCount: 1 }) },
+  });
+  app.goOnline();
+  localStorageClear(app);
+  app.$('#attachFileButton').onclick();
+  const sends = () => app.fetches.filter(item => item.method === 'POST' && item.url.endsWith('/conversations/c1/messages')).map(item => JSON.parse(item.body));
+  await app.flush(() => sends().some(body => (body.attachment_ids || []).length));
+  const sent = sends().find(body => (body.attachment_ids || []).length);
+  assert.deepEqual(sent.attachment_ids, [attachmentId]);
+});
+
+function localStorageClear(app) {
+  // Drop the earlier failed send's queued ciphertext so the next send is new.
+  for (const key of [...app.store.keys()]) if (key.startsWith('ghostchat.cryptoMessagePending.')) app.store.delete(key);
+}
 
 test('the group owner removes a deleted account leaf and others tolerate it', async () => {
   const base = 'https://a.example';
