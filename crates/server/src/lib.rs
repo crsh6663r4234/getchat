@@ -6075,6 +6075,13 @@ async fn relay_typing_signal(state: &AppState, sender: &PublicUser, text: &str) 
     {
         return;
     }
+    // A blocked direct pair exchanges no typing indicators.
+    if ensure_direct_not_blocked(&state.db, &signal.conversation_id, &sender.id)
+        .await
+        .is_err()
+    {
+        return;
+    }
     let recipients = match sqlx::query_scalar::<_, String>(
         "SELECT user_id FROM conversation_members WHERE conversation_id=? AND user_id<>?",
     )
@@ -7406,6 +7413,33 @@ mod tests {
                 .unwrap()
                 .status();
             assert_eq!(status, StatusCode::FORBIDDEN);
+        }
+    }
+
+    #[tokio::test]
+    async fn typing_is_not_relayed_across_a_block() {
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let direct = app.direct(&alice, &bob).await;
+        let sender = app.public_user(&alice).await;
+        let signal =
+            serde_json::json!({"type": "typing", "conversation_id": direct, "active": true})
+                .to_string();
+        let mut events = app.state.events.subscribe();
+        relay_typing_signal(&app.state, &sender, &signal).await;
+        let event = tokio::time::timeout(Duration::from_millis(300), events.recv())
+            .await
+            .expect("typing is relayed without a block")
+            .unwrap();
+        assert_eq!(event.event["type"], "typing");
+        app.block(&bob, &alice).await;
+        let mut events = app.state.events.subscribe();
+        relay_typing_signal(&app.state, &sender, &signal).await;
+        while let Ok(Ok(event)) =
+            tokio::time::timeout(Duration::from_millis(300), events.recv()).await
+        {
+            assert_ne!(event.event["type"], "typing", "typing crossed a block");
         }
     }
 
