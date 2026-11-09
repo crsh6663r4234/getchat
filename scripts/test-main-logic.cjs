@@ -13,6 +13,7 @@ function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {} } = 
   const sockets = [];
   const fetches = [];
   const invokes = [];
+  const created = [];
   const store = new Map(Object.entries(storage));
 
   const STRING_PROPS = new Set(['textContent', 'value', 'title', 'innerHTML', 'className', 'placeholder', 'id', 'tagName', 'type', 'src', 'href']);
@@ -26,7 +27,8 @@ function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {} } = 
     const target = function fakeElement() {};
     let proxy;
     const builtins = {
-      querySelector: sel => child(`${name} ${sel}`),
+      // Rendered message rows are not tracked, so a lookup for one finds none.
+      querySelector: sel => (String(sel).startsWith('[data-message-id') ? null : child(`${name} ${sel}`)),
       querySelectorAll: () => [],
       getAttribute: key => (attributes.has(key) ? attributes.get(key) : null),
       setAttribute: (key, value) => { attributes.set(key, String(value)); },
@@ -71,7 +73,7 @@ function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {} } = 
   const docListeners = new Map();
   const document = {
     querySelector: $, querySelectorAll: () => [],
-    createElement: tag => element(`<${tag}>`), createTextNode: text => ({ textContent: text }),
+    createElement: tag => { const node = element(`<${tag}>`); created.push(node); return node; }, createTextNode: text => ({ textContent: text }),
     body: element('body'), documentElement: element('html'),
     addEventListener: (type, fn) => { if (!docListeners.has(type)) docListeners.set(type, []); docListeners.get(type).push(fn); },
     hasFocus: () => false, visibilityState: 'visible', activeElement: null,
@@ -139,7 +141,7 @@ function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {} } = 
     }
   };
   const runTimers = () => { for (const timer of timers.splice(0)) if (!timer.done) { timer.done = true; timer.fn(); } };
-  return { $, store, sockets, fetches, invokes, timers, flush, runTimers, voiceOptions };
+  return { $, store, sockets, fetches, invokes, created, timers, flush, runTimers, voiceOptions };
 }
 
 async function serverKey(base) {
@@ -206,7 +208,7 @@ test('changing the server never sends the previous server token to the new one',
   assert.deepEqual(leaked, [], 'server B must never receive server A token over HTTP');
 });
 
-async function openChatAndFailSend({ encrypted = false } = {}) {
+async function openChatAndFailSend({ encrypted = false, history = [], beforeSend = null } = {}) {
   let offline = false;
   const conversation = { id: 'c1', kind: 'direct', peer_id: 'peer', display_name: 'Peer', username: 'peer' };
   const base = 'https://a.example';
@@ -223,6 +225,11 @@ async function openChatAndFailSend({ encrypted = false } = {}) {
       if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
       if (url.endsWith('/v1/conversations')) return { body: [conversation] };
       if (offline && options.method === 'POST' && url.includes('/messages')) throw new TypeError('Failed to fetch');
+      if (options.method === 'POST' && url.endsWith('/conversations/c1/messages')) {
+        const sent = JSON.parse(options.body);
+        return { body: { sequence: 99, id: `s-${sent.client_message_id}`, conversation_id: 'c1', sender_id: 'me', sender_name: 'Me', client_message_id: sent.client_message_id, content: sent.content, reply_to_id: sent.reply_to_id, created_at: '2026-01-01T00:00:00Z' } };
+      }
+      if (url.includes('/conversations/c1/messages?')) return { body: history };
       return { body: [] };
     },
   });
@@ -232,6 +239,7 @@ async function openChatAndFailSend({ encrypted = false } = {}) {
   await app.flush(() => app.fetches.some(item => item.url.includes('/conversations/c1/messages?')));
   // loadMessages() has no observable end; let its remaining awaits settle.
   await app.flush();
+  if (beforeSend) beforeSend(app);
   offline = true;
   app.$('#messageInput').value = 'hello there';
   const [submit] = app.$('#composer').__listeners.get('submit');
@@ -271,6 +279,29 @@ test('editing a restored draft sends it with a new client message id', async () 
   app.$('#messageInput').value = 'hello there, again';
   await app.submitComposer({ preventDefault() {} });
   assert.notEqual(sentIds()[1], failedId, 'different text is a different message');
+});
+
+test('resending a restored draft with a different reply target uses a new client message id', async () => {
+  const earlier = { sequence: 1, id: 'm1', conversation_id: 'c1', sender_id: 'peer', sender_name: 'Peer', client_message_id: 'x1', content: 'earlier', created_at: '2026-01-01T00:00:00Z' };
+  const app = await openChatAndFailSend({
+    history: [earlier],
+    beforeSend: app => {
+      const reply = app.created.find(node => node.className === 'message-inline-action' && node.textContent === 'Reply');
+      assert.ok(reply, 'the history message has a Reply action');
+      reply.onclick();
+    },
+  });
+  const sent = () => app.fetches
+    .filter(item => item.method === 'POST' && item.url.endsWith('/conversations/c1/messages'))
+    .map(item => JSON.parse(item.body));
+  const [failed] = sent();
+  assert.equal(failed.reply_to_id, 'm1', 'the failed send was a reply');
+  app.$('#cancelReply').onclick();
+  app.goOnline();
+  await app.submitComposer({ preventDefault() {} });
+  const retry = sent()[1];
+  assert.equal(retry.reply_to_id, null);
+  assert.notEqual(retry.client_message_id, failed.client_message_id, 'a different reply target is a different message; reusing the id would return the old reply');
 });
 
 test('a failed encrypted send that is queued for retry is not restored', async () => {
