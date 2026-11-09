@@ -818,6 +818,8 @@ async fn ghost_share_token(
     if participant.1 != "direct" {
         return Err(ApiError::not_found());
     }
+    // A block forbids GhostShare like it forbids call signaling.
+    ensure_direct_not_blocked(&state.db, &conversation_id, &user.id).await?;
     media_revocation::admit(&state, &conversation_id).await?;
     let api_key = state.voice.livekit_api_key.as_deref().ok_or_else(|| {
         ApiError::unavailable("GhostShare needs a configured LiveKit media server.")
@@ -6574,6 +6576,44 @@ mod tests {
             reply["id"].as_str().unwrap().to_owned()
         }
 
+        async fn direct(&self, first: &TestUser, second: &TestUser) -> String {
+            self.befriend(first, second).await;
+            let reply: serde_json::Value = self
+                .request(reqwest::Method::POST, "/v1/conversations/direct", first)
+                .json(&serde_json::json!({"user_id": second.id}))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            reply["id"].as_str().unwrap().to_owned()
+        }
+
+        async fn block(&self, blocker: &TestUser, target: &TestUser) {
+            let status = self
+                .request(
+                    reqwest::Method::POST,
+                    &format!("/v1/users/{}/block", target.id),
+                    blocker,
+                )
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, reqwest::StatusCode::NO_CONTENT);
+        }
+
+        async fn public_user(&self, user: &TestUser) -> PublicUser {
+            sqlx::query_as::<_, PublicUser>(
+                "SELECT id,username,display_name,avatar_data FROM users WHERE id=?",
+            )
+            .bind(&user.id)
+            .fetch_one(&self.state.db)
+            .await
+            .unwrap()
+        }
+
         async fn send_text(&self, user: &TestUser, conversation: &str, text: &str) -> String {
             let reply: serde_json::Value = self
                 .request(
@@ -7340,4 +7380,33 @@ mod tests {
         .unwrap();
         assert_eq!(members, 3);
     }
+
+    #[tokio::test]
+    async fn share_token_rejects_blocked_direct_peer() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let direct = app.direct(&alice, &bob).await;
+        let path = format!("/v1/conversations/{direct}/share-token");
+        // Without a block the route reaches the LiveKit check (not configured).
+        let status = app
+            .request(Method::POST, &path, &alice)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        app.block(&bob, &alice).await;
+        for user in [&alice, &bob] {
+            let status = app
+                .request(Method::POST, &path, user)
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, StatusCode::FORBIDDEN);
+        }
+    }
+
 }
