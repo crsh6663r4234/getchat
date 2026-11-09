@@ -298,6 +298,24 @@ async fn crypto_prepare_group_removal_update(
 }
 
 #[tauri::command]
+async fn crypto_prepare_deleted_member_removal(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    expected_member_ids: Vec<String>,
+    deleted_member_ids: Vec<String>,
+) -> Result<Option<crypto::GroupMembershipUpdate>, String> {
+    crypto::prepare_deleted_member_removal(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &expected_member_ids,
+        &deleted_member_ids,
+    )
+    .await
+}
+
+#[tauri::command]
 async fn crypto_prepare_group_leave_proposal(
     state: State<'_, DesktopState>,
     user_id: String,
@@ -412,9 +430,10 @@ async fn crypto_process_event(
     event_sequence: Option<i64>,
     conversation_is_group: bool,
     expected_member_ids: Vec<String>,
+    deleted_member_ids: Option<Vec<String>>,
     payload: String,
 ) -> Result<crypto::CryptoEventResult, String> {
-    crypto::process_crypto_event(
+    crypto::process_crypto_event_with_deleted(
         &state.crypto_db,
         &user_id,
         &conversation_id,
@@ -423,6 +442,7 @@ async fn crypto_process_event(
         event_sequence,
         conversation_is_group,
         &expected_member_ids,
+        deleted_member_ids.as_deref().unwrap_or_default(),
         &payload,
     )
     .await
@@ -740,6 +760,7 @@ fn main() {
             crypto_get_pending_group_membership_update,
             crypto_prepare_group_membership_update,
             crypto_prepare_group_removal_update,
+            crypto_prepare_deleted_member_removal,
             crypto_prepare_group_leave_proposal,
             crypto_prepare_group_leave_commit,
             crypto_forget_group_state,

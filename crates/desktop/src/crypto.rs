@@ -301,21 +301,47 @@ fn group_account_identities(
     Some(identities)
 }
 
+/// The MLS roster must contain every server member, and any extra leaf must
+/// belong to an account the server recorded as deleted from this group.
+fn roster_matches_allowing_deleted(
+    actual_member_ids: &std::collections::HashSet<String>,
+    expected_member_ids: &std::collections::HashSet<String>,
+    deleted_member_ids: &std::collections::HashSet<String>,
+) -> bool {
+    expected_member_ids
+        .iter()
+        .all(|user_id| actual_member_ids.contains(user_id))
+        && actual_member_ids.iter().all(|user_id| {
+            expected_member_ids.contains(user_id) || deleted_member_ids.contains(user_id)
+        })
+}
+
 fn group_roster_matches(
     group: &MlsGroup,
     expected_member_ids: &std::collections::HashSet<String>,
+    deleted_member_ids: &std::collections::HashSet<String>,
     own_identity: &str,
 ) -> bool {
     let Some(identities) = group_account_identities(group) else {
         return false;
     };
-    identities.len() == expected_member_ids.len()
-        && identities
-            .keys()
-            .all(|user_id| expected_member_ids.contains(user_id))
+    let actual_member_ids = identities.keys().cloned().collect();
+    roster_matches_allowing_deleted(&actual_member_ids, expected_member_ids, deleted_member_ids)
         && identities
             .values()
             .any(|(credential, _)| credential == own_identity.as_bytes())
+}
+
+fn normalized_deleted_member_ids(
+    deleted_member_ids: &[String],
+) -> Result<std::collections::HashSet<String>, String> {
+    if deleted_member_ids.len() > 64 {
+        return Err("The deleted group member list is invalid.".into());
+    }
+    deleted_member_ids
+        .iter()
+        .map(|member_id| normalized_uuid(member_id, "deleted group member"))
+        .collect()
 }
 
 fn existing_group_identities_unchanged(
@@ -1088,9 +1114,11 @@ pub async fn prepare_group_membership_update(
         expected_member_ids,
         "add",
         &[],
+        &[],
         peers,
     )
-    .await
+    .await?
+    .ok_or_else(|| "There is no encrypted membership update to prepare.".to_string())
 }
 
 pub async fn prepare_group_removal_update(
@@ -1108,10 +1136,38 @@ pub async fn prepare_group_removal_update(
         "remove",
         removed_member_ids,
         &[],
+        &[],
+    )
+    .await?
+    .ok_or_else(|| "There is no encrypted membership update to prepare.".to_string())
+}
+
+/// Stages an MLS Commit removing one leaf of an account the server recorded
+/// as deleted from this group (`deleted_member_ids`), or returns `None` when
+/// no such leaf is left. A pending membership update is returned as is.
+/// The local MLS roster must equal the server roster plus only recorded
+/// deleted accounts.
+pub async fn prepare_deleted_member_removal(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    expected_member_ids: &[String],
+    deleted_member_ids: &[String],
+) -> Result<Option<GroupMembershipUpdate>, String> {
+    prepare_group_membership_change(
+        db,
+        user_id,
+        conversation_id,
+        expected_member_ids,
+        "remove_deleted",
+        &[],
+        deleted_member_ids,
+        &[],
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn prepare_group_membership_change(
     db: &SqlitePool,
     user_id: &str,
@@ -1119,8 +1175,9 @@ async fn prepare_group_membership_change(
     expected_member_ids: &[String],
     action: &str,
     selected_member_ids: &[String],
+    deleted_member_ids: &[String],
     peers: &[GroupPeerKeyPackage],
-) -> Result<GroupMembershipUpdate, String> {
+) -> Result<Option<GroupMembershipUpdate>, String> {
     let _operation = CRYPTO_OPERATION_LOCK.lock().await;
     let user_id = normalized_uuid(user_id, "account")?;
     let conversation_id = normalized_uuid(conversation_id, "conversation")?;
@@ -1131,9 +1188,13 @@ async fn prepare_group_membership_change(
     if action == "remove" && (selected_member_ids.len() != 1 || !peers.is_empty()) {
         return Err("Choose exactly one encrypted group member to remove.".into());
     }
-    if !matches!(action, "add" | "remove") {
+    if action == "remove_deleted" && (!selected_member_ids.is_empty() || !peers.is_empty()) {
         return Err("Unsupported encrypted membership operation.".into());
     }
+    if !matches!(action, "add" | "remove" | "remove_deleted") {
+        return Err("Unsupported encrypted membership operation.".into());
+    }
+    let deleted_member_ids = normalized_deleted_member_ids(deleted_member_ids)?;
 
     let mut expected_member_ids = expected_member_ids
         .iter()
@@ -1214,7 +1275,7 @@ async fn prepare_group_membership_change(
             .rollback()
             .await
             .map_err(|_| "GhostChat could not close the local encryption transaction.".to_string())?;
-        return Ok(pending);
+        return Ok(Some(pending));
     }
 
     let (device_id, public_key) = sqlx::query_as::<_, (String, Vec<u8>)>(
@@ -1254,14 +1315,34 @@ async fn prepare_group_membership_change(
             .filter_map(|member| account_id_from_credential(member.credential.serialized_content()))
             .collect::<std::collections::HashSet<_>>();
         let own_identity = format!("ghostchat:v1:{user_id}:{device_id}");
-        if members.len() != expected_member_ids.len()
-            || actual_member_ids.len() != expected_member_ids.len()
-            || actual_member_ids != current_set.into_iter().cloned().collect()
+        let current_set = current_set
+            .into_iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        // Only a deleted-account removal tolerates extra, recorded leaves.
+        let tolerated = if action == "remove_deleted" {
+            deleted_member_ids
+        } else {
+            std::collections::HashSet::new()
+        };
+        if actual_member_ids.len() != members.len()
+            || !roster_matches_allowing_deleted(&actual_member_ids, &current_set, &tolerated)
             || !members
                 .iter()
                 .any(|member| member.credential.serialized_content() == own_identity.as_bytes())
         {
             return Err("The local MLS group does not match the current server roster.".into());
+        }
+        if action == "remove_deleted" {
+            let mut leftover = actual_member_ids
+                .difference(&current_set)
+                .cloned()
+                .collect::<Vec<_>>();
+            leftover.sort();
+            let Some(target) = leftover.into_iter().next() else {
+                return Ok(None);
+            };
+            member_ids = vec![target];
         }
 
         let (commit, welcome) = if action == "add" {
@@ -1339,7 +1420,7 @@ async fn prepare_group_membership_change(
     transaction.commit().await.map_err(|_| {
         "GhostChat could not persist the pending MLS membership update.".to_string()
     })?;
-    Ok(update)
+    Ok(Some(update))
 }
 
 pub async fn prepare_group_leave_proposal(
@@ -1775,6 +1856,18 @@ pub async fn finalize_group_membership_update(
         )
         .map_err(|_| "GhostChat could not load the encrypted MLS group.".to_string())?
         .ok_or_else(|| "The encrypted MLS group is missing on this device.".to_string())?;
+        // A deleted-account removal leaves any other recorded deleted leaves
+        // in place, so its result is the roster before the commit minus the
+        // removed leaf, which must still contain every server member.
+        let roster_before = group_account_identities(&group)
+            .map(|identities| {
+                identities
+                    .into_keys()
+                    .collect::<std::collections::HashSet<_>>()
+            })
+            .ok_or_else(|| {
+                "The local MLS group contains invalid or duplicate identities.".to_string()
+            })?;
         group.merge_pending_commit(&provider).map_err(|_| {
             "GhostChat could not confirm the local MLS membership update.".to_string()
         })?;
@@ -1792,6 +1885,18 @@ pub async fn finalize_group_membership_update(
                         return Err("The removal does not match the saved MLS roster.".into());
                     }
                 }
+            }
+            "remove_deleted" => {
+                let mut result = roster_before.clone();
+                for member_id in &pending.member_ids {
+                    if expected.contains(member_id) || !result.remove(member_id) {
+                        return Err("The removal does not match the saved MLS roster.".into());
+                    }
+                }
+                if !expected.is_subset(&result) {
+                    return Err("The removal does not match the saved MLS roster.".into());
+                }
+                expected = result;
             }
             _ => return Err("The saved MLS membership action is not supported.".into()),
         }
@@ -2026,6 +2131,7 @@ pub async fn get_cached_sent_text(
         .transpose()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn process_crypto_event(
     db: &SqlitePool,
     user_id: &str,
@@ -2035,6 +2141,38 @@ pub async fn process_crypto_event(
     event_sequence: Option<i64>,
     conversation_is_group: bool,
     expected_member_ids: &[String],
+    payload: &str,
+) -> Result<CryptoEventResult, String> {
+    process_crypto_event_with_deleted(
+        db,
+        user_id,
+        conversation_id,
+        sender_id,
+        client_message_id,
+        event_sequence,
+        conversation_is_group,
+        expected_member_ids,
+        &[],
+        payload,
+    )
+    .await
+}
+
+/// `deleted_member_ids` are accounts the server recorded as deleted while
+/// members of this MLS-locked group. Their leaves may remain in the MLS
+/// roster on top of `expected_member_ids` until an owner commits their
+/// removal; any other roster mismatch is still rejected.
+#[allow(clippy::too_many_arguments)]
+pub async fn process_crypto_event_with_deleted(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    sender_id: &str,
+    client_message_id: Option<&str>,
+    event_sequence: Option<i64>,
+    conversation_is_group: bool,
+    expected_member_ids: &[String],
+    deleted_member_ids: &[String],
     payload: &str,
 ) -> Result<CryptoEventResult, String> {
     let _operation = CRYPTO_OPERATION_LOCK.lock().await;
@@ -2056,6 +2194,7 @@ pub async fn process_crypto_event(
     if expected_member_ids.len() < 2 || expected_member_ids.len() > 16 {
         return Err("The expected MLS conversation roster is invalid.".into());
     }
+    let deleted_member_ids = normalized_deleted_member_ids(deleted_member_ids)?;
     let client_message_id = client_message_id
         .map(|message_id| normalized_uuid(message_id, "message"))
         .transpose()?;
@@ -2279,12 +2418,15 @@ pub async fn process_crypto_event(
                 }
                 match processed.into_content() {
                     ProcessedMessageContent::ApplicationMessage(application) => {
-                        if !group_roster_matches(&group, &expected_member_ids, &own_identity)
-                            || !existing_group_identities_unchanged(
-                                &group,
-                                &existing_group_identities,
-                            )
-                        {
+                        if !group_roster_matches(
+                            &group,
+                            &expected_member_ids,
+                            &deleted_member_ids,
+                            &own_identity,
+                        ) || !existing_group_identities_unchanged(
+                            &group,
+                            &existing_group_identities,
+                        ) {
                             return Err(
                                 "The encrypted group does not match the current server roster."
                                     .into(),
@@ -2306,12 +2448,15 @@ pub async fn process_crypto_event(
                             "GhostChat could not apply the authenticated MLS membership update."
                                 .to_string()
                         })?;
-                        if !group_roster_matches(&group, &expected_member_ids, &own_identity)
-                            || !existing_group_identities_unchanged(
-                                &group,
-                                &existing_group_identities,
-                            )
-                        {
+                        if !group_roster_matches(
+                            &group,
+                            &expected_member_ids,
+                            &deleted_member_ids,
+                            &own_identity,
+                        ) || !existing_group_identities_unchanged(
+                            &group,
+                            &existing_group_identities,
+                        ) {
                             return Err(
                                 "The MLS commit does not match the current server roster.".into()
                             );
@@ -2327,7 +2472,12 @@ pub async fn process_crypto_event(
                             "GhostChat could not confirm the local MLS membership update."
                                 .to_string()
                         })?;
-                        if !group_roster_matches(&group, &expected_member_ids, &own_identity) {
+                        if !group_roster_matches(
+                            &group,
+                            &expected_member_ids,
+                            &deleted_member_ids,
+                            &own_identity,
+                        ) {
                             return Err(
                                 "The MLS commit does not match the current server roster.".into()
                             );
@@ -3588,5 +3738,191 @@ mod tests {
         assert_eq!(legacy_key_package_rows(&fresh_db).await, 1);
         prepare_crypto_storage(&fresh_db).await.unwrap();
         assert_eq!(legacy_key_package_rows(&fresh_db).await, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deleted_account_leaf_is_tolerated_until_the_owner_removes_it() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-deleted-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let carol_db = open_database(&root.join("carol.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let carol_device = prepare_device(&carol_db, &carol_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[
+                GroupPeerKeyPackage {
+                    user_id: bob_id.clone(),
+                    device_id: bob_device.device_id.clone(),
+                    payload: bob_device.payload.clone(),
+                },
+                GroupPeerKeyPackage {
+                    user_id: carol_id.clone(),
+                    device_id: carol_device.device_id.clone(),
+                    payload: carol_device.payload.clone(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        for (db, id) in [(&bob_db, &bob_id), (&carol_db, &carol_id)] {
+            process_crypto_event(
+                db,
+                id,
+                &conversation_id,
+                &alice_id,
+                None,
+                Some(1),
+                true,
+                &roster,
+                &start.welcome_payload,
+            )
+            .await
+            .expect("Each member should join from the group Welcome");
+        }
+
+        // Carol deletes her account: the server roster loses her, MLS does not.
+        let mut remaining = vec![alice_id.clone(), bob_id.clone()];
+        remaining.sort();
+        let deleted = vec![carol_id.clone()];
+        let before = encrypt_text(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &Uuid::new_v4().to_string(),
+            "before removal",
+        )
+        .await
+        .unwrap();
+        let unknown = vec![Uuid::new_v4().to_string()];
+        assert!(
+            process_crypto_event_with_deleted(
+                &bob_db,
+                &bob_id,
+                &conversation_id,
+                &alice_id,
+                None,
+                None,
+                true,
+                &remaining,
+                &unknown,
+                &before.payload,
+            )
+            .await
+            .is_err(),
+            "a leaf that is not a recorded deleted account is still rejected"
+        );
+        let decrypted = process_crypto_event_with_deleted(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            None,
+            true,
+            &remaining,
+            &deleted,
+            &before.payload,
+        )
+        .await
+        .expect("Bob should still decrypt while Carol's deleted leaf remains");
+        assert_eq!(decrypted.content.as_deref(), Some("before removal"));
+
+        assert!(
+            prepare_deleted_member_removal(&alice_db, &alice_id, &conversation_id, &remaining, &[])
+                .await
+                .is_err(),
+            "without the deleted record the roster mismatch is still refused"
+        );
+        let removal = prepare_deleted_member_removal(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &remaining,
+            &deleted,
+        )
+        .await
+        .unwrap()
+        .expect("The owner should stage the removal of Carol's deleted leaf");
+        assert_eq!(removal.action, "remove_deleted");
+        assert_eq!(removal.member_ids, deleted);
+        assert_eq!(removal.expected_member_ids, remaining);
+        finalize_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &removal.operation_id,
+        )
+        .await
+        .expect("The owner should merge the confirmed removal");
+        let applied = process_crypto_event_with_deleted(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(2),
+            true,
+            &remaining,
+            &deleted,
+            &removal.commit_payload,
+        )
+        .await
+        .expect("Bob should apply the removal commit");
+        assert_eq!(applied.kind, "commit");
+        assert_eq!(
+            group_fingerprint(&bob_db, &bob_id, &conversation_id)
+                .await
+                .unwrap(),
+            group_fingerprint(&alice_db, &alice_id, &conversation_id)
+                .await
+                .unwrap(),
+        );
+        assert!(prepare_deleted_member_removal(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &remaining,
+            &deleted
+        )
+        .await
+        .unwrap()
+        .is_none());
+
+        // The rosters now match exactly: no tolerance is needed any more.
+        let after = encrypt_text(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &Uuid::new_v4().to_string(),
+            "after removal",
+        )
+        .await
+        .unwrap();
+        let decrypted = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            None,
+            true,
+            &remaining,
+            &after.payload,
+        )
+        .await
+        .expect("Bob should decrypt with the exact server roster");
+        assert_eq!(decrypted.content.as_deref(), Some("after removal"));
     }
 }
