@@ -3330,6 +3330,7 @@
     voiceClient = window.GhostChatVoice.create({
       getSettings: voiceSettings,
       getUserId: () => state.user?.id || "",
+      isInvisible: () => state.presenceMode === "invisible",
       getIceConfiguration: async () => {
         try { return await request("/v1/voice/ice"); }
         catch (error) {

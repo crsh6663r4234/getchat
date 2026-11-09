@@ -4,7 +4,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ui = path.resolve(__dirname, '../crates/desktop/ui');
 
-function directFixture(config, { failShare = false, relayOnly = false, relayResponds = true, deferConfig = false, shareFactory = null } = {}) {
+function directFixture(config, { failShare = false, relayOnly = false, relayResponds = true, deferConfig = false, shareFactory = null, invisible = false } = {}) {
   const pcs = []; const timers = []; const errors = []; let releaseConfig; let settingsFailures = 0; const configGate = new Promise(resolve => { releaseConfig = resolve; }); const probes = []; const signals = []; let micRequests = 0; let micSource = null; let screenRequests = 0; let shareLeaves = 0;
   class Peer {
     connectionState = 'new'; signalingState = 'stable'; transceivers = [];
@@ -44,7 +44,7 @@ function directFixture(config, { failShare = false, relayOnly = false, relayResp
   const client = window.GhostChatVoice.create({
     getSettings: () => { if (settingsFailures > 0) { settingsFailures--; throw new Error('settings unavailable'); } return { relayOnly }; }, getIceConfiguration: async () => { if (deferConfig) await configGate; return config; },
     getUserId: () => 'a', getShareToken: async () => ({}), sendSignal: signal => signals.push(signal),
-    onChange() {}, onError: message => errors.push(message), onIncoming() {},
+    onChange() {}, onError: message => errors.push(message), onIncoming() {}, isInvisible: () => invisible,
   });
   return { client, pcs, probes, signals, timers, errors, releaseConfig, failSettingsOnce: () => { settingsFailures = 1; }, counts: () => ({ micRequests, screenRequests, shareLeaves }), setMic: fn => { micSource = fn; } };
 }
@@ -155,6 +155,32 @@ async function run() {
   assert.equal(twice.pcs.length, 1, 'Double accept creates one peer connection');
   assert.equal(twice.signals.filter(signal => signal.kind === 'answer').length, 1, 'Double accept sends one answer');
   twice.client.hangup();
+
+  // A busy callee answers a second call with an automatic hangup. In
+  // invisible mode that reply would reveal it is online, so the second
+  // caller must see exactly what an offline callee gives: nothing.
+  for (const invisible of [false, true]) {
+    for (const busy of ['incoming', 'call']) {
+      const fixture = directFixture(plain, { invisible });
+      if (busy === 'incoming') await fixture.client.handleSignal(offerSignal);
+      else await fixture.client.start({ id: 'conversation', peer_id: 'b' });
+      const before = fixture.signals.length;
+      await fixture.client.handleSignal({ conversation_id: 'other', from_user_id: 'c', kind: 'offer', payload: { type: 'offer', sdp: 'fixture' } });
+      const replies = fixture.signals.slice(before).filter(signal => signal.peerId === 'c');
+      if (invisible) assert.deepEqual(replies, [], `invisible and busy (${busy}): the second caller gets no reply`);
+      else assert.deepEqual(replies.map(signal => signal.kind), ['hangup'], `busy (${busy}): the second caller is told`);
+      fixture.client.hangup();
+    }
+  }
+  // Invisible mode still receives the call and can answer it.
+  {
+    const fixture = directFixture(plain, { invisible: true });
+    await fixture.client.handleSignal(offerSignal);
+    assert.equal(fixture.client.getState().status, 'incoming', 'an invisible callee still rings');
+    await fixture.client.accept();
+    assert.equal(fixture.signals.filter(signal => signal.kind === 'answer').length, 1, 'an invisible callee can answer');
+    fixture.client.hangup();
+  }
 
   const stuck = directFixture(plain);
   await stuck.client.start({ id: 'conversation', peer_id: 'b' });

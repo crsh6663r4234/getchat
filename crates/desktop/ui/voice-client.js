@@ -901,6 +901,14 @@
       }
     }
 
+    // A busy device tells a second caller with an automatic hangup. In
+    // invisible mode it stays silent, so that caller sees exactly what an
+    // offline callee gives (ringing until its own timeout).
+    function rejectBusy(conversationId, peerId) {
+      if (api.isInvisible?.()) return;
+      try { send(conversationId, peerId, "hangup", null); } catch {}
+    }
+
     async function handleSignal(event) {
       if (!event?.conversation_id || !event?.from_user_id) return;
       const conversationId = event.conversation_id;
@@ -916,7 +924,7 @@
       }
       if (event.kind === "offer" && !call) {
         if (incoming && (incoming.conversationId !== conversationId || incoming.peerId !== peerId)) {
-          try { send(conversationId, peerId, "hangup", null); } catch {}
+          rejectBusy(conversationId, peerId);
           return;
         }
         incoming = {
@@ -930,7 +938,7 @@
         return;
       }
       if (event.kind === "offer" && call && (call.conversationId !== conversationId || call.peerId !== peerId)) {
-        try { send(conversationId, peerId, "hangup", null); } catch {}
+        rejectBusy(conversationId, peerId);
         return;
       }
       if (!call || call.conversationId !== conversationId || call.peerId !== peerId) return;
