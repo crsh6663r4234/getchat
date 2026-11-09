@@ -979,7 +979,8 @@
         invoke("credential_get_recovery", { serverKey: oldKey }), invoke("credential_get_recovery", { serverKey: newKey })
       ]);
       if (oldSavedRecovery && !newSavedRecovery) await invoke("credential_set_recovery", { serverKey: newKey, token: oldSavedRecovery });
-    } catch (error) { console.warn("Could not migrate saved credentials to the default server", error); }
+      return true;
+    } catch (error) { console.warn("Could not migrate saved credentials to the default server", error); return false; }
   }
   async function request(path, options = {}) {
     const headers = new Headers(options.headers || {});
@@ -4328,8 +4329,10 @@
     } else if (!savedServer || isLocalServer(savedServer) || isLegacyDefaultServer(savedServer)) {
       const migrateLegacyCredentials = isLegacyDefaultServer(savedServer);
       state.base = DEFAULT_REMOTE_SERVER;
-      localStorage.setItem("ghostchat.server", state.base);
-      if (migrateLegacyCredentials) await migrateServerCredentials(LEGACY_DEFAULT_REMOTE_SERVER, DEFAULT_REMOTE_SERVER);
+      // Save the new address only once the legacy credentials have moved, so
+      // a failed or interrupted migration is retried on the next launch.
+      const migrated = !migrateLegacyCredentials || await migrateServerCredentials(LEGACY_DEFAULT_REMOTE_SERVER, DEFAULT_REMOTE_SERVER);
+      if (migrated) localStorage.setItem("ghostchat.server", state.base);
     } else {
       state.base = normalizedBase(savedServer);
     }

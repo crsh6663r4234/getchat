@@ -594,6 +594,27 @@ test('a pending-commit decode retries a row whose ordinary decode failed', async
   assert.ok(order.includes('history:c7') && order.indexOf('history:c7') < order.indexOf('relay:1'), `the row is decoded in pending-commit mode before the commit (order: ${order.join(', ')})`);
 });
 
+test('an interrupted default-server credential migration is retried on the next launch', async () => {
+  const legacy = 'https://185.158.151.179';
+  const current = 'https://ghost-cassper.duckdns.org';
+  const legacyKey = await serverKey(legacy);
+  const failing = harness({
+    storage: { 'ghostchat.server': legacy },
+    credentials: { [legacyKey]: 'token-old' },
+    hooks: { credential_set: () => { throw new Error('Credential Manager is busy'); } },
+  });
+  await failing.flush(() => failing.invokes.some(item => item.command === 'credential_get_pending_recovery' && item.args.serverKey !== legacyKey));
+  assert.equal(failing.store.get('ghostchat.server'), legacy, 'the legacy address is kept until its credentials have moved');
+  const setKeys = [];
+  const retried = harness({
+    storage: { 'ghostchat.server': failing.store.get('ghostchat.server') },
+    credentials: { [legacyKey]: 'token-old' },
+    hooks: { credential_set: args => { setKeys.push(args.serverKey); return true; } },
+  });
+  await retried.flush(() => retried.store.get('ghostchat.server') === current);
+  assert.deepEqual(setKeys, [await serverKey(current)], 'the next launch moves the token to the new server key');
+});
+
 test('an unreachable update host does not block startup', async () => {
   const app = harness({
     storage: { 'ghostchat.server': 'https://a.example' },
