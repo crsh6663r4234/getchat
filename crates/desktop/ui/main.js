@@ -1065,6 +1065,9 @@
     return holder.firstChild;
   }
   function create(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = translate(text); return node; }
+  // User-provided text (names, messages, file names) is shown as is: a name
+  // that happens to equal a UI string such as "Owner" must not be translated.
+  function createText(tag, className, text) { const node = create(tag, className); if (text !== undefined) node.textContent = String(text); return node; }
   async function compressAvatar(file) {
     if (!file || !file.type.startsWith("image/")) throw new Error(translate("Choose an image file."));
     const bitmap = await createImageBitmap(file);
@@ -1228,7 +1231,7 @@
     profile.type = "button"; profile.title = translate("Edit profile"); profile.setAttribute("aria-label", profile.title);
     const avatar = create("span", "welcome-profile-avatar"); setAvatar(avatar, state.user?.display_name, state.user?.avatar_data);
     const profileCopy = create("span", "welcome-profile-copy");
-    profileCopy.append(create("strong", "", state.user?.display_name || "Ghost"), create("span", "", `@${state.user?.username || "ghost"}`), create("small", "", "Online on this device"));
+    profileCopy.append(createText("strong", "", state.user?.display_name || "Ghost"), createText("span", "", `@${state.user?.username || "ghost"}`), create("small", "", "Online on this device"));
     const edit = create("span", "welcome-profile-edit", "Edit profile");
     profile.append(avatar, profileCopy, edit); profile.onclick = openSettings;
     const orb = create("div", "welcome-orb"); orb.setAttribute("aria-hidden", "true"); orb.append(uiIcon("messages"));
@@ -1314,7 +1317,7 @@
           : convo.last_message?.startsWith("file:")
           ? translate("File shared")
           : convo.last_message || (convo.kind === "group" ? `${convo.member_count} ${translate("members")}` : `@${convo.username}`);
-        const copy = create("div", "list-copy"); copy.append(create("strong", "", convo.display_name), create("span", "", preview)); row.append(copy);
+        const copy = create("div", "list-copy"); copy.append(createText("strong", "", convo.display_name), createText("span", "", preview)); row.append(copy);
         if (convo.unread_count > 0) { const unread = create("span", "unread-badge", convo.unread_count > 99 ? "99+" : String(convo.unread_count)); unread.title = `${convo.unread_count} ${translate("Unread messages")}`; unread.setAttribute("aria-label", unread.title); row.append(unread); }
         root.append(row);
       }
@@ -1322,10 +1325,10 @@
     }
     if (state.page === "friends") {
       const requestsLabel = create("div", "section-label", "Requests"); root.append(requestsLabel);
-      for (const request of state.pending || []) { const row = create("button", "list-row"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, request.display_name, request.avatar_data); addPresenceDot(avatar, request.user_id); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", request.display_name), create("span", "", `@${request.username}`)); row.append(copy); root.append(row); }
+      for (const request of state.pending || []) { const row = create("button", "list-row"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, request.display_name, request.avatar_data); addPresenceDot(avatar, request.user_id); row.append(avatar); const copy = create("div", "list-copy"); copy.append(createText("strong", "", request.display_name), createText("span", "", `@${request.username}`)); row.append(copy); root.append(row); }
       if (!(state.pending || []).length) root.append(create("div", "empty-list", "No pending requests."));
       root.append(create("div", "section-label", "Your friends"));
-      for (const friend of state.friends) { const row = create("button", "list-row"); row.onclick = () => startConversation(friend.id); row.oncontextmenu = event => openAppContextMenu(event, [{ label: state.language === "tr" ? "Profili görüntüle" : "View profile", run: () => showProfilePreview(friend) }, { label: state.language === "tr" ? "Mesaj gönder" : "Message", run: () => startConversation(friend.id) }, { label: state.language === "tr" ? "Arkadaşlıktan çıkar" : "Remove friend", danger: true, run: () => removeFriend(friend) }]); const avatar = create("div", "mini-avatar"); setAvatar(avatar, friend.display_name, friend.avatar_data); addPresenceDot(avatar, friend.id); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", friend.display_name), create("span", "", `@${friend.username} · ${presenceLabel(friend.id)}`)); row.append(copy); root.append(row); }
+      for (const friend of state.friends) { const row = create("button", "list-row"); row.onclick = () => startConversation(friend.id); row.oncontextmenu = event => openAppContextMenu(event, [{ label: state.language === "tr" ? "Profili görüntüle" : "View profile", run: () => showProfilePreview(friend) }, { label: state.language === "tr" ? "Mesaj gönder" : "Message", run: () => startConversation(friend.id) }, { label: state.language === "tr" ? "Arkadaşlıktan çıkar" : "Remove friend", danger: true, run: () => removeFriend(friend) }]); const avatar = create("div", "mini-avatar"); setAvatar(avatar, friend.display_name, friend.avatar_data); addPresenceDot(avatar, friend.id); row.append(avatar); const copy = create("div", "list-copy"); copy.append(createText("strong", "", friend.display_name), createText("span", "", `@${friend.username} · ${presenceLabel(friend.id)}`)); row.append(copy); root.append(row); }
       if (!state.friends.length) root.append(create("div", "empty-list", "Friends you add will show up here."));
       return;
     }
@@ -1340,7 +1343,7 @@
       const form = create("form", "search-form"); const input = create("input"); input.placeholder = translate("Search @username or user ID"); input.setAttribute("aria-label", translate("Search people")); input.minLength = 2;
       const submit = create("button", "button primary", "Search"); submit.type = "submit"; form.append(input, submit); page.append(form);
       const results = create("div", "search-results"); page.append(results);
-      form.onsubmit = async event => { event.preventDefault(); if (input.value.trim().length < 2) return; results.replaceChildren(create("div", "empty-list", "Searching…")); try { const users = await request(`/v1/users/search?q=${encodeURIComponent(input.value.trim())}`); results.replaceChildren(); if (!users.length) results.append(create("div", "empty-list", "No users found. Check the spelling and try again.")); for (const user of users) { const card = create("div", "result-card"); card.oncontextmenu = event => openAppContextMenu(event, [{ label: state.language === "tr" ? "Profili görüntüle" : "View profile", run: () => showProfilePreview(user) }]); const avatar = create("button", "mini-avatar profile-avatar-button"); avatar.type = "button"; avatar.title = state.language === "tr" ? "Profili görüntüle" : "View profile"; avatar.onclick = () => showProfilePreview(user); setAvatar(avatar, user.display_name, user.avatar_data); card.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", user.display_name), create("span", "", `@${user.username} · ${user.id.slice(0, 8)}`)); card.append(copy); const add = create("button", "button secondary", "Add friend"); add.onclick = async () => { try { await request("/v1/friends", { method: "POST", body: JSON.stringify({ user_id: user.id }) }); add.textContent = translate("Request sent"); add.disabled = true; toast(translate("Friend request sent.")); } catch (error) { toast(error.message, true); } }; card.append(add); results.append(card); } } catch (error) { results.replaceChildren(create("div", "empty-list", error.message)); } };
+      form.onsubmit = async event => { event.preventDefault(); if (input.value.trim().length < 2) return; results.replaceChildren(create("div", "empty-list", "Searching…")); try { const users = await request(`/v1/users/search?q=${encodeURIComponent(input.value.trim())}`); results.replaceChildren(); if (!users.length) results.append(create("div", "empty-list", "No users found. Check the spelling and try again.")); for (const user of users) { const card = create("div", "result-card"); card.oncontextmenu = event => openAppContextMenu(event, [{ label: state.language === "tr" ? "Profili görüntüle" : "View profile", run: () => showProfilePreview(user) }]); const avatar = create("button", "mini-avatar profile-avatar-button"); avatar.type = "button"; avatar.title = state.language === "tr" ? "Profili görüntüle" : "View profile"; avatar.onclick = () => showProfilePreview(user); setAvatar(avatar, user.display_name, user.avatar_data); card.append(avatar); const copy = create("div", "list-copy"); copy.append(createText("strong", "", user.display_name), createText("span", "", `@${user.username} · ${user.id.slice(0, 8)}`)); card.append(copy); const add = create("button", "button secondary", "Add friend"); add.onclick = async () => { try { await request("/v1/friends", { method: "POST", body: JSON.stringify({ user_id: user.id }) }); add.textContent = translate("Request sent"); add.disabled = true; toast(translate("Friend request sent.")); } catch (error) { toast(error.message, true); } }; card.append(add); results.append(card); } } catch (error) { results.replaceChildren(create("div", "empty-list", error.message)); } };
       setTimeout(() => input.focus(), 20);
     } else if (state.page === "friends") {
       page.append(create("h2", "", "Friends"), create("p", "muted", "Manage requests and start a private conversation."));
@@ -1350,10 +1353,10 @@
       const list = create("div", "friend-results"); page.append(list);
       if (state.searchTab === "pending") {
         if (!(state.pending || []).length) list.append(create("div", "empty-list", "No friend requests right now."));
-        for (const item of state.pending || []) { const row = create("div", "request-card"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, item.display_name, item.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", item.display_name), create("span", "", `@${item.username}`)); row.append(copy); const actions = create("div", "request-actions"); const accept = create("button", "button primary", "Accept"); accept.onclick = () => respondFriend(item.id, "accept"); const reject = create("button", "button secondary", "Ignore"); reject.onclick = () => respondFriend(item.id, "reject"); actions.append(accept, reject); row.append(actions); list.append(row); }
+        for (const item of state.pending || []) { const row = create("div", "request-card"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, item.display_name, item.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(createText("strong", "", item.display_name), createText("span", "", `@${item.username}`)); row.append(copy); const actions = create("div", "request-actions"); const accept = create("button", "button primary", "Accept"); accept.onclick = () => respondFriend(item.id, "accept"); const reject = create("button", "button secondary", "Ignore"); reject.onclick = () => respondFriend(item.id, "reject"); actions.append(accept, reject); row.append(actions); list.append(row); }
       } else {
         if (!state.friends.length) list.append(create("div", "empty-list", "No friends yet. Use Find people to add someone."));
-        for (const friend of state.friends) { const row = create("div", "result-card"); const avatar = create("button", "mini-avatar profile-avatar-button"); avatar.type = "button"; avatar.title = state.language === "tr" ? "Profili görüntüle" : "View profile"; avatar.onclick = () => showProfilePreview(friend); setAvatar(avatar, friend.display_name, friend.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", friend.display_name), create("span", "", `@${friend.username} · ${presenceLabel(friend.id)}`)); row.append(copy); const actions = create("div", "friend-actions"); const message = create("button", "button primary", "Message"); message.onclick = () => startConversation(friend.id); const remove = create("button", "button secondary", state.language === "tr" ? "Arkadaşlıktan çıkar" : "Remove friend"); remove.onclick = () => removeFriend(friend); actions.append(message, remove); row.append(actions); row.addEventListener("contextmenu", event => openAppContextMenu(event, [{ label: state.language === "tr" ? "Profili görüntüle" : "View profile", run: () => showProfilePreview(friend) }, { label: state.language === "tr" ? "Mesaj gönder" : "Message", run: () => startConversation(friend.id) }, { label: state.language === "tr" ? "Arkadaşlıktan çıkar" : "Remove friend", danger: true, run: () => removeFriend(friend) }])); list.append(row); }
+        for (const friend of state.friends) { const row = create("div", "result-card"); const avatar = create("button", "mini-avatar profile-avatar-button"); avatar.type = "button"; avatar.title = state.language === "tr" ? "Profili görüntüle" : "View profile"; avatar.onclick = () => showProfilePreview(friend); setAvatar(avatar, friend.display_name, friend.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(createText("strong", "", friend.display_name), createText("span", "", `@${friend.username} · ${presenceLabel(friend.id)}`)); row.append(copy); const actions = create("div", "friend-actions"); const message = create("button", "button primary", "Message"); message.onclick = () => startConversation(friend.id); const remove = create("button", "button secondary", state.language === "tr" ? "Arkadaşlıktan çıkar" : "Remove friend"); remove.onclick = () => removeFriend(friend); actions.append(message, remove); row.append(actions); row.addEventListener("contextmenu", event => openAppContextMenu(event, [{ label: state.language === "tr" ? "Profili görüntüle" : "View profile", run: () => showProfilePreview(friend) }, { label: state.language === "tr" ? "Mesaj gönder" : "Message", run: () => startConversation(friend.id) }, { label: state.language === "tr" ? "Arkadaşlıktan çıkar" : "Remove friend", danger: true, run: () => removeFriend(friend) }])); list.append(row); }
       }
     } else if (state.page === "searchMessages") {
       page.append(create("h2", "", "Search messages"), create("p", "muted", "Searches the 50 latest messages in each conversation on this device; your search phrase stays local."));
@@ -1383,7 +1386,7 @@
           if (!matches.length) results.append(create("div", "empty-list", failed === state.conversations.length && failed > 0 ? translate("Search could not load your messages.") : translate("No matching messages.")));
           for (const row of matches) {
             const card = create("button", "result-card"); card.style.textAlign = "left"; const copy = create("div", "list-copy");
-            copy.append(create("strong", "", `${row.sender_name} · ${row.conversation_name}`), create("span", "", row.content)); card.append(copy);
+            copy.append(createText("strong", "", `${row.sender_name} · ${row.conversation_name}`), createText("span", "", row.content)); card.append(copy);
             card.onclick = () => { setPage("messages"); openConversation(row.conversation_id); }; results.append(card);
           }
         } catch (error) { toast(error.message, true); }
@@ -1409,7 +1412,7 @@
             const conversation = state.conversations.find(item => item.id === message.conversation_id);
             const card = create("div", "result-card");
             const copy = create("button", "list-copy"); copy.type = "button"; copy.style.textAlign = "left";
-            copy.append(create("strong", "", `${message.sender_name} · ${conversation?.display_name || translate("Messages")}`), create("span", "", message.content || ""));
+            copy.append(createText("strong", "", `${message.sender_name} · ${conversation?.display_name || translate("Messages")}`), createText("span", "", message.content || ""));
             copy.onclick = () => { setPage("messages"); openConversation(message.conversation_id); };
             const remove = create("button", "button secondary", translate("Remove from saved"));
             remove.onclick = async () => { remove.disabled = true; try { await request(`/v1/messages/${encodeURIComponent(message.id)}/save`, { method: "POST" }); toast(translate("Removed from saved messages.")); renderPage(); } catch (error) { toast(error.message, true); remove.disabled = false; } };
@@ -1516,7 +1519,7 @@
       const label = create("label", "group-friend-option");
       const checkbox = create("input"); checkbox.type = "checkbox"; checkbox.value = friend.id;
       const avatar = create("div", "mini-avatar"); setAvatar(avatar, friend.display_name, friend.avatar_data);
-      const copy = create("span", "list-copy"); copy.append(create("strong", "", friend.display_name), create("span", "", `@${friend.username}`));
+      const copy = create("span", "list-copy"); copy.append(createText("strong", "", friend.display_name), createText("span", "", `@${friend.username}`));
       label.append(checkbox, avatar, copy); list.append(label);
       checkbox.addEventListener("change", updateGroupSubmitState);
     }
@@ -1565,8 +1568,8 @@
         const row = create("div", "group-member-row");
         const avatar = create("div", "mini-avatar"); setAvatar(avatar, member.display_name, member.avatar_data); row.append(avatar);
         const copy = create("div", "list-copy");
-        copy.append(create("strong", "", member.id === state.user.id ? `${member.display_name} · ${translate("You")}` : member.display_name));
-        copy.append(create("span", "", `@${member.username} · ${translate(member.role === "owner" ? "Owner" : member.role === "admin" ? "Admin" : "Member")}`));
+        copy.append(createText("strong", "", member.id === state.user.id ? `${member.display_name} · ${translate("You")}` : member.display_name));
+        copy.append(createText("span", "", `@${member.username} · ${translate(member.role === "owner" ? "Owner" : member.role === "admin" ? "Admin" : "Member")}`));
         row.append(copy);
         const canEditRole = member.id !== state.user.id && (isOwner || (me.role === "admin" && member.role === "member"));
         if (canEditRole) {
@@ -1654,7 +1657,7 @@
           }
         });
         const avatar = create("div", "mini-avatar"); setAvatar(avatar, friend.display_name, friend.avatar_data);
-        const name = create("span", "list-copy"); name.append(create("strong", "", friend.display_name), create("span", "", `@${friend.username}`));
+        const name = create("span", "list-copy"); name.append(createText("strong", "", friend.display_name), createText("span", "", `@${friend.username}`));
         label.append(checkbox, avatar, name); inviteList.append(label);
       }
       if (!inviteable.length) inviteList.append(create("div", "empty-list", translate("No friends available to invite.")));
@@ -1704,14 +1707,14 @@
       pollList.replaceChildren(); eventList.replaceChildren();
       if (!polls.length) pollList.append(create("div", "empty-list", translate("No polls yet.")));
       for (const poll of polls) {
-        const card = create("div", "group-member-row"); const copy = create("div", "list-copy"); copy.append(create("strong", "", poll.question));
-        for (const option of poll.options || []) { const vote = create("button", "button secondary", `${option.label} · ${option.votes}`); vote.disabled = poll.closed_at || poll.my_option_id === option.id; vote.onclick = async () => { try { await request(`/v1/group-polls/${encodeURIComponent(poll.id)}/vote`, { method: "POST", body: JSON.stringify({ option_id: option.id }) }); await openGroupPlanner(); } catch (error) { toast(error.message, true); } }; copy.append(vote); }
+        const card = create("div", "group-member-row"); const copy = create("div", "list-copy"); copy.append(createText("strong", "", poll.question));
+        for (const option of poll.options || []) { const vote = createText("button", "button secondary", `${option.label} · ${option.votes}`); vote.disabled = poll.closed_at || poll.my_option_id === option.id; vote.onclick = async () => { try { await request(`/v1/group-polls/${encodeURIComponent(poll.id)}/vote`, { method: "POST", body: JSON.stringify({ option_id: option.id }) }); await openGroupPlanner(); } catch (error) { toast(error.message, true); } }; copy.append(vote); }
         card.append(copy); pollList.append(card);
       }
       if (!events.length) eventList.append(create("div", "empty-list", translate("No upcoming events.")));
       for (const item of events) {
         const card = create("div", "group-member-row"); const copy = create("div", "list-copy"); const when = new Date(item.scheduled_at);
-        copy.append(create("strong", "", item.title), create("span", "", Number.isNaN(when.getTime()) ? item.scheduled_at : when.toLocaleString()), create("span", "", `${translate("Going")}: ${item.going} · ${translate("Maybe")}: ${item.maybe}`));
+        copy.append(createText("strong", "", item.title), create("span", "", Number.isNaN(when.getTime()) ? item.scheduled_at : when.toLocaleString()), create("span", "", `${translate("Going")}: ${item.going} · ${translate("Maybe")}: ${item.maybe}`));
         const actions = create("div", "request-actions"); for (const [status, label] of [["going", "Going"], ["maybe", "Maybe"], ["declined", "Declined"]]) { const button = create("button", "button secondary", translate(label)); button.disabled = item.my_status === status; button.onclick = async () => { try { await request(`/v1/group-events/${encodeURIComponent(item.id)}/rsvp`, { method: "POST", body: JSON.stringify({ status }) }); await openGroupPlanner(); } catch (error) { toast(error.message, true); } }; actions.append(button); }
         card.append(copy, actions); eventList.append(card);
       }
@@ -2463,7 +2466,7 @@
       try {
         const parsed = new URL(candidate);
         if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new Error("Unsupported link protocol");
-        const link = create("button", "message-link", candidate);
+        const link = createText("button", "message-link", candidate);
         link.type = "button";
         link.title = candidate;
         link.setAttribute("aria-label", `${translate("Open link")}: ${candidate}`);
@@ -2512,13 +2515,13 @@
     const ownMessage = message.sender_id === state.user.id;
     const row = create("article", `message ${ownMessage ? "own-message" : "peer-message"}`); row.dataset.messageId = message.id; row.dataset.sequence = String(message.sequence);
     const avatar = create("div", "mini-avatar message-avatar"); setAvatar(avatar, message.sender_name, message.sender_avatar); avatar.title = message.sender_name; avatar.setAttribute("aria-label", message.sender_name); row.append(avatar);
-    const main = create("div", "message-main"); const meta = create("div", "message-meta"); meta.append(create("strong", "", message.sender_name)); if (ownMessage) meta.append(create("span", "message-owner-label", translate("You"))); if (message.encrypted) { const lock = create("span", "message-encrypted-badge"); lock.setAttribute("role", "img"); lock.setAttribute("aria-label", translate("Encrypted message")); lock.title = lock.getAttribute("aria-label"); lock.append(uiIcon("lock")); meta.append(lock); } if (message.pinned_at) { const pinned = create("span", "message-pinned-badge", "Pinned"); pinned.prepend(uiIcon("pin")); meta.append(pinned); } const time = create("time", "", timeLabel(message.created_at)); time.dateTime = message.created_at; meta.append(time); if (message.edited_at) meta.append(create("span", "optional", "edited"));
+    const main = create("div", "message-main"); const meta = create("div", "message-meta"); meta.append(createText("strong", "", message.sender_name)); if (ownMessage) meta.append(create("span", "message-owner-label", translate("You"))); if (message.encrypted) { const lock = create("span", "message-encrypted-badge"); lock.setAttribute("role", "img"); lock.setAttribute("aria-label", translate("Encrypted message")); lock.title = lock.getAttribute("aria-label"); lock.append(uiIcon("lock")); meta.append(lock); } if (message.pinned_at) { const pinned = create("span", "message-pinned-badge", "Pinned"); pinned.prepend(uiIcon("pin")); meta.append(pinned); } const time = create("time", "", timeLabel(message.created_at)); time.dateTime = message.created_at; meta.append(time); if (message.edited_at) meta.append(create("span", "optional", "edited"));
     main.append(meta);
     if (message.reply_to_id) {
       const quote = create("button", "reply-reference"); quote.type = "button";
       const quoteName = message.reply_to_sender || translate("Reply");
       const quoteContent = (message.reply_to_content || "").startsWith("file:") ? translate("File shared") : (message.reply_to_content || "").startsWith("e2e1:") ? translate("Encrypted message") : (message.reply_to_content || "");
-      quote.append(create("strong", "", quoteName), create("span", "", quoteContent.slice(0, 160)));
+      quote.append(createText("strong", "", quoteName), createText("span", "", quoteContent.slice(0, 160)));
       quote.onclick = () => { const target = $(`[data-message-id="${CSS.escape(message.reply_to_id)}"]`, container); if (target) { target.scrollIntoView({ behavior: "smooth", block: "center" }); target.classList.add("message-highlight"); setTimeout(() => target.classList.remove("message-highlight"), 1000); } };
       main.append(quote);
     }
@@ -2792,13 +2795,13 @@
         image.onload = () => loading.remove();
         image.onerror = () => {
           loading.remove(); image.remove();
-          const fallback = create("a", "attachment-download", filename); fallback.prepend(uiIcon("download")); fallback.href = url; fallback.download = filename; container.prepend(fallback);
+          const fallback = createText("a", "attachment-download", filename); fallback.prepend(uiIcon("download")); fallback.href = url; fallback.download = filename; container.prepend(fallback);
         };
         image.src = previewUrl;
         image.onclick = () => openMediaPreview({ url: previewUrl, filename, type: "image" });
         image.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openMediaPreview({ url: previewUrl, filename, type: "image" }); } };
         container.append(image);
-        container.append(create("span", "attachment-filename", filename));
+        container.append(createText("span", "attachment-filename", filename));
       } else if (attachment.content_type?.startsWith("video/")) {
         const loading = create("span", "attachment-loading", state.language === "tr" ? "Video hazırlanıyor…" : "Preparing video…"); container.append(loading);
         let previewUrl = url;
@@ -2813,13 +2816,13 @@
         if (!container.isConnected || !messageRow?.isConnected) return;
         const video = create("video", "message-video"); video.src = previewUrl; video.controls = true; video.preload = "metadata"; video.playsInline = true; video.title = translate("Open preview");
         video.onloadeddata = () => loading.remove();
-        video.onerror = () => { loading.remove(); video.remove(); const fallback = create("a", "attachment-download", filename); fallback.prepend(uiIcon("download")); fallback.href = url; fallback.download = filename; container.prepend(fallback); };
+        video.onerror = () => { loading.remove(); video.remove(); const fallback = createText("a", "attachment-download", filename); fallback.prepend(uiIcon("download")); fallback.href = url; fallback.download = filename; container.prepend(fallback); };
         video.onclick = event => { if (event.detail >= 2) openMediaPreview({ url: previewUrl, filename, type: "video" }); };
         const openPlayer = create("button", "attachment-preview", state.language === "tr" ? "Tam oynatıcıyı aç" : "Open full player"); openPlayer.type = "button"; openPlayer.onclick = () => openMediaPreview({ url: previewUrl, filename, type: "video" });
         container.append(video, openPlayer);
-        container.append(create("span", "attachment-filename", filename));
+        container.append(createText("span", "attachment-filename", filename));
       } else {
-        const link = create("a", "attachment-download", filename); link.prepend(uiIcon("download")); link.href = url; link.download = filename; container.append(link);
+        const link = createText("a", "attachment-download", filename); link.prepend(uiIcon("download")); link.href = url; link.download = filename; container.append(link);
       }
     } catch { container.append(create("span", "attachment-download unavailable", translate("Could not load this file."))); }
   }
@@ -2837,7 +2840,7 @@
   function renderEncryptedAttachment(main, manifest) {
     const card = create("div", "message-attachment encrypted-attachment");
     card.dataset.attachmentId = manifest.attachmentId;
-    { const fileLabel = create("span", "attachment-filename", manifest.fileName); fileLabel.prepend(uiIcon("lock")); card.append(fileLabel); }
+    { const fileLabel = createText("span", "attachment-filename", manifest.fileName); fileLabel.prepend(uiIcon("lock")); card.append(fileLabel); }
     card.append(create("span", "attachment-size", formatFileSize(manifest.sizeBytes)));
     const actions = create("div", "encrypted-attachment-actions");
     const save = create("button", "attachment-download", translate("Save decrypted file")); save.type = "button";
@@ -3838,7 +3841,7 @@
         const revoked = !!device.revoked_at;
         const row = create("div", "crypto-device-row");
         const copy = create("div", "list-copy");
-        copy.append(create("strong", "", device.label || translate("Encryption device")));
+        copy.append(createText("strong", "", device.label || translate("Encryption device")));
         const status = revoked ? translate("Revoked") : translate("Active");
         copy.append(create("span", "", `${status}${isCurrent ? ` · ${translate("Current device")}` : ""}`));
         copy.append(create("span", "", `${translate("Registered")}: ${formatDeviceDate(device.created_at)}`));

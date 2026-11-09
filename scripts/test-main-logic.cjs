@@ -160,6 +160,24 @@ test('Turkish language reaches dialogs that branch on state.language', async () 
   assert.equal(app.$('#appDecisionConfirm').textContent, 'Oturumları kapat', 'Turkish users must see the Turkish confirm label');
 });
 
+test('a display name equal to a UI string is shown untranslated', async () => {
+  const base = 'https://a.example';
+  const app = harness({
+    storage: { 'ghostchat.language': 'tr', 'ghostchat.server': base },
+    credentials: { [await serverKey(base)]: 'token-A' },
+    fetchHandler: url => {
+      if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
+      if (url.endsWith('/v1/conversations')) return { body: [{ id: 'c1', kind: 'direct', peer_id: 'p', display_name: 'Owner', username: 'owner', last_message: 'Admin' }] };
+      return { body: [] };
+    },
+  });
+  await app.flush(() => app.created.some(node => node.textContent === 'Owner' || node.textContent === 'Kurucu'));
+  const texts = app.created.map(node => node.textContent);
+  assert.ok(texts.includes('Owner'), 'the peer named "Owner" keeps that name');
+  assert.ok(!texts.includes('Kurucu'), 'a user name is never run through the dictionary');
+  assert.ok(texts.includes('Admin') && !texts.includes('Yönetici'), 'message text is never translated either');
+});
+
 test('translate never returns Object.prototype members for user text', async () => {
   const app = harness({
     storage: { 'ghostchat.language': 'tr', 'ghostchat.server': 'https://a.example' },
