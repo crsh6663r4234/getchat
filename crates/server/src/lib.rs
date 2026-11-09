@@ -6367,6 +6367,9 @@ async fn websocket_session(mut socket: WebSocket, state: AppState) {
     let current_session_hash = session_hash(&token);
     let user = match sqlx::query_as::<_, PublicUser>("SELECT u.id,u.username,u.display_name,u.avatar_data FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND datetime(s.expires_at)>datetime('now')")
         .bind(&current_session_hash).fetch_optional(&state.db).await { Ok(Some(user)) => user, _ => { let _ = socket.close().await; return; } };
+    // Subscribe before announcing "ready": an event published right after
+    // the client sees "ready" (for example a logout) must not be missed.
+    let mut events = state.events.subscribe();
     if socket
         .send(WsMessage::Text(
             serde_json::json!({"type":"ready"}).to_string(),
@@ -6379,7 +6382,6 @@ async fn websocket_session(mut socket: WebSocket, state: AppState) {
     if register_online_connection(&state, &user.id) {
         broadcast_current_presence(&state, &user.id).await;
     }
-    let mut events = state.events.subscribe();
     let mut session_check = tokio::time::interval(Duration::from_secs(15));
     session_check.tick().await;
     loop {
@@ -7977,7 +7979,14 @@ mod tests {
             .unwrap()
             .status();
         assert_eq!(status, StatusCode::NO_CONTENT);
-        let revoked = laptop_socket.next_event(Duration::from_secs(2)).await;
+        // Skip the socket's own presence events.
+        let mut revoked = None;
+        while let Some(event) = laptop_socket.next_event(Duration::from_secs(2)).await {
+            if event["type"] != "presence_updated" {
+                revoked = Some(event);
+                break;
+            }
+        }
         assert_eq!(
             revoked.as_ref().map(|event| event["type"].clone()),
             Some(serde_json::json!("session_revoked"))
@@ -7999,11 +8008,14 @@ mod tests {
             recipients: vec![desktop.id.clone()],
             event: serde_json::json!({"type": "contacts_updated"}),
         });
-        let event = desktop_socket.next_event(Duration::from_secs(2)).await;
-        assert_eq!(
-            event.map(|event| event["type"].clone()),
-            Some(serde_json::json!("contacts_updated"))
-        );
+        let mut relayed = false;
+        while let Some(event) = desktop_socket.next_event(Duration::from_secs(2)).await {
+            if event["type"] == "contacts_updated" {
+                relayed = true;
+                break;
+            }
+        }
+        assert!(relayed, "the other session's socket still relays events");
     }
 
     #[tokio::test]
@@ -8055,4 +8067,5 @@ mod tests {
         );
         assert!(observed[0].is_empty());
     }
+
 }
