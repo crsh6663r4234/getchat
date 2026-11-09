@@ -65,6 +65,8 @@ pub struct AppState {
     online_users: Arc<Mutex<HashMap<String, usize>>>,
     voice: VoiceServerConfig,
     distributed_limiter: Result<Option<ratelimit::RateLimiter>, ratelimit::LimitError>,
+    /// GHOSTCHAT_REQUIRE_REDIS=1, read once at startup.
+    require_redis: bool,
 }
 
 #[derive(Clone)]
@@ -228,6 +230,7 @@ pub async fn build_state_with_attachment_dir(db: SqlitePool, attachment_dir: Pat
             livekit_api_secret,
         },
         distributed_limiter: ratelimit::RateLimiter::from_env(),
+        require_redis: env::var("GHOSTCHAT_REQUIRE_REDIS").as_deref() == Ok("1"),
     }
 }
 
@@ -416,7 +419,7 @@ async fn distributed_admission(
         Err(_) => {
             return ApiError::unavailable("Distributed admission is misconfigured.").into_response()
         }
-        Ok(None) if env::var("GHOSTCHAT_REQUIRE_REDIS").as_deref() == Ok("1") => {
+        Ok(None) if state.require_redis => {
             return ApiError::unavailable("Distributed admission is required but unavailable.")
                 .into_response()
         }
@@ -6402,6 +6405,10 @@ mod tests {
 
     impl TestApp {
         async fn new() -> Self {
+            Self::configured(false).await
+        }
+
+        async fn configured(require_redis: bool) -> Self {
             let dir = std::env::temp_dir().join(format!("ghostchat-route-{}", Uuid::new_v4()));
             std::fs::create_dir_all(&dir).unwrap();
             let db = open_database(&dir.join("db.sqlite").to_string_lossy())
@@ -6410,9 +6417,7 @@ mod tests {
             let mut state = build_state_with_attachment_dir(db, dir.join("attachments")).await;
             // Do not inherit the developer's shell: no Redis admission, no
             // TURN and no LiveKit, whatever GHOSTCHAT_* variables are set.
-            // GHOSTCHAT_REQUIRE_REDIS is read per request, so clear it too
-            // (no test sets it).
-            std::env::remove_var("GHOSTCHAT_REQUIRE_REDIS");
+            state.require_redis = require_redis;
             state.distributed_limiter = Ok(None);
             state.voice = VoiceServerConfig {
                 stun_urls: vec!["stun:stun.l.google.com:19302".into()],
@@ -6544,6 +6549,29 @@ mod tests {
             .await
             .unwrap()
         }
+    }
+
+    #[tokio::test]
+    async fn require_redis_comes_from_state_not_process_env() {
+        let required = TestApp::configured(true).await;
+        let health = required
+            .client
+            .get(format!("{}/health", required.base))
+            .send()
+            .await
+            .unwrap();
+        assert!(health.status().is_success());
+        let refused = required
+            .client
+            .post(format!("{}/v1/accounts", required.base))
+            .json(&serde_json::json!({"username": "alice", "display_name": "alice"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        let open = TestApp::new().await;
+        let alice = open.user("alice").await;
+        assert!(!alice.token.is_empty());
     }
 
     #[tokio::test]
