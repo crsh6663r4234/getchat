@@ -686,6 +686,14 @@ fn encrypt_decodable_lookup_key(
     key: &[u8; 32],
     plaintext: &[u8],
 ) -> Result<Vec<u8>, CryptoCodecError> {
+    // Deterministic, SIV-like AEAD: the nonce is a keyed MAC of the
+    // plaintext under a separate subkey, so equal references encrypt to
+    // equal bytes (SQL equality lookups work) and different references get
+    // different nonces. Reusing a nonce therefore only ever happens for the
+    // identical plaintext, which reveals equality (intended for a lookup
+    // key) but never the AES-GCM keystream of two different messages.
+    // decrypt_decodable_lookup_key does not recompute the MAC: it relies on
+    // the AEAD tag (prefix as AAD) for integrity of what it decodes.
     let nonce_key = deterministic_subkey(key, b"GhostChat MLS storage lookup nonce v2\0")?;
     let encryption_key = deterministic_subkey(key, b"GhostChat MLS storage lookup key v2\0")?;
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&*nonce_key)
@@ -785,7 +793,10 @@ async fn migrate_hash_reference_keys_pass(db: &SqlitePool) -> Result<(), String>
         let new_ref = encrypt_decodable_lookup_key(key, &plaintext).map_err(|_| error())?;
         // If a decodable row for the same reference already exists, the
         // update is ignored and the duplicate legacy row is dropped below, so
-        // a conflict cannot fail every later crypto call.
+        // a conflict cannot fail every later crypto call. Dropping it loses
+        // nothing: the legacy key was just checked to be the digest of this
+        // row's own reference, and a KeyPackage reference is the hash of the
+        // KeyPackage itself, so both rows hold the same KeyPackage.
         sqlx::query(
             "UPDATE OR IGNORE openmls_key_package SET key_package_ref=? WHERE key_package_ref=?",
         )
@@ -820,6 +831,9 @@ async fn migrate_hash_reference_keys_pass(db: &SqlitePool) -> Result<(), String>
             continue;
         }
         let new_ref = encrypt_decodable_lookup_key(key, &plaintext).map_err(|_| error())?;
+        // As for KeyPackages: a proposal reference is the hash of the
+        // proposal, so a decodable row with the same group and reference
+        // holds the same proposal and the legacy duplicate can be dropped.
         sqlx::query(
             "UPDATE OR IGNORE openmls_proposal SET proposal_ref=? WHERE group_id=? AND proposal_ref=?",
         )
