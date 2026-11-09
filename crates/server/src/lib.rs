@@ -2546,6 +2546,8 @@ struct GroupMemberRow {
     username: String,
     avatar_data: Option<String>,
     role: String,
+    /// Join order (lower joined earlier), for deterministic client fallbacks.
+    joined_seq: Option<i64>,
 }
 
 async fn group_recipients(db: &SqlitePool, conversation_id: &str) -> Result<Vec<String>, ApiError> {
@@ -2565,7 +2567,7 @@ async fn list_group_members(
 ) -> Result<Json<Vec<GroupMemberRow>>, ApiError> {
     let user = authenticate(&headers, &state).await?;
     let members = sqlx::query_as::<_, GroupMemberRow>(
-        "SELECT u.id,u.display_name,u.username,u.avatar_data,cm.role FROM conversation_members cm JOIN conversations c ON c.id=cm.conversation_id JOIN users u ON u.id=cm.user_id WHERE cm.conversation_id=? AND c.kind='group' AND EXISTS(SELECT 1 FROM conversation_members viewer WHERE viewer.conversation_id=c.id AND viewer.user_id=?) ORDER BY CASE cm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,u.display_name COLLATE NOCASE",
+        "SELECT u.id,u.display_name,u.username,u.avatar_data,cm.role,cm.joined_seq FROM conversation_members cm JOIN conversations c ON c.id=cm.conversation_id JOIN users u ON u.id=cm.user_id WHERE cm.conversation_id=? AND c.kind='group' AND EXISTS(SELECT 1 FROM conversation_members viewer WHERE viewer.conversation_id=c.id AND viewer.user_id=?) ORDER BY CASE cm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,u.display_name COLLATE NOCASE",
     )
     .bind(id)
     .bind(user.id)
@@ -8418,5 +8420,56 @@ mod tests {
             "Bob joined after Alice"
         );
         assert_eq!(lock_other(&alice).await.unwrap().status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn group_members_report_their_join_order() {
+        use reqwest::Method;
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let (first, second) = if bob.id > carol.id {
+            (&bob, &carol)
+        } else {
+            (&carol, &bob)
+        };
+        app.befriend(&alice, &bob).await;
+        app.befriend(&alice, &carol).await;
+        let group: serde_json::Value = app
+            .request(Method::POST, "/v1/conversations/groups", &alice)
+            .json(&serde_json::json!({"name": "Order", "member_ids": [first.id, second.id]}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let members: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!(
+                    "/v1/conversations/{}/members",
+                    group["id"].as_str().unwrap()
+                ),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let seq = |id: &str| {
+            members
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|member| member["id"] == id)
+                .unwrap()["joined_seq"]
+                .as_i64()
+                .unwrap()
+        };
+        assert!(seq(&alice.id) < seq(&first.id) && seq(&first.id) < seq(&second.id));
     }
 }
