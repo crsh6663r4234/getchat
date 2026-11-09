@@ -3908,6 +3908,10 @@ struct GroupCryptoLockStatus {
     /// The same accounts with when they were deleted and when the removal
     /// commit for their leaf was accepted (null while it is still pending).
     deleted_members: Vec<DeletedCryptoMember>,
+    /// The unfinished setup was started by an account that no longer exists;
+    /// the group owner (or the oldest admin when there is no owner) may take
+    /// it over through the lock route.
+    locked_by_deleted_account: bool,
 }
 
 #[derive(Serialize, FromRow)]
@@ -3936,8 +3940,8 @@ async fn group_crypto_lock_status(
     db: &SqlitePool,
     conversation_id: &str,
 ) -> Result<GroupCryptoLockStatus, ApiError> {
-    let lock = sqlx::query_as::<_, (String, i64)>(
-        "SELECT locked_by,setup_complete FROM conversation_crypto_locks WHERE conversation_id=?",
+    let lock = sqlx::query_as::<_, (String, i64, bool)>(
+        "SELECT l.locked_by,l.setup_complete,NOT EXISTS(SELECT 1 FROM users u WHERE u.id=l.locked_by) FROM conversation_crypto_locks l WHERE l.conversation_id=?",
     )
     .bind(conversation_id)
     .fetch_optional(db)
@@ -3945,10 +3949,13 @@ async fn group_crypto_lock_status(
     .map_err(|_| ApiError::internal())?;
     Ok(GroupCryptoLockStatus {
         locked: lock.is_some(),
-        locked_by: lock.as_ref().map(|(locked_by, _)| locked_by.clone()),
-        setup_complete: lock.as_ref().is_some_and(|(_, complete)| *complete != 0),
+        locked_by: lock.as_ref().map(|(locked_by, _, _)| locked_by.clone()),
+        setup_complete: lock.as_ref().is_some_and(|(_, complete, _)| *complete != 0),
         deleted_member_ids: deleted_crypto_member_ids(db, conversation_id).await?,
         deleted_members: deleted_crypto_members(db, conversation_id).await?,
+        locked_by_deleted_account: lock
+            .as_ref()
+            .is_some_and(|(_, complete, deleted)| *complete == 0 && *deleted),
     })
 }
 
@@ -4058,6 +4065,7 @@ async fn lock_group_crypto_roster(
             // A direct conversation is deleted with either account.
             deleted_member_ids: Vec::new(),
             deleted_members: Vec::new(),
+            locked_by_deleted_account: false,
         }));
     }
     let actor_role = sqlx::query_scalar::<_, String>(
@@ -4094,7 +4102,42 @@ async fn lock_group_crypto_roster(
     .await
     .map_err(|_| ApiError::internal())?;
     if let Some((locked_by, setup_complete)) = existing_lock {
-        if locked_by != user.id {
+        if locked_by != user.id && setup_complete == 0 {
+            // An unfinished setup whose starter deleted their account can
+            // never be completed by them. The owner takes it over, or the
+            // oldest admin when the group has no owner.
+            let locker_deleted =
+                sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM users WHERE id=?)")
+                    .bind(&locked_by)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|_| ApiError::internal())?
+                    == 0;
+            let successor = sqlx::query_scalar::<_, String>(
+                "SELECT user_id FROM conversation_members WHERE conversation_id=? AND role IN ('owner','admin') ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, joined_seq, user_id LIMIT 1",
+            )
+            .bind(&conversation_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal())?;
+            if locker_deleted && successor.as_deref() == Some(user.id.as_str()) {
+                sqlx::query(
+                    "UPDATE conversation_crypto_locks SET locked_by=? WHERE conversation_id=? AND locked_by=? AND setup_complete=0",
+                )
+                .bind(&user.id)
+                .bind(&conversation_id)
+                .bind(&locked_by)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| ApiError::internal())?;
+            } else if locker_deleted {
+                return Err(ApiError::forbidden());
+            } else {
+                return Err(ApiError::conflict(
+                    "Another group admin started encryption setup. Wait for them to finish it.",
+                ));
+            }
+        } else if locked_by != user.id {
             return Err(ApiError::conflict(
                 "Another group admin started encryption setup. Wait for them to finish it.",
             ));
@@ -8245,5 +8288,135 @@ mod tests {
         );
         assert_eq!(events[0]["creator_id"], serde_json::Value::Null);
         assert_eq!(events[0]["going"], 1);
+    }
+
+    #[tokio::test]
+    async fn owner_takes_over_an_unfinished_setup_of_a_deleted_account() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let dave = app.user("dave").await;
+        let group = app.group(&alice, &[&bob, &carol, &dave]).await;
+        for (user, role) in [(&bob, "admin"), (&carol, "admin")] {
+            let status = app
+                .request(
+                    Method::PATCH,
+                    &format!("/v1/conversations/{group}/members/{}", user.id),
+                    &alice,
+                )
+                .json(&serde_json::json!({"role": role}))
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, StatusCode::NO_CONTENT);
+        }
+        // Admin Carol starts encryption setup, then deletes her account.
+        let mut roster = vec![
+            alice.id.clone(),
+            bob.id.clone(),
+            carol.id.clone(),
+            dave.id.clone(),
+        ];
+        roster.sort();
+        let lock = |user: &TestUser, roster: Vec<String>| {
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/crypto-lock"),
+                user,
+            )
+            .json(&serde_json::json!({"member_ids": roster}))
+            .send()
+        };
+        assert_eq!(
+            lock(&carol, roster.clone()).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let status = app
+            .request(Method::DELETE, "/v1/me/account", &carol)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let mut remaining = vec![alice.id.clone(), bob.id.clone(), dave.id.clone()];
+        remaining.sort();
+        let status: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/crypto-lock"),
+                &dave,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(status["lockedByDeletedAccount"], true);
+        // A plain member and an admin (while there is an owner) may not.
+        assert_eq!(
+            lock(&dave, remaining.clone()).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            lock(&bob, remaining.clone()).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+        // The owner takes the setup over and can complete it.
+        let taken: serde_json::Value = lock(&alice, remaining.clone())
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(taken["lockedBy"], alice.id.as_str());
+        assert_eq!(taken["lockedByDeletedAccount"], false);
+        assert_eq!(taken["setupComplete"], false);
+        let status = app
+            .request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/crypto-lock/complete"),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::OK);
+        // Without an owner, the oldest admin may take over.
+        let other = app.group(&alice, &[&bob, &dave]).await;
+        let mut other_roster = vec![alice.id.clone(), bob.id.clone(), dave.id.clone()];
+        other_roster.sort();
+        sqlx::query("INSERT INTO conversation_crypto_locks(conversation_id,locked_by) VALUES(?,?)")
+            .bind(&other)
+            .bind(Uuid::new_v4().to_string())
+            .execute(&app.state.db)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE conversation_members SET role='admin' WHERE conversation_id=? AND user_id IN (?,?)")
+            .bind(&other)
+            .bind(&alice.id)
+            .bind(&bob.id)
+            .execute(&app.state.db)
+            .await
+            .unwrap();
+        let lock_other = |user: &TestUser| {
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{other}/crypto-lock"),
+                user,
+            )
+            .json(&serde_json::json!({"member_ids": other_roster}))
+            .send()
+        };
+        assert_eq!(
+            lock_other(&bob).await.unwrap().status(),
+            StatusCode::FORBIDDEN,
+            "Bob joined after Alice"
+        );
+        assert_eq!(lock_other(&alice).await.unwrap().status(), StatusCode::OK);
     }
 }
