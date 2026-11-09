@@ -173,6 +173,18 @@ async fn prepare_crypto_storage(db: &SqlitePool) -> Result<(), String> {
     .execute(db)
     .await
     .map_err(|_| "GhostChat could not prepare its encrypted event cursor storage.".to_string())?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS ghostchat_crypto_bootstrap (\
+            user_id TEXT NOT NULL,\
+            conversation_id TEXT NOT NULL,\
+            payload BLOB NOT NULL,\
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),\
+            PRIMARY KEY(user_id,conversation_id)\
+        )",
+    )
+    .execute(db)
+    .await
+    .map_err(|_| "GhostChat could not prepare its pending encrypted setup storage.".to_string())?;
 
     let mut connection = db
         .acquire()
@@ -750,18 +762,6 @@ pub async fn prepare_device(db: &SqlitePool, user_id: &str) -> Result<DevicePrep
             device_id TEXT NOT NULL UNIQUE,\
             signing_public_key BLOB NOT NULL,\
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))\
-        )",
-    )
-    .execute(db)
-    .await
-    .map_err(|_| "GhostChat could not prepare its local encryption database.".to_string())?;
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS ghostchat_crypto_bootstrap (\
-            user_id TEXT NOT NULL,\
-            conversation_id TEXT NOT NULL,\
-            payload BLOB NOT NULL,\
-            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),\
-            PRIMARY KEY(user_id,conversation_id)\
         )",
     )
     .execute(db)
@@ -3470,6 +3470,23 @@ mod tests {
         )
         .await
         .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pending_bootstrap_works_on_a_fresh_profile_before_device_setup() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-fresh-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let db = open_database(&root.join("fresh.sqlite")).await;
+        let user_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        assert!(get_pending_bootstrap(&db, &user_id, &conversation_id)
+            .await
+            .expect("a fresh profile has no pending setup, not an error")
+            .is_none());
+        clear_pending_bootstrap(&db, &user_id, &conversation_id)
+            .await
+            .expect("clearing a missing setup on a fresh profile succeeds");
     }
 
     #[tokio::test(flavor = "multi_thread")]
