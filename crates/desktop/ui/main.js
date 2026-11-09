@@ -1925,6 +1925,7 @@
               updateCryptoStatus(state.active?.id === conversationId ? state.active : { id: conversationId, kind: conversationIsGroup ? "group" : "direct" });
               if (!cryptoIdentityTrusted(conversationId)) holdForVerification = true;
             } else if (result.kind === "commit") {
+              pendingRowsDecoded = false;
               const latestFingerprint = conversationIsGroup
                 ? await invoke("crypto_group_fingerprint", { userId: state.user.id, conversationId })
                 : conversation?.peer_id

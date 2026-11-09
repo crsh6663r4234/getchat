@@ -432,6 +432,18 @@ function pendingCommitHarness({ relayEvents, rowsAfter, inspect }) {
   })();
 }
 
+test('pending rows are decoded again before each later commit', async () => {
+  // c7 arrives in epoch 0, commit 1, c8 arrives in epoch 1, commit 2.
+  const order = await pendingCommitHarness({
+    relayEvents: [{ sequence: 1, kind: 'commit' }, { sequence: 2, kind: 'commit' }],
+    rowsAfter: applied => (applied >= 1 ? ['c7', 'c8'] : ['c7']),
+    inspect: () => ({ kind: 'commit' }),
+  });
+  const at = item => order.indexOf(item);
+  assert.ok(at('history:c7') >= 0 && at('history:c7') < at('relay:1'), `c7 before commit 1 (order: ${order.join(', ')})`);
+  assert.ok(at('history:c8') > at('relay:1') && at('history:c8') < at('relay:2'), `c8 before commit 2 (order: ${order.join(', ')})`);
+});
+
 test('pending rows are decoded only before an authenticated commit', async () => {
   const order = await pendingCommitHarness({
     relayEvents: [{ sequence: 1, kind: 'application' }],
