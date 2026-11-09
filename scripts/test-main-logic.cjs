@@ -368,6 +368,7 @@ test('pending encrypted rows are decoded before a relay commit is applied', asyn
       crypto_get_event_cursor: () => 0,
       crypto_advance_event_cursor: args => args.sequence,
       crypto_get_cached_sent_text: () => null,
+      crypto_inspect_event: () => ({ kind: 'commit' }),
       crypto_decode_pending_history: args => { order.push(`history:${args.clientMessageId}`); return { kind: 'application', content: 'missed' }; },
       crypto_process_event: args => { order.push(args.eventSequence == null ? `row:${args.clientMessageId}` : `relay:${args.eventSequence}`); return { kind: 'commit' }; },
     },
@@ -386,6 +387,59 @@ test('pending encrypted rows are decoded before a relay commit is applied', asyn
   await app.flush(() => order.includes('relay:1'));
   assert.ok(order.includes('history:c7'), 'the pending row was decoded');
   assert.ok(order.indexOf('history:c7') < order.indexOf('relay:1'), `the row must be decoded before the commit (order: ${order.join(', ')})`);
+});
+
+function pendingCommitHarness({ relayEvents, rowsAfter, inspect }) {
+  return (async () => {
+    const base = 'https://a.example';
+    const group = { id: 'g1', kind: 'group', display_name: 'Group' };
+    const order = [];
+    const cached = new Set();
+    let applied = 0;
+    const app = harness({
+      storage: { 'ghostchat.server': base, [`ghostchat.cryptoPeerTrusted.${base}.me.g1`]: 'fp-group' },
+      credentials: { [await serverKey(base)]: 'token-A' },
+      hooks: {
+        crypto_has_direct_group: () => true,
+        crypto_group_fingerprint: () => 'fp-group',
+        crypto_get_event_cursor: () => 0,
+        crypto_advance_event_cursor: args => args.sequence,
+        crypto_get_cached_sent_text: args => (cached.has(args.clientMessageId) ? 'text' : null),
+        crypto_inspect_event: args => { order.push(`inspect:${args.eventSequence}`); return inspect(args); },
+        crypto_decode_pending_history: args => { order.push(`history:${args.clientMessageId}`); cached.add(args.clientMessageId); return { kind: 'application', content: 'text' }; },
+        crypto_process_event: args => {
+          if (args.eventSequence == null) { order.push(`row:${args.clientMessageId}`); return { kind: 'application', content: 'text' }; }
+          order.push(`relay:${args.eventSequence}`); applied = args.eventSequence;
+          return { kind: relayEvents.find(event => event.sequence === args.eventSequence).kind };
+        },
+      },
+      fetchHandler: url => {
+        if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
+        if (url.endsWith('/v1/conversations')) return { body: [group] };
+        if (url.endsWith('/conversations/g1/crypto-lock')) return { body: { locked: true, setupComplete: true, lockedBy: 'bob', deletedMemberIds: [] } };
+        if (url.endsWith('/conversations/g1/members')) return { body: [{ id: 'me', role: 'member' }, { id: 'bob', role: 'owner' }] };
+        if (url.includes('/conversations/g1/crypto-events?after=0')) return { body: relayEvents.map(event => ({ sequence: event.sequence, id: `e${event.sequence}`, sender_id: 'bob', recipient_id: 'me', payload: event.kind, created_at: '' })) };
+        if (url.includes('/conversations/g1/messages?')) return { body: rowsAfter(applied).map(id => ({ sequence: Number(id.slice(1)), id: `m-${id}`, conversation_id: 'g1', sender_id: 'bob', client_message_id: id, content: 'e2e1:cipher', created_at: '' })) };
+        return { body: [] };
+      },
+    });
+    await app.flush(() => app.sockets.length > 0);
+    app.voiceOptions.voice.onIncoming({ conversationId: 'g1' });
+    const last = relayEvents.at(-1).sequence;
+    await app.flush(() => order.includes(`relay:${last}`));
+    await app.flush();
+    return order;
+  })();
+}
+
+test('pending rows are decoded only before an authenticated commit', async () => {
+  const order = await pendingCommitHarness({
+    relayEvents: [{ sequence: 1, kind: 'application' }],
+    rowsAfter: () => ['c7'],
+    inspect: () => { throw new Error('GhostChat could not authenticate or decrypt this MLS event.'); },
+  });
+  assert.ok(order.includes('inspect:1'), `the relay event was inspected first (order: ${order.join(', ')})`);
+  assert.ok(!order.some(item => item.startsWith('history:')), `a relay event that is not a valid commit must not trigger the local-epoch decode (order: ${order.join(', ')})`);
 });
 
 test('an unreachable update host does not block startup', async () => {

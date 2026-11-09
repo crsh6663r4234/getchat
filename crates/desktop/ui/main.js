@@ -1876,14 +1876,13 @@
       }
       localStorage.setItem(cryptoEventCursorKey(conversationId), String(cursor));
       let holdForVerification = false;
+      // Rows of the current epoch are decoded right before each relay commit
+      // that would leave it, and only once that commit has passed every
+      // check (authenticated sender, roster) in a dry run.
       let pendingRowsDecoded = false;
       for (let page = 0; page < 20; page++) {
         const events = await request(`/v1/conversations/${encodeURIComponent(conversationId)}/crypto-events?after=${cursor}&limit=100`);
         if (!Array.isArray(events) || !events.length) break;
-        if (!pendingRowsDecoded && events.some(event => Number(event.sequence) > cursor && event.sender_id !== state.user.id)) {
-          pendingRowsDecoded = true;
-          await decodePendingEncryptedRows(conversationId);
-        }
         for (const event of events) {
           const sequence = Number(event.sequence);
           if (!Number.isSafeInteger(sequence) || sequence <= cursor) continue;
@@ -1892,6 +1891,19 @@
             break;
           }
           if (event.sender_id !== state.user.id) {
+            if (!pendingRowsDecoded) {
+              let inspected = null;
+              try {
+                inspected = await invoke("crypto_inspect_event", {
+                  userId: state.user.id, conversationId, senderId: event.sender_id,
+                  eventSequence: sequence, conversationIsGroup, expectedMemberIds, deletedMemberIds, payload: event.payload,
+                });
+              } catch {}
+              if (inspected?.kind === "commit") {
+                await decodePendingEncryptedRows(conversationId);
+                pendingRowsDecoded = true;
+              }
+            }
             let result;
             try {
               result = await invoke("crypto_process_event", {
