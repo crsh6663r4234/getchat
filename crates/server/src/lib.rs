@@ -2611,6 +2611,11 @@ async fn rename_group(
 struct EncryptedGroupMembershipUpdate {
     operation_id: String,
     expected_member_ids: Vec<String>,
+    /// Accounts the client says the commit adds or removes. Optional for
+    /// older clients; when given for a removal it must be the route target.
+    /// Not part of the idempotency hash (the route target already is).
+    #[serde(default, skip_serializing)]
+    member_ids: Vec<String>,
     commit_payload: String,
     #[serde(default)]
     welcome_payload: String,
@@ -3457,6 +3462,19 @@ async fn remove_encrypted_group_member(
             "An MLS removal must not contain a Welcome message.",
         ));
     }
+    // The server cannot read the commit (MLS ciphertext). The client states
+    // its target, and a statement that differs from the route is refused.
+    if !update.member_ids.is_empty()
+        && (update.member_ids.len() != 1
+            || Uuid::parse_str(&update.member_ids[0])
+                .map(|id| id.to_string())
+                .ok()
+                != Some(target_id.clone()))
+    {
+        return Err(ApiError::bad(
+            "The MLS removal declares a different member than this operation.",
+        ));
+    }
     validate_crypto_payload(&update.commit_payload)?;
     let serialized =
         serde_json::to_vec(&(target_id.as_str(), &update)).map_err(|_| ApiError::internal())?;
@@ -3614,12 +3632,13 @@ async fn remove_encrypted_group_member(
         crypto_events.push(event);
     }
     sqlx::query(
-        "INSERT INTO crypto_membership_operations(conversation_id,actor_id,operation_id,request_hash) VALUES(?,?,?,?)",
+        "INSERT INTO crypto_membership_operations(conversation_id,actor_id,operation_id,request_hash,target_id) VALUES(?,?,?,?,?)",
     )
     .bind(&id)
     .bind(&user.id)
     .bind(&update.operation_id)
     .bind(&request_hash)
+    .bind(&target_id)
     .execute(&mut *tx)
     .await
     .map_err(|_| ApiError::internal())?;
@@ -7584,5 +7603,70 @@ mod tests {
         assert!(names(percent).is_empty());
         let literal: serde_json::Value = search("bob_").await.unwrap().json().await.unwrap();
         assert_eq!(names(literal), vec!["bob_one".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn encrypted_removal_records_its_target_and_rejects_another_declared_one() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let dave = app.user("dave").await;
+        let group = app.group(&alice, &[&bob, &carol, &dave]).await;
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete) VALUES(?,?,1)",
+        )
+        .bind(&group)
+        .bind(&alice.id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        let mut roster = vec![
+            alice.id.clone(),
+            bob.id.clone(),
+            carol.id.clone(),
+            dave.id.clone(),
+        ];
+        roster.sort();
+        let remove = |declared: &str, operation: &str| {
+            app.request(
+                Method::POST,
+                &format!(
+                    "/v1/conversations/{group}/crypto-membership/remove/{}",
+                    dave.id
+                ),
+                &alice,
+            )
+            .json(&serde_json::json!({
+                "operation_id": operation,
+                "expected_member_ids": roster,
+                "member_ids": [declared],
+                "commit_payload": "AAAA",
+                "welcome_payload": "",
+            }))
+            .send()
+        };
+        let status = remove(&carol.id, &Uuid::new_v4().to_string())
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "the commit declares another target"
+        );
+        let operation = Uuid::new_v4().to_string();
+        let status = remove(&dave.id, &operation).await.unwrap().status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let target = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT target_id FROM crypto_membership_operations WHERE conversation_id=? AND operation_id=?",
+        )
+        .bind(&group)
+        .bind(&operation)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+        assert_eq!(target.as_deref(), Some(dave.id.as_str()));
     }
 }
