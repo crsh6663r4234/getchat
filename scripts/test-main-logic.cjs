@@ -352,6 +352,7 @@ test('the group owner removes a deleted account leaf and others tolerate it', as
   const removal = app.fetches.find(item => item.method === 'POST' && item.url.includes('/crypto-membership/remove/'));
   assert.ok(removal.url.endsWith('/conversations/g1/crypto-membership/remove/carol'));
   assert.equal(JSON.parse(removal.body).operation_id, 'op-1');
+  assert.deepEqual(JSON.parse(removal.body).member_ids, ['carol'], 'the removal declares its target');
   await app.flush(() => app.invokes.some(item => item.command === 'crypto_finalize_group_membership_update'));
 });
 

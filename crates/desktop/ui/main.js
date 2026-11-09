@@ -2106,6 +2106,7 @@
           body: JSON.stringify({
             operation_id: pending.operationId,
             expected_member_ids: pending.expectedMemberIds,
+            member_ids: pending.memberIds,
             commit_payload: pending.commitPayload,
             welcome_payload: "",
           }),
