@@ -4767,7 +4767,8 @@ struct GroupPollOption {
 struct GroupPollRow {
     id: String,
     conversation_id: String,
-    creator_id: String,
+    /// `None` once the creator deleted their account.
+    creator_id: Option<String>,
     question: String,
     closes_at: Option<String>,
     closed_at: Option<String>,
@@ -4952,7 +4953,8 @@ struct GroupEventRsvpRequest {
 struct GroupEventRow {
     id: String,
     conversation_id: String,
-    creator_id: String,
+    /// `None` once the creator deleted their account.
+    creator_id: Option<String>,
     title: String,
     details: String,
     scheduled_at: String,
@@ -8068,4 +8070,122 @@ mod tests {
         assert!(observed[0].is_empty());
     }
 
+    #[tokio::test]
+    async fn account_deletion_keeps_planner_items_with_an_anonymous_creator() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let polls: serde_json::Value = app
+            .request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/planner/polls"),
+                &carol,
+            )
+            .json(&serde_json::json!({"question": "When?", "options": ["Mon", "Tue"], "closes_at": null}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let poll = polls[0].clone();
+        let events: serde_json::Value = app
+            .request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/planner/events"),
+                &carol,
+            )
+            .json(&serde_json::json!({"title": "Dinner", "details": "", "scheduled_at": "2999-01-01T19:00:00Z"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let event = events[0].clone();
+        for (user, option) in [(&alice, 0), (&carol, 1)] {
+            let status = app
+                .request(
+                    Method::POST,
+                    &format!("/v1/group-polls/{}/vote", poll["id"].as_str().unwrap()),
+                    user,
+                )
+                .json(&serde_json::json!({"option_id": poll["options"][option]["id"]}))
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, StatusCode::NO_CONTENT);
+            let status = app
+                .request(
+                    Method::POST,
+                    &format!("/v1/group-events/{}/rsvp", event["id"].as_str().unwrap()),
+                    user,
+                )
+                .json(&serde_json::json!({"status": "going"}))
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, StatusCode::NO_CONTENT);
+        }
+        let status = app
+            .request(Method::DELETE, "/v1/me/account", &carol)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let polls: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/planner/polls"),
+                &bob,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            polls.as_array().unwrap().len(),
+            1,
+            "the poll survives its creator"
+        );
+        assert_eq!(polls[0]["creator_id"], serde_json::Value::Null);
+        let votes: Vec<i64> = polls[0]["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|option| option["votes"].as_i64().unwrap())
+            .collect();
+        assert_eq!(
+            votes,
+            vec![1, 0],
+            "Alice's vote stays, the deleted account's vote is gone"
+        );
+        let events: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/planner/events"),
+                &bob,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            events.as_array().unwrap().len(),
+            1,
+            "the event survives its creator"
+        );
+        assert_eq!(events[0]["creator_id"], serde_json::Value::Null);
+        assert_eq!(events[0]["going"], 1);
+    }
 }
