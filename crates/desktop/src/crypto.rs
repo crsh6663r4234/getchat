@@ -26,6 +26,20 @@ const MLS_CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_
 
 static STORAGE_KEY: OnceLock<Zeroizing<[u8; 32]>> = OnceLock::new();
 static CRYPTO_OPERATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// Database files whose HashReference migration completed cleanly in this
+/// process. Legacy rows are only written by older builds, so one clean pass
+/// per file per process is enough; a failed pass is not recorded.
+static MIGRATED_DATABASES: std::sync::Mutex<Option<std::collections::HashSet<std::path::PathBuf>>> =
+    std::sync::Mutex::new(None);
+
+/// The file a pool's migration result is remembered under; `None` for an
+/// in-memory database, which is always scanned.
+fn migration_marker(db: &SqlitePool) -> Option<std::path::PathBuf> {
+    let options = db.connect_options();
+    let path = options.get_filename();
+    let text = path.to_string_lossy();
+    (!text.is_empty() && !text.starts_with(":memory:")).then(|| path.to_path_buf())
+}
 
 fn install_storage_key(key: Zeroizing<[u8; 32]>) -> Result<(), String> {
     match STORAGE_KEY.set(key) {
@@ -439,6 +453,25 @@ fn decrypt_decodable_lookup_key(
 /// recomputing each reference from its decrypted entity. A row whose
 /// recomputed digest does not match its stored key is left untouched.
 async fn migrate_hash_reference_keys(db: &SqlitePool) -> Result<(), String> {
+    let marker = migration_marker(db);
+    if let Some(path) = &marker {
+        let done = MIGRATED_DATABASES.lock().unwrap_or_else(|e| e.into_inner());
+        if done.as_ref().is_some_and(|set| set.contains(path)) {
+            return Ok(());
+        }
+    }
+    migrate_hash_reference_keys_pass(db).await?;
+    if let Some(path) = marker {
+        MIGRATED_DATABASES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(Default::default)
+            .insert(path);
+    }
+    Ok(())
+}
+
+async fn migrate_hash_reference_keys_pass(db: &SqlitePool) -> Result<(), String> {
     let error = || "GhostChat could not upgrade its encrypted MLS storage.".to_string();
     let key = STORAGE_KEY.get().ok_or_else(error)?;
     let crypto = RustCrypto::default();
@@ -3278,6 +3311,21 @@ mod tests {
         );
     }
 
+    /// Legacy rows come from an older build, i.e. before this process ran
+    /// its migration pass. Tests that inject them into a database this
+    /// process already migrated forget that pass first.
+    fn forget_hash_reference_migration(db: &SqlitePool) {
+        if let (Some(path), Some(set)) = (
+            migration_marker(db),
+            MIGRATED_DATABASES
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_mut(),
+        ) {
+            set.remove(&path);
+        }
+    }
+
     fn legacy_ref_for(current_ref: &[u8]) -> Vec<u8> {
         let hash_ref: openmls::prelude::KeyPackageRef =
             EncryptedJsonCodec::from_slice(current_ref).unwrap();
@@ -3347,6 +3395,7 @@ mod tests {
             .execute(&bob_db)
             .await
             .unwrap();
+        forget_hash_reference_migration(&bob_db);
         assert!(has_direct_group(&bob_db, &bob_id, &conversation_id)
             .await
             .expect("A proposal saved by an older build should be migrated so the group loads"),);
@@ -3391,6 +3440,7 @@ mod tests {
             .execute(&bob_db)
             .await
             .unwrap();
+        forget_hash_reference_migration(&bob_db);
 
         assert!(has_direct_group(&bob_db, &bob_id, &conversation_id)
             .await
@@ -3442,6 +3492,7 @@ mod tests {
             .execute(&bob_db)
             .await
             .unwrap();
+        forget_hash_reference_migration(&bob_db);
 
         let welcome = create_direct_group(
             &alice_db,
@@ -3467,5 +3518,75 @@ mod tests {
         .await
         .expect("A KeyPackage saved by an older build should still accept its Welcome");
         assert_eq!(joined.kind, "welcome");
+    }
+
+    async fn legacy_key_package_rows(db: &SqlitePool) -> i64 {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM openmls_key_package WHERE substr(key_package_ref,1,4)=?",
+        )
+        .bind(LOOKUP_KEY_V1_PREFIX.as_slice())
+        .fetch_one(db)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hash_reference_migration_runs_once_per_database_after_a_clean_pass() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-once-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let db = open_database(&root.join("alice.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        prepare_device(&db, &alice_id).await.unwrap();
+        let current_ref =
+            sqlx::query_scalar::<_, Vec<u8>>("SELECT key_package_ref FROM openmls_key_package")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        sqlx::query("UPDATE openmls_key_package SET key_package_ref=?")
+            .bind(legacy_ref_for(&current_ref))
+            .execute(&db)
+            .await
+            .unwrap();
+
+        // The clean pass in prepare_device is remembered: no rescan.
+        prepare_crypto_storage(&db).await.unwrap();
+        assert_eq!(
+            legacy_key_package_rows(&db).await,
+            1,
+            "a clean pass must not rescan"
+        );
+
+        // A new database path (the same rows copied) is still migrated.
+        let copy = root.join("copy.sqlite");
+        sqlx::query("VACUUM INTO ?")
+            .bind(copy.to_string_lossy().to_string())
+            .execute(&db)
+            .await
+            .unwrap();
+        let copy_db = open_database(&copy).await;
+        prepare_crypto_storage(&copy_db).await.unwrap();
+        assert_eq!(legacy_key_package_rows(&copy_db).await, 0);
+
+        // A failed pass is not remembered: the next call runs it again.
+        let fresh = root.join("fresh.sqlite");
+        sqlx::query("VACUUM INTO ?")
+            .bind(fresh.to_string_lossy().to_string())
+            .execute(&db)
+            .await
+            .unwrap();
+        let fresh_db = open_database(&fresh).await;
+        sqlx::query("ALTER TABLE openmls_proposal RENAME TO openmls_proposal_hidden")
+            .execute(&fresh_db)
+            .await
+            .unwrap();
+        assert!(migrate_hash_reference_keys(&fresh_db).await.is_err());
+        sqlx::query("ALTER TABLE openmls_proposal_hidden RENAME TO openmls_proposal")
+            .execute(&fresh_db)
+            .await
+            .unwrap();
+        assert_eq!(legacy_key_package_rows(&fresh_db).await, 1);
+        prepare_crypto_storage(&fresh_db).await.unwrap();
+        assert_eq!(legacy_key_package_rows(&fresh_db).await, 0);
     }
 }
