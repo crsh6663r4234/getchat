@@ -495,8 +495,9 @@
         if (activeCall.screenStream) {
           await share.stop();
           // Both callers can share at once over the same SFU room. Leaving it
-          // here would also tear down the peer's share we are still watching.
-          if (!share.getState?.().remoteStream) {
+          // here would also tear down the peer's share we are still watching,
+          // or one announced whose subscription has not arrived yet.
+          if (!share.getState?.().remoteStream && !activeCall.peerGhostShareAnnounced) {
             await share.leave();
             activeCall.ghostShare = null;
           }
@@ -935,10 +936,12 @@
       if (!call || call.conversationId !== conversationId || call.peerId !== peerId) return;
       try {
         if (event.kind === "screen_stopped") {
+          call.peerGhostShareAnnounced = false;
           clearRemoteScreen(call);
           // The shared SFU room may still carry our own publication. A peer
           // stopping their screen must not disconnect our active publisher.
         } else if (event.kind === "ghostshare_started") {
+          call.peerGhostShareAnnounced = true;
           await watchGhostShare(call);
         } else if (event.kind === "call_note" && typeof event.payload?.text === "string") {
           call.callNote = event.payload.text.slice(0, 1200);

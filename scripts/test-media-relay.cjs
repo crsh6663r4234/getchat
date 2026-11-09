@@ -222,6 +222,34 @@ async function run() {
     assert.equal(leaves, 1, 'hangup still leaves the SFU room');
   }
 
+  // A peer that announced ghostshare_started but whose track has not been
+  // subscribed yet must keep the SFU room alive when we stop our own share.
+  {
+    let shareApi; let leaves = 0; let sharing = false;
+    const fixture = directFixture({ ...plain, group_voice_available: true }, { shareFactory: options => {
+      shareApi = options;
+      return {
+        watch: async () => {},
+        start: async () => { sharing = true; shareApi.onLocalStream({ getTracks: () => [] }); },
+        stop: async () => { sharing = false; shareApi.onLocalStream(null); },
+        leave: async () => { leaves++; shareApi.onLocalStream(null); shareApi.onRemoteStream(null); },
+        getState: () => ({ connected: true, sharing, localStream: null, remoteStream: null }),
+      };
+    } });
+    await fixture.client.start({ id: 'conversation', peer_id: 'b' });
+    fixture.pcs[0].connectionState = 'connected'; fixture.pcs[0].onconnectionstatechange();
+    await fixture.client.toggleScreenSharing();
+    await fixture.client.handleSignal({ conversation_id: 'conversation', from_user_id: 'b', kind: 'ghostshare_started' });
+    await fixture.client.toggleScreenSharing();
+    assert.equal(fixture.client.getState().screenSharing, false);
+    assert.equal(leaves, 0, 'a pending peer share keeps the SFU room connected');
+    await fixture.client.handleSignal({ conversation_id: 'conversation', from_user_id: 'b', kind: 'screen_stopped' });
+    await fixture.client.toggleScreenSharing();
+    await fixture.client.toggleScreenSharing();
+    assert.equal(leaves, 1, 'once the peer stopped, stopping our share leaves the room');
+    fixture.client.hangup();
+  }
+
   // A microphone opened for a call that ended while the capture was pending
   // (device switch, unmute, or a hangup during replaceTrack) must be released.
   const micStream = () => {
