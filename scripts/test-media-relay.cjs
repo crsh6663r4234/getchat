@@ -289,7 +289,9 @@ async function run() {
     assert.equal(fixture.client.getState().remoteVideoStream, remoteStream);
     await fixture.client.toggleScreenSharing();
     assert.equal(fixture.client.getState().screenSharing, true);
+    const stoppedBefore = fixture.signals.filter(signal => signal.kind === 'screen_stopped').length;
     await fixture.client.toggleScreenSharing();
+    assert.equal(fixture.signals.filter(signal => signal.kind === 'screen_stopped').length - stoppedBefore, 1, 'stopping our share tells the peer once');
     assert.equal(fixture.client.getState().screenSharing, false);
     assert.equal(fixture.client.getState().remoteVideoStream, remoteStream, "stopping our share keeps showing the peer's share");
     assert.equal(leaves, 0, 'the SFU room stays connected while the peer is still sharing');

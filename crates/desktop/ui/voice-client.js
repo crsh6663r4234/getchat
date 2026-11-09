@@ -501,10 +501,13 @@
             await share.leave();
             activeCall.ghostShare = null;
           }
+          // onLocalStream(null) already told the peer when the share module
+          // reported the stop; only tell it here if that did not happen.
+          const peerNotTold = !!activeCall.screenStream;
           activeCall.screenStream = null;
           activeCall.screenQuality = null;
           activeCall.screenTransport = null;
-          send(activeCall.conversationId, activeCall.peerId, "screen_stopped", null);
+          if (peerNotTold) send(activeCall.conversationId, activeCall.peerId, "screen_stopped", null);
         } else {
           await share.start(activeCall.conversationId, ghostShareOptions(api.getSettings()));
           send(activeCall.conversationId, activeCall.peerId, "ghostshare_started", null);
