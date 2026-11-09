@@ -3643,6 +3643,7 @@
   // request had in fact arrived. Changed text or a changed reply target is a
   // new message (the server would return the old row for a reused id).
   let restoredDraft = null;
+  function fitComposer(input) { input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 180)}px`; }
   $("#composer").addEventListener("submit", async event => {
     event.preventDefault(); const input = $("#messageInput"); const content = input.value; if (!content.trim()) return; const reply = state.replyingTo; input.value = ""; input.style.height = "auto";
     const conversation = state.active;
@@ -3656,7 +3657,7 @@
     if (!conversation || state.active?.id !== conversation.id || input.value) return;
     let queued = false;
     try { queued = JSON.parse(localStorage.getItem(encryptedMessagePendingKey(conversation.id)) || "null")?.clientMessageId === clientId; } catch {}
-    if (!queued) { input.value = content; restoredDraft = { conversationId: conversation.id, content, replyToId, clientId }; }
+    if (!queued) { input.value = content; fitComposer(input); restoredDraft = { conversationId: conversation.id, content, replyToId, clientId }; }
   });
   $("#cancelReply").onclick = () => setReplyTarget(null);
   $("#attachFileButton").onclick = () => {
@@ -3665,7 +3666,7 @@
   };
   $("#attachmentInput").addEventListener("change", event => { const files = event.target.files; if (files?.length) void uploadFiles(files); });
   $("#messageInput").addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("#composer").requestSubmit(); } });
-  $("#messageInput").addEventListener("input", event => { event.target.style.height = "auto"; event.target.style.height = `${Math.min(event.target.scrollHeight, 180)}px`; sendTyping(!!event.target.value.trim()); });
+  $("#messageInput").addEventListener("input", event => { fitComposer(event.target); sendTyping(!!event.target.value.trim()); });
   const mediaDropTargets = [$("#composer"), $("#messages")];
   for (const target of mediaDropTargets) {
     target.addEventListener("dragover", event => { if (event.dataTransfer?.types.includes("Files")) { event.preventDefault(); target.classList.add("is-dragging-media"); } });

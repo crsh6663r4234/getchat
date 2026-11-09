@@ -316,6 +316,12 @@ test('a failed send puts the typed text back into the composer', async () => {
   assert.equal(app.$('#messageInput').value, 'hello there', 'a failed send must not discard the typed message');
 });
 
+test('a restored draft is fitted to the composer height', async () => {
+  const app = await openChatAndFailSend({ beforeSend: app => { app.$('#messageInput').scrollHeight = 64; } });
+  assert.equal(app.$('#messageInput').value, 'hello there');
+  assert.equal(app.$('#messageInput').style.height, '64px', 'the restored text is not squeezed into one line');
+});
+
 test('resending a restored draft unchanged reuses its client message id', async () => {
   const app = await openChatAndFailSend();
   const sentIds = () => app.fetches
