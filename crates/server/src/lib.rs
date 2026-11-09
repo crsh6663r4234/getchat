@@ -4805,6 +4805,16 @@ async fn create_group_poll(
     {
         return Err(ApiError::bad("The poll closing time is not valid."));
     }
+    if let Some(closes_at) = body.closes_at.as_deref() {
+        let parsed = sqlx::query_scalar::<_, Option<f64>>("SELECT julianday(?)")
+            .bind(closes_at)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|_| ApiError::internal())?;
+        if parsed.is_none() {
+            return Err(ApiError::bad("The poll closing time is not valid."));
+        }
+    }
     let poll_id = Uuid::new_v4().to_string();
     let mut tx = state.db.begin().await.map_err(|_| ApiError::internal())?;
     sqlx::query("INSERT INTO group_polls(id,conversation_id,creator_id,question,closes_at) VALUES(?,?,?,?,?)")
@@ -4839,8 +4849,8 @@ async fn vote_group_poll(
     Json(body): Json<VoteGroupPollRequest>,
 ) -> Result<StatusCode, ApiError> {
     let user = authenticate(&headers, &state).await?;
-    let conversation_id = sqlx::query_scalar::<_, String>(
-        "SELECT conversation_id FROM group_polls WHERE id=? AND closed_at IS NULL",
+    let (conversation_id, expired) = sqlx::query_as::<_, (String, bool)>(
+        "SELECT conversation_id,(closes_at IS NOT NULL AND julianday(closes_at)<=julianday('now')) FROM group_polls WHERE id=? AND closed_at IS NULL",
     )
     .bind(&poll_id)
     .fetch_optional(&state.db)
@@ -4848,6 +4858,9 @@ async fn vote_group_poll(
     .map_err(|_| ApiError::internal())?
     .ok_or_else(ApiError::not_found)?;
     ensure_group_planner_member(&state.db, &conversation_id, &user.id).await?;
+    if expired {
+        return Err(ApiError::conflict("This poll is closed."));
+    }
     let valid = sqlx::query_scalar::<_, i64>(
         "SELECT count(*) FROM group_poll_options WHERE id=? AND poll_id=?",
     )
@@ -7441,6 +7454,66 @@ mod tests {
         {
             assert_ne!(event.event["type"], "typing", "typing crossed a block");
         }
+    }
+
+    #[tokio::test]
+    async fn poll_votes_are_rejected_after_closes_at() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let create = |closes_at: serde_json::Value| {
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/planner/polls"),
+                &alice,
+            )
+            .json(&serde_json::json!({
+                "question": "When?", "options": ["Mon", "Tue"], "closes_at": closes_at,
+            }))
+            .send()
+        };
+        let status = create(serde_json::json!("not a time"))
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        create(serde_json::json!("2000-01-01T00:00:00.000Z"))
+            .await
+            .unwrap();
+        let polls: serde_json::Value = create(serde_json::json!("2999-01-01T00:00:00.000Z"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let vote = |poll: &serde_json::Value| {
+            app.request(
+                Method::POST,
+                &format!("/v1/group-polls/{}/vote", poll["id"].as_str().unwrap()),
+                &bob,
+            )
+            .json(&serde_json::json!({"option_id": poll["options"][0]["id"]}))
+            .send()
+        };
+        let polls = polls.as_array().unwrap();
+        let expired = polls
+            .iter()
+            .find(|p| p["closes_at"] == "2000-01-01T00:00:00.000Z")
+            .unwrap();
+        let open = polls
+            .iter()
+            .find(|p| p["closes_at"] == "2999-01-01T00:00:00.000Z")
+            .unwrap();
+        assert_eq!(vote(expired).await.unwrap().status(), StatusCode::CONFLICT);
+        assert_eq!(vote(open).await.unwrap().status(), StatusCode::NO_CONTENT);
+        let votes = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM group_poll_votes")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+        assert_eq!(votes, 1);
     }
 
 }
