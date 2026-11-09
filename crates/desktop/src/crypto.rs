@@ -1366,6 +1366,68 @@ pub async fn get_pending_group_membership_update(
         .transpose()
 }
 
+/// Drops a staged membership commit that the server definitively refused
+/// (or that another owner/admin's accepted commit made moot): the pending
+/// MLS commit is cleared, so the group stays in its current epoch and can
+/// apply the commit that was accepted instead, and the outbox row is
+/// removed so it is not retried. Only the operation in the outbox matches.
+pub async fn discard_group_membership_update(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    operation_id: &str,
+) -> Result<(), String> {
+    let _operation = CRYPTO_OPERATION_LOCK.lock().await;
+    let user_id = normalized_uuid(user_id, "account")?;
+    let conversation_id = normalized_uuid(conversation_id, "conversation")?;
+    let operation_id = normalized_uuid(operation_id, "membership operation")?;
+    prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
+    let error = || "GhostChat could not drop the refused membership update.".to_string();
+    let mut transaction = db.begin().await.map_err(|_| error())?;
+    let Some(payload) = sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT payload FROM ghostchat_crypto_membership_outbox WHERE user_id=? AND conversation_id=?",
+    )
+    .bind(&user_id)
+    .bind(&conversation_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| error())?
+    else {
+        return Ok(());
+    };
+    let pending: GroupMembershipUpdate =
+        EncryptedJsonCodec::from_slice(&payload).map_err(|_| error())?;
+    if pending.operation_id != operation_id {
+        return Err("The pending MLS membership operation does not match.".into());
+    }
+    if !matches!(
+        pending.action.as_str(),
+        "add" | "remove" | "remove_deleted" | "leave"
+    ) {
+        return Err("Only a staged membership commit can be dropped.".into());
+    }
+    {
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        if let Some(mut group) =
+            MlsGroup::load(&storage, &group_id_for_conversation(&conversation_id))
+                .map_err(|_| error())?
+        {
+            group.clear_pending_commit(&storage).map_err(|_| error())?;
+        }
+    }
+    sqlx::query(
+        "DELETE FROM ghostchat_crypto_membership_outbox WHERE user_id=? AND conversation_id=?",
+    )
+    .bind(&user_id)
+    .bind(&conversation_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| error())?;
+    transaction.commit().await.map_err(|_| error())
+}
+
 pub async fn prepare_group_membership_update(
     db: &SqlitePool,
     user_id: &str,
@@ -4774,6 +4836,134 @@ mod tests {
         .await
         .expect("Bob should decrypt with the exact server roster");
         assert_eq!(decrypted.content.as_deref(), Some("after removal"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_staged_removal_is_dropped_and_the_accepted_one_applies() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-refused-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let carol_db = open_database(&root.join("carol.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let carol_device = prepare_device(&carol_db, &carol_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[
+                GroupPeerKeyPackage {
+                    user_id: bob_id.clone(),
+                    device_id: bob_device.device_id.clone(),
+                    payload: bob_device.payload.clone(),
+                },
+                GroupPeerKeyPackage {
+                    user_id: carol_id.clone(),
+                    device_id: carol_device.device_id.clone(),
+                    payload: carol_device.payload.clone(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(1),
+            true,
+            &roster,
+            &start.welcome_payload,
+        )
+        .await
+        .unwrap();
+        let mut remaining = vec![alice_id.clone(), bob_id.clone()];
+        remaining.sort();
+        let deleted = vec![carol_id.clone()];
+        // Owner Alice and admin Bob both stage the removal of deleted Carol;
+        // the server accepts Alice's and refuses Bob's as already done.
+        let accepted = prepare_deleted_member_removal(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &remaining,
+            &deleted,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        finalize_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &accepted.operation_id,
+        )
+        .await
+        .unwrap();
+        let refused = prepare_deleted_member_removal(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &remaining,
+            &deleted,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            discard_group_membership_update(
+                &bob_db,
+                &bob_id,
+                &conversation_id,
+                &Uuid::new_v4().to_string()
+            )
+            .await
+            .is_err(),
+            "only the staged operation itself can be dropped"
+        );
+        discard_group_membership_update(&bob_db, &bob_id, &conversation_id, &refused.operation_id)
+            .await
+            .unwrap();
+        assert!(
+            get_pending_group_membership_update(&bob_db, &bob_id, &conversation_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "a dropped operation is not retried"
+        );
+        let applied = process_crypto_event_with_deleted(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(2),
+            true,
+            &remaining,
+            &deleted,
+            &accepted.commit_payload,
+        )
+        .await
+        .expect("the accepted removal applies after the refused one was dropped");
+        assert_eq!(applied.kind, "commit");
+        assert_eq!(
+            group_fingerprint(&bob_db, &bob_id, &conversation_id)
+                .await
+                .unwrap(),
+            group_fingerprint(&alice_db, &alice_id, &conversation_id)
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

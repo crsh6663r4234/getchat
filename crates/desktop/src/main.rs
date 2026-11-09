@@ -477,6 +477,22 @@ async fn crypto_process_event(
 }
 
 #[tauri::command]
+async fn crypto_discard_group_membership_update(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    operation_id: String,
+) -> Result<(), String> {
+    crypto::discard_group_membership_update(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &operation_id,
+    )
+    .await
+}
+
+#[tauri::command]
 async fn crypto_inspect_event(
     state: State<'_, DesktopState>,
     user_id: String,
@@ -849,6 +865,7 @@ fn main() {
             crypto_process_event,
             crypto_decode_pending_history,
             crypto_inspect_event,
+            crypto_discard_group_membership_update,
             crypto_get_event_cursor,
             crypto_advance_event_cursor,
             crypto_upload_encrypted_attachment,
