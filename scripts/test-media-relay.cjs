@@ -4,7 +4,8 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ui = path.resolve(__dirname, '../crates/desktop/ui');
 
-function directFixture(config, { failShare = false, relayOnly = false, relayResponds = true, deferConfig = false, shareFactory = null, invisible = false } = {}) {
+function directFixture(config, { failShare = false, relayOnly = false, relayResponds = true, deferConfig = false, shareFactory = null, invisible = false, screen = null } = {}) {
+  const intervals = [];
   const pcs = []; const timers = []; const errors = []; let releaseConfig; let settingsFailures = 0; const configGate = new Promise(resolve => { releaseConfig = resolve; }); const probes = []; const signals = []; let micRequests = 0; let micSource = null; let screenRequests = 0; let shareLeaves = 0;
   class Peer {
     connectionState = 'new'; signalingState = 'stable'; transceivers = [];
@@ -35,10 +36,11 @@ function directFixture(config, { failShare = false, relayOnly = false, relayResp
     navigator: { mediaDevices: {
       getSupportedConstraints: () => ({}),
       getUserMedia: async () => { micRequests++; if (micSource) return micSource(); throw { name: 'NotFoundError' }; },
-      getDisplayMedia: async () => { screenRequests++; throw new Error('Unexpected direct screen fallback'); },
+      getDisplayMedia: async () => { screenRequests++; if (screen) return screen(); throw new Error('Unexpected direct screen fallback'); },
     } },
     setTimeout: (fn, ms) => { timers.push({ fn, ms, cleared: false }); return timers.length; },
-    clearTimeout: id => { if (timers[id - 1]) timers[id - 1].cleared = true; }, setInterval: () => 1, clearInterval() {},
+    clearTimeout: id => { if (timers[id - 1]) timers[id - 1].cleared = true; },
+    setInterval: fn => { intervals.push({ fn, cleared: false }); return intervals.length; }, clearInterval: id => { if (intervals[id - 1]) intervals[id - 1].cleared = true; },
   };
   vm.runInNewContext(fs.readFileSync(path.join(ui, 'voice-client.js'), 'utf8'), context);
   const client = window.GhostChatVoice.create({
@@ -46,7 +48,7 @@ function directFixture(config, { failShare = false, relayOnly = false, relayResp
     getUserId: () => 'a', getShareToken: async () => ({}), sendSignal: signal => signals.push(signal),
     onChange() {}, onError: message => errors.push(message), onIncoming() {}, isInvisible: () => invisible,
   });
-  return { client, pcs, probes, signals, timers, errors, releaseConfig, failSettingsOnce: () => { settingsFailures = 1; }, counts: () => ({ micRequests, screenRequests, shareLeaves }), setMic: fn => { micSource = fn; } };
+  return { client, pcs, probes, signals, timers, intervals, errors, releaseConfig, failSettingsOnce: () => { settingsFailures = 1; }, counts: () => ({ micRequests, screenRequests, shareLeaves }), setMic: fn => { micSource = fn; } };
 }
 
 function livekitFixture({ connectFails = false } = {}) {
@@ -206,6 +208,27 @@ async function run() {
     fixture.releaseConfig();
     await pending;
     assert.equal(fixture.pcs.length, 0, 'an accept never answers a different caller');
+  }
+
+  // Cancelling the picker of a direct share refresh keeps the adaptive
+  // quality monitor running for the share that continues.
+  {
+    const screenStream = () => {
+      const track = { kind: 'video', stop() {}, applyConstraints: async () => {}, getSettings: () => ({}) };
+      return { getTracks: () => [track], getVideoTracks: () => [track], getAudioTracks: () => [] };
+    };
+    let cancel = false;
+    const fixture = directFixture(plain, { screen: async () => { if (cancel) { const error = new Error('cancelled'); error.name = 'AbortError'; throw error; } return screenStream(); } });
+    await fixture.client.start({ id: 'conversation', peer_id: 'b' });
+    fixture.pcs[0].connectionState = 'connected'; fixture.pcs[0].onconnectionstatechange();
+    await fixture.client.toggleScreenSharing();
+    const running = () => fixture.intervals.filter(item => !item.cleared).length;
+    const before = running();
+    assert.ok(before >= 1, 'sharing starts the share monitor');
+    cancel = true;
+    await fixture.client.refreshScreenSharing();
+    assert.equal(running(), before, 'a cancelled refresh leaves the share monitor running');
+    fixture.client.hangup();
   }
 
   const stuck = directFixture(plain);

@@ -1047,7 +1047,6 @@
       }
       const activeCall = call;
       const previousStream = call.screenStream;
-      stopShareMonitor(call);
       const settings = api.getSettings();
       if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("Screen capture is unavailable in this WebView. Update the Microsoft Edge WebView2 Runtime.");
       call.screenStarting = true;
@@ -1055,6 +1054,9 @@
       try {
         const nextStream = await captureScreen(settings);
         if (!call || call !== activeCall) { nextStream.getTracks().forEach(track => track.stop()); return; }
+        // Only a new capture replaces the share: a cancelled picker keeps the
+        // current share and its quality monitor.
+        stopShareMonitor(call);
         const nextTracks = [...nextStream.getTracks()];
         const usedTracks = new Set();
         for (const oldTrack of previousStream.getTracks()) {
