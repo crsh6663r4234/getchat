@@ -185,6 +185,8 @@
         .on(E.AudioPlaybackStatusChanged, canPlayback => { if (!canPlayback) api.onAudioBlocked(); });
     }
 
+    // A join that a leave() or a newer join superseded resolves to
+    // { cancelled: true } (not an error, and distinguishable from success).
     async function join(nextConversation) {
       if (!LK?.Room) throw new Error("The group voice module did not load. Restart GhostChat and try again.");
       if (room) {
@@ -201,7 +203,7 @@
       api.onChange({ ...state });
       try {
         const [credentials, memberRows] = await Promise.all([api.getToken(nextConversation.id), api.getMembers(nextConversation.id)]);
-        if (ticket !== joinGeneration) return;
+        if (ticket !== joinGeneration) return { cancelled: true };
         members = new Map(memberRows.map(member => [member.id, member]));
         const settings = api.getSettings();
         activeRoom = new LK.Room({
@@ -218,19 +220,19 @@
           rtcConfig: { iceTransportPolicy: "relay" },
           peerConnectionTimeout: 15_000,
         });
-        if (room !== activeRoom) return;
+        if (room !== activeRoom) return { cancelled: true };
         await activeRoom.startAudio().catch(() => {});
         let micAvailable = true;
         try { micAvailable = (await LK.Room.getLocalDevices("audioinput", false)).length > 0; } catch {}
         // Joining a group never publishes the microphone automatically.
         await activeRoom.localParticipant.setMicrophoneEnabled(false);
-        if (room !== activeRoom) return;
+        if (room !== activeRoom) return { cancelled: true };
         publishState({ status: "connected", micMuted: true, micManuallyMuted: true, pushToTalkPressed: false, micAvailable, screenSharing: false, screenStarting: false, error: "" });
       } catch (error) {
         const superseded = ticket !== joinGeneration || (activeRoom && room !== activeRoom);
         if (activeRoom && room === activeRoom) room = null;
         if (activeRoom) { try { await activeRoom.disconnect(); } catch {} }
-        if (superseded) return;
+        if (superseded) return { cancelled: true };
         const message = "Group voice could not establish its required relay connection. Verify the media server and its authenticated TURN service.";
         publishState({ ...idleState(), error: message });
         throw new Error(message);

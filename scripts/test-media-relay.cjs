@@ -376,7 +376,8 @@ async function run() {
     await new Promise(resolve => setImmediate(resolve));
     await group.leave();
     release();
-    await pendingJoin.catch(() => {});
+    const outcome = await pendingJoin.catch(error => ({ error }));
+    assert.equal(outcome?.cancelled, true, `a join superseded during ${stage} reports that it was cancelled`);
     assert.equal(group.getState().status, 'idle', `leave during ${stage} keeps the group idle`);
     assert(fixture.rooms.every(item => item.disconnected), `leave during ${stage} leaves no connected room`);
   }
