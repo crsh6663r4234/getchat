@@ -2299,7 +2299,11 @@
   async function decodeMessageRow(message, { beforePendingCommits = false } = {}) {
     if (typeof message.content !== "string" || !message.content.startsWith("e2e1:")) return message;
     const messageKey = message.client_message_id || message.id;
-    if (state.cryptoMessageDecoding.has(messageKey)) return state.cryptoMessageDecoding.get(messageKey);
+    const inFlight = state.cryptoMessageDecoding.get(messageKey);
+    if (inFlight && !beforePendingCommits) return inFlight;
+    // An ordinary decode already in flight may fail on the changed server
+    // roster; the pending-commit pass then decodes the row in its own mode.
+    if (inFlight) { try { return await inFlight; } catch {} }
     const task = (async () => {
       let content = await invoke("crypto_get_cached_sent_text", { clientMessageId: message.client_message_id });
       if (content == null && beforePendingCommits) {
@@ -2326,7 +2330,7 @@
     })();
     state.cryptoMessageDecoding.set(messageKey, task);
     try { return await task; }
-    finally { state.cryptoMessageDecoding.delete(messageKey); }
+    finally { if (state.cryptoMessageDecoding.get(messageKey) === task) state.cryptoMessageDecoding.delete(messageKey); }
   }
   async function showIncomingMessage(message) {
     if (state.active?.id !== message.conversation_id || state.page !== "messages") return;

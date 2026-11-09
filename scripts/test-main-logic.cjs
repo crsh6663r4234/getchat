@@ -454,6 +454,65 @@ test('pending rows are decoded only before an authenticated commit', async () =>
   assert.ok(!order.some(item => item.startsWith('history:')), `a relay event that is not a valid commit must not trigger the local-epoch decode (order: ${order.join(', ')})`);
 });
 
+test('a pending-commit decode retries a row whose ordinary decode failed', async () => {
+  const base = 'https://a.example';
+  const group = { id: 'g1', kind: 'group', display_name: 'Group' };
+  const order = [];
+  const cached = new Set();
+  let relayEvents = [];
+  let rows = [];
+  let releaseOrdinary;
+  const ordinaryGate = new Promise(resolve => { releaseOrdinary = resolve; });
+  const row = { sequence: 7, id: 'm7', conversation_id: 'g1', sender_id: 'bob', sender_name: 'Bob', client_message_id: 'c7', content: 'e2e1:cipher', created_at: '' };
+  const app = harness({
+    storage: { 'ghostchat.server': base, [`ghostchat.cryptoPeerTrusted.${base}.me.g1`]: 'fp-group' },
+    credentials: { [await serverKey(base)]: 'token-A' },
+    hooks: {
+      crypto_has_direct_group: () => true,
+      crypto_group_fingerprint: () => 'fp-group',
+      crypto_get_event_cursor: () => 0,
+      crypto_advance_event_cursor: args => args.sequence,
+      crypto_get_cached_sent_text: args => (cached.has(args.clientMessageId) ? 'text' : null),
+      crypto_inspect_event: () => ({ kind: 'commit' }),
+      crypto_decode_pending_history: args => { order.push(`history:${args.clientMessageId}`); cached.add(args.clientMessageId); return { kind: 'application', content: 'text' }; },
+      crypto_process_event: async args => {
+        if (args.eventSequence == null) {
+          order.push(`row:${args.clientMessageId}`);
+          await ordinaryGate;
+          throw new Error('The encrypted group does not match the current server roster.');
+        }
+        order.push(`relay:${args.eventSequence}`);
+        return { kind: 'commit' };
+      },
+    },
+    fetchHandler: url => {
+      if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
+      if (url.endsWith('/v1/conversations')) return { body: [group] };
+      if (url.endsWith('/conversations/g1/crypto-lock')) return { body: { locked: true, setupComplete: true, lockedBy: 'bob', deletedMemberIds: [] } };
+      if (url.endsWith('/conversations/g1/members')) return { body: [{ id: 'me', role: 'member' }, { id: 'bob', role: 'owner' }] };
+      if (url.includes('/conversations/g1/crypto-events?after=0')) return { body: relayEvents };
+      if (url.includes('/conversations/g1/messages?')) return { body: rows };
+      return { body: [] };
+    },
+  });
+  await app.flush(() => app.sockets.length > 0);
+  app.voiceOptions.voice.onIncoming({ conversationId: 'g1' });
+  await app.flush(() => app.fetches.some(item => item.url.includes('/conversations/g1/messages?')));
+  await app.flush();
+  const socket = app.sockets.at(-1);
+  rows = [row];
+  relayEvents = [{ sequence: 1, id: 'e1', sender_id: 'bob', recipient_id: 'me', payload: 'commit', created_at: '' }];
+  // A live row starts an ordinary decode, which the changed roster will fail.
+  socket.emit('message', { data: JSON.stringify({ type: 'message', message: row }) });
+  await app.flush(() => order.includes('row:c7'));
+  socket.emit('message', { data: JSON.stringify({ type: 'crypto_event', event: { conversation_id: 'g1' } }) });
+  await app.flush(() => app.invokes.some(item => item.command === 'crypto_inspect_event'));
+  await app.flush();
+  releaseOrdinary();
+  await app.flush(() => order.includes('relay:1'));
+  assert.ok(order.includes('history:c7') && order.indexOf('history:c7') < order.indexOf('relay:1'), `the row is decoded in pending-commit mode before the commit (order: ${order.join(', ')})`);
+});
+
 test('an unreachable update host does not block startup', async () => {
   const app = harness({
     storage: { 'ghostchat.server': 'https://a.example' },
