@@ -245,15 +245,19 @@
       const activeRoom = room;
       room = null;
       screenOperation = null;
-      if (activeRoom) await activeRoom.disconnect();
-      conversation = null;
-      members.clear();
-      activeSpeakers.clear();
-      for (const element of audioElements.values()) element.remove();
-      for (const screen of screenElements.values()) screen.tile.remove();
-      audioElements.clear(); screenElements.clear(); mutedAccounts.clear();
-      state = idleState();
-      api.onChange({ ...state });
+      // Clean up even if disconnect() rejects; the error still reaches the caller.
+      try {
+        if (activeRoom) await activeRoom.disconnect();
+      } finally {
+        conversation = null;
+        members.clear();
+        activeSpeakers.clear();
+        for (const element of audioElements.values()) element.remove();
+        for (const screen of screenElements.values()) screen.tile.remove();
+        audioElements.clear(); screenElements.clear(); mutedAccounts.clear();
+        state = idleState();
+        api.onChange({ ...state });
+      }
     }
 
     async function toggleMicrophone() {
