@@ -100,7 +100,7 @@ function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {} } = 
   }
   async function fakeFetch(url, options = {}) {
     const headers = options.headers instanceof Headers ? options.headers : new Headers(options.headers || {});
-    fetches.push({ url: String(url), method: options.method || 'GET', authorization: headers.get('Authorization') });
+    fetches.push({ url: String(url), method: options.method || 'GET', authorization: headers.get('Authorization'), body: options.body });
     const reply = fetchHandler ? await fetchHandler(String(url), options) : undefined;
     const { status = 200, body = [] } = reply || {};
     return { ok: status >= 200 && status < 300, status, json: async () => body };
@@ -237,12 +237,40 @@ async function openChatAndFailSend({ encrypted = false } = {}) {
   const [submit] = app.$('#composer').__listeners.get('submit');
   await submit({ preventDefault() {} });
   assert.ok(app.fetches.some(item => item.method === 'POST' && item.url.endsWith('/conversations/c1/messages')), 'the send was attempted');
+  app.goOnline = () => { offline = false; };
+  app.submitComposer = submit;
   return app;
 }
 
 test('a failed send puts the typed text back into the composer', async () => {
   const app = await openChatAndFailSend();
   assert.equal(app.$('#messageInput').value, 'hello there', 'a failed send must not discard the typed message');
+});
+
+test('resending a restored draft unchanged reuses its client message id', async () => {
+  const app = await openChatAndFailSend();
+  const sentIds = () => app.fetches
+    .filter(item => item.method === 'POST' && item.url.endsWith('/conversations/c1/messages'))
+    .map(item => JSON.parse(item.body).client_message_id);
+  const [failedId] = sentIds();
+  app.goOnline();
+  await app.submitComposer({ preventDefault() {} });
+  assert.equal(sentIds()[1], failedId, 'the server can only deduplicate an ambiguous failure if the retry keeps its id');
+  app.$('#messageInput').value = 'hello there';
+  await app.submitComposer({ preventDefault() {} });
+  assert.notEqual(sentIds()[2], failedId, 'a message sent after the retry succeeded is a new message');
+});
+
+test('editing a restored draft sends it with a new client message id', async () => {
+  const app = await openChatAndFailSend();
+  const sentIds = () => app.fetches
+    .filter(item => item.method === 'POST' && item.url.endsWith('/conversations/c1/messages'))
+    .map(item => JSON.parse(item.body).client_message_id);
+  const [failedId] = sentIds();
+  app.goOnline();
+  app.$('#messageInput').value = 'hello there, again';
+  await app.submitComposer({ preventDefault() {} });
+  assert.notEqual(sentIds()[1], failedId, 'different text is a different message');
 });
 
 test('a failed encrypted send that is queued for retry is not restored', async () => {

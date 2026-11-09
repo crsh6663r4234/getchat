@@ -3512,9 +3512,15 @@
     } catch (error) { toast(error.message, true); }
     finally { submit.disabled = false; }
   });
+  // A failed send whose text was given back keeps its client message id, so
+  // resending it unchanged lets the server deduplicate it if the failed
+  // request had in fact arrived. Changed text is a new message.
+  let restoredDraft = null;
   $("#composer").addEventListener("submit", async event => {
     event.preventDefault(); const input = $("#messageInput"); const content = input.value; if (!content.trim()) return; const reply = state.replyingTo; input.value = ""; input.style.height = "auto";
-    const conversation = state.active; const clientId = crypto.randomUUID();
+    const conversation = state.active;
+    const clientId = restoredDraft && conversation && restoredDraft.conversationId === conversation.id && restoredDraft.content === content ? restoredDraft.clientId : crypto.randomUUID();
+    restoredDraft = null;
     if (await sendMessage(content, clientId, reply?.id || null, conversation)) { if (state.replyingTo?.id === reply?.id) setReplyTarget(null); return; }
     // Give a failed message back, unless the user moved on or typed again, or
     // its ciphertext is already queued for automatic retry (restoring it would
@@ -3522,7 +3528,7 @@
     if (!conversation || state.active?.id !== conversation.id || input.value) return;
     let queued = false;
     try { queued = JSON.parse(localStorage.getItem(encryptedMessagePendingKey(conversation.id)) || "null")?.clientMessageId === clientId; } catch {}
-    if (!queued) input.value = content;
+    if (!queued) { input.value = content; restoredDraft = { conversationId: conversation.id, content, clientId }; }
   });
   $("#cancelReply").onclick = () => setReplyTarget(null);
   $("#attachFileButton").onclick = () => {
