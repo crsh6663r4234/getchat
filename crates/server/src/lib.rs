@@ -1875,8 +1875,15 @@ async fn search_users(
     if q.len() < 2 || q.len() > 64 {
         return Ok(Json(vec![]));
     }
-    let rows = sqlx::query_as::<_, PublicUser>("SELECT id,username,display_name,avatar_data FROM users WHERE (id LIKE ? OR username LIKE ?) AND NOT EXISTS (SELECT 1 FROM user_blocks b WHERE (b.blocker_id=? AND b.blocked_id=users.id) OR (b.blocker_id=users.id AND b.blocked_id=?)) ORDER BY username LIMIT 20")
-        .bind(format!("{q}%")).bind(format!("{q}%")).bind(&user.id).bind(&user.id).fetch_all(&state.db).await.map_err(|_| ApiError::internal())?;
+    // Escape LIKE wildcards so `%` and `_` match only themselves.
+    let pattern = format!(
+        "{}%",
+        q.replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+    let rows = sqlx::query_as::<_, PublicUser>("SELECT id,username,display_name,avatar_data FROM users WHERE (id LIKE ? ESCAPE '\\' OR username LIKE ? ESCAPE '\\') AND NOT EXISTS (SELECT 1 FROM user_blocks b WHERE (b.blocker_id=? AND b.blocked_id=users.id) OR (b.blocker_id=users.id AND b.blocked_id=?)) ORDER BY username LIMIT 20")
+        .bind(&pattern).bind(&pattern).bind(&user.id).bind(&user.id).fetch_all(&state.db).await.map_err(|_| ApiError::internal())?;
     Ok(Json(
         rows.into_iter().filter(|row| row.id != user.id).collect(),
     ))
@@ -7552,4 +7559,30 @@ mod tests {
         assert!(limited, "61 unblock requests in an hour were all accepted");
     }
 
+    #[tokio::test]
+    async fn user_search_treats_like_wildcards_literally() {
+        use reqwest::Method;
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        app.user("bob_one").await;
+        app.user("bobtwo").await;
+        let search = |q: &str| {
+            let q = q.replace('%', "%25");
+            app.request(Method::GET, &format!("/v1/users/search?q={q}"), &alice)
+                .send()
+        };
+        let names = |rows: serde_json::Value| -> Vec<String> {
+            rows.as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["username"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let all: serde_json::Value = search("__").await.unwrap().json().await.unwrap();
+        assert!(names(all).is_empty(), "`__` must not match every username");
+        let percent: serde_json::Value = search("b%").await.unwrap().json().await.unwrap();
+        assert!(names(percent).is_empty());
+        let literal: serde_json::Value = search("bob_").await.unwrap().json().await.unwrap();
+        assert_eq!(names(literal), vec!["bob_one".to_owned()]);
+    }
 }
