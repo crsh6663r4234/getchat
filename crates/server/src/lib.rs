@@ -8005,4 +8005,54 @@ mod tests {
             Some(serde_json::json!("contacts_updated"))
         );
     }
+
+    #[tokio::test]
+    async fn caller_gets_the_same_relay_reply_from_invisible_and_offline_callees() {
+        use reqwest::Method;
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let to_bob = app.direct(&alice, &bob).await;
+        let to_carol = app.direct(&alice, &carol).await;
+        let status = app
+            .request(Method::PUT, "/v1/me/presence", &bob)
+            .json(&serde_json::json!({"mode": "invisible"}))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert!(status.is_success());
+        // Bob is connected but invisible; Carol is offline.
+        register_online_connection(&app.state, &bob.id);
+        let caller = app.public_user(&alice).await;
+        let mut observed = Vec::new();
+        for (conversation, callee) in [(&to_bob, &bob), (&to_carol, &carol)] {
+            let mut events = app.state.events.subscribe();
+            let offer = serde_json::json!({
+                "type": "voice_signal", "conversation_id": conversation, "to_user_id": callee.id,
+                "kind": "offer", "payload": {"type": "offer", "sdp": "v=0"},
+            });
+            relay_voice_signal(&app.state, &caller, &offer.to_string()).await;
+            let mut to_caller = Vec::new();
+            let mut to_callee = 0;
+            while let Ok(Ok(event)) =
+                tokio::time::timeout(Duration::from_millis(300), events.recv()).await
+            {
+                if event.recipients.contains(&alice.id) {
+                    to_caller.push(event.event.clone());
+                }
+                if event.recipients.contains(&callee.id) && event.event["kind"] == "offer" {
+                    to_callee += 1;
+                }
+            }
+            assert_eq!(to_callee, 1, "the callee's devices receive the call");
+            observed.push(to_caller);
+        }
+        assert_eq!(
+            observed[0], observed[1],
+            "invisible and offline look the same to the caller"
+        );
+        assert!(observed[0].is_empty());
+    }
 }
