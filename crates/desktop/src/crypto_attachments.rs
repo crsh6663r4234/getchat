@@ -232,6 +232,56 @@ fn api_url(server_base: &str, path_and_query: &str) -> Result<reqwest::Url, Stri
         .map_err(|_| "The selected server address is invalid.".to_string())
 }
 
+/// Partial download files of downloads running in this process.
+#[cfg_attr(not(windows), allow(dead_code))]
+static ACTIVE_PART_FILES: std::sync::Mutex<Option<std::collections::HashSet<PathBuf>>> =
+    std::sync::Mutex::new(None);
+
+/// A temporary download file is `.ghostchat-<uuid>.part` (hyphenated UUID).
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn is_download_part_file(name: &str) -> bool {
+    name.strip_prefix(".ghostchat-")
+        .and_then(|rest| rest.strip_suffix(".part"))
+        .is_some_and(|id| id.len() == 36 && Uuid::parse_str(id).is_ok())
+}
+
+/// Removes partial download files a crashed or killed download left in
+/// `dir`. Only exact `.ghostchat-<uuid>.part` names are touched, never one
+/// of a download still running here, and never one written within
+/// `min_age` (a download another GhostChat process is writing).
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn remove_stale_part_files(
+    dir: &std::path::Path,
+    active: &std::collections::HashSet<PathBuf>,
+    min_age: std::time::Duration,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if active.contains(&path)
+            || !entry
+                .file_name()
+                .to_str()
+                .is_some_and(is_download_part_file)
+        {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        let old_enough = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.elapsed().ok())
+            .is_some_and(|age| age >= min_age);
+        if metadata.is_file() && old_enough {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+}
+
 fn safe_file_name(value: &str) -> String {
     let name = value.rsplit(['/', '\\']).next().unwrap_or("file");
     let clean = name
@@ -513,6 +563,19 @@ pub async fn download(
     }
     let parent = path.parent().ok_or("Choose a valid destination folder.")?;
     let temp_path: PathBuf = parent.join(format!(".ghostchat-{}.part", Uuid::new_v4()));
+    let active = {
+        let mut guard = ACTIVE_PART_FILES
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let active = guard.get_or_insert_with(Default::default);
+        active.insert(temp_path.clone());
+        active.clone()
+    };
+    let stale_dir = parent.to_path_buf();
+    let _ = tokio::task::spawn_blocking(move || {
+        remove_stale_part_files(&stale_dir, &active, std::time::Duration::from_secs(600))
+    })
+    .await;
     let mut reader = DownloadReader::new(response);
     let mut temp_created = false;
     let transfer: Result<(), String> = async {
@@ -579,6 +642,13 @@ pub async fn download(
         Ok(())
     }
     .await;
+    if let Some(active) = ACTIVE_PART_FILES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_mut()
+    {
+        active.remove(&temp_path);
+    }
     if let Err(error) = transfer {
         if temp_created {
             let _ = tokio::fs::remove_file(&temp_path).await;
@@ -641,5 +711,51 @@ mod tests {
             with_query.as_str(),
             "https://host.example/chat/v1/conversations/c/encrypted-attachments?attachment_id=a&plain_size=1"
         );
+    }
+
+    #[test]
+    fn stale_part_files_are_removed_but_active_and_unrelated_files_are_kept() {
+        let dir = std::env::temp_dir().join(format!("ghostchat-parts-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stale = dir.join(format!(".ghostchat-{}.part", Uuid::new_v4()));
+        let active = dir.join(format!(".ghostchat-{}.part", Uuid::new_v4()));
+        let fresh = dir.join(format!(".ghostchat-{}.part", Uuid::new_v4()));
+        let unrelated = [
+            dir.join(".ghostchat-notes.part"),
+            dir.join(format!("ghostchat-{}.part", Uuid::new_v4())),
+            dir.join(format!(".ghostchat-{}.partial", Uuid::new_v4())),
+            dir.join("report.pdf"),
+        ];
+        for path in [&stale, &active, &fresh]
+            .into_iter()
+            .chain(unrelated.iter())
+        {
+            std::fs::write(path, b"x").unwrap();
+        }
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        for path in [&stale, &active].into_iter().chain(unrelated.iter()) {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        }
+        let active_set = std::collections::HashSet::from([active.clone()]);
+        remove_stale_part_files(&dir, &active_set, std::time::Duration::from_secs(600));
+        assert!(
+            !stale.exists(),
+            "an old part file left by a crash is removed"
+        );
+        assert!(active.exists(), "a part file of a running download is kept");
+        assert!(fresh.exists(), "a recently written part file is kept");
+        for path in &unrelated {
+            assert!(
+                path.exists(),
+                "{} does not match the exact pattern",
+                path.display()
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
