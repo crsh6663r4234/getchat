@@ -5025,6 +5025,10 @@ struct SendMessage {
     client_message_id: String,
     content: String,
     reply_to_id: Option<String>,
+    /// Encrypted attachments (uploaded by the sender to this conversation)
+    /// whose keys this e2e1 message carries; they are deleted with it.
+    #[serde(default)]
+    attachment_ids: Vec<String>,
 }
 
 async fn send_message(
@@ -5083,6 +5087,22 @@ async fn send_message(
     if body.client_message_id.len() > 64 || body.client_message_id.is_empty() {
         return Err(ApiError::bad("Invalid message ID."));
     }
+    let mut attachment_ids = body
+        .attachment_ids
+        .iter()
+        .map(|id| {
+            Uuid::parse_str(id)
+                .map(|id| id.to_string())
+                .map_err(|_| ApiError::bad("Invalid encrypted attachment ID."))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    attachment_ids.sort();
+    attachment_ids.dedup();
+    if attachment_ids.len() > 8 || (!attachment_ids.is_empty() && crypto_locked == 0) {
+        return Err(ApiError::bad(
+            "Only encrypted messages can carry encrypted attachments.",
+        ));
+    }
     if let Some(reply_to_id) = body.reply_to_id.as_deref() {
         let can_reply = sqlx::query_scalar::<_, i64>(
             "SELECT count(*) FROM messages WHERE id=? AND conversation_id=?",
@@ -5099,14 +5119,35 @@ async fn send_message(
         }
     }
     let id = Uuid::new_v4().to_string();
+    let mut tx = state.db.begin().await.map_err(|_| ApiError::internal())?;
     let inserted = sqlx::query("INSERT OR IGNORE INTO messages(id,conversation_id,sender_id,client_message_id,content,reply_to_id) VALUES(?,?,?,?,?,?)")
-        .bind(&id).bind(&conversation_id).bind(&user.id).bind(&body.client_message_id).bind(content).bind(body.reply_to_id.as_deref()).execute(&state.db).await.map_err(|error| {
+        .bind(&id).bind(&conversation_id).bind(&user.id).bind(&body.client_message_id).bind(content).bind(body.reply_to_id.as_deref()).execute(&mut *tx).await.map_err(|error| {
             if error.as_database_error().is_some_and(|database_error| database_error.message().contains("encrypted conversation only accepts MLS content")) {
                 ApiError::conflict("This encrypted conversation only accepts MLS-encrypted text messages.")
             } else {
                 ApiError::internal()
             }
         })?;
+    if inserted.rows_affected() > 0 {
+        for attachment_id in &attachment_ids {
+            let linked = sqlx::query(
+                "UPDATE attachments SET message_id=? WHERE id=? AND conversation_id=? AND uploaded_by=? AND encrypted=1 AND message_id IS NULL",
+            )
+            .bind(&id)
+            .bind(attachment_id)
+            .bind(&conversation_id)
+            .bind(&user.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal())?;
+            if linked.rows_affected() != 1 {
+                return Err(ApiError::bad(
+                    "An encrypted attachment must be your own unsent upload in this conversation.",
+                ));
+            }
+        }
+    }
+    tx.commit().await.map_err(|_| ApiError::internal())?;
     let message = sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,u.avatar_data AS sender_avatar,m.client_message_id,m.content,m.created_at,m.edited_at,m.pinned_at,m.reply_to_id,(SELECT r.content FROM messages r WHERE r.id=m.reply_to_id) AS reply_to_content,(SELECT u.display_name FROM messages r JOIN users u ON u.id=r.sender_id WHERE r.id=m.reply_to_id) AS reply_to_sender FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? AND m.sender_id=? AND m.client_message_id=?")
         .bind(&conversation_id).bind(&user.id).bind(&body.client_message_id).fetch_one(&state.db).await.map_err(|_| ApiError::internal())?;
     if inserted.rows_affected() > 0 {
@@ -6030,7 +6071,21 @@ async fn delete_message(
     } else {
         false
     };
+    let encrypted_attachment_ids = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM attachments WHERE message_id=? AND conversation_id=? AND encrypted=1",
+    )
+    .bind(&id)
+    .bind(&msg.0)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| ApiError::internal())?;
     let mut tx = state.db.begin().await.map_err(|_| ApiError::internal())?;
+    sqlx::query("DELETE FROM attachments WHERE message_id=? AND conversation_id=? AND encrypted=1")
+        .bind(&id)
+        .bind(&msg.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ApiError::internal())?;
     if let Some(attachment_id) = attachment_id.as_deref() {
         sqlx::query("DELETE FROM attachments WHERE id=? AND conversation_id=?")
             .bind(attachment_id)
@@ -6050,6 +6105,10 @@ async fn delete_message(
             let path = state.attachment_dir.join(format!("{attachment_id}.blob"));
             let _ = tokio::fs::remove_file(path).await;
         }
+    }
+    for attachment_id in encrypted_attachment_ids {
+        let path = state.attachment_dir.join(format!("{attachment_id}.blob"));
+        let _ = tokio::fs::remove_file(path).await;
     }
     let recipients = sqlx::query_scalar::<_, String>(
         "SELECT user_id FROM conversation_members WHERE conversation_id=?",
@@ -7668,5 +7727,95 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(target.as_deref(), Some(dave.id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn deleting_an_encrypted_message_deletes_its_encrypted_attachment() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let direct = app.direct(&alice, &bob).await;
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete) VALUES(?,?,1)",
+        )
+        .bind(&direct)
+        .bind(&alice.id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        let upload = |user: &TestUser| {
+            let attachment_id = Uuid::new_v4().to_string();
+            let request = app
+                .request(
+                    Method::POST,
+                    &format!(
+                        "/v1/conversations/{direct}/encrypted-attachments?attachment_id={attachment_id}&plain_size=0&chunk_size={ENCRYPTED_ATTACHMENT_CHUNK_BYTES}&chunk_count=1"
+                    ),
+                    user,
+                )
+                .body(vec![7u8; 16])
+                .send();
+            async move {
+                assert_eq!(request.await.unwrap().status(), StatusCode::OK);
+                attachment_id
+            }
+        };
+        let send = |user: &TestUser, attachment_ids: Vec<String>| {
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{direct}/messages"),
+                user,
+            )
+            .json(&serde_json::json!({
+                "client_message_id": Uuid::new_v4().to_string(),
+                "content": "e2e1:AAAA",
+                "attachment_ids": attachment_ids,
+            }))
+            .send()
+        };
+        let blob = |id: &str| app.state.attachment_dir.join(format!("{id}.blob"));
+
+        // Another member's upload cannot be claimed by a message.
+        let bobs = upload(&bob).await;
+        let status = send(&alice, vec![bobs.clone()]).await.unwrap().status();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let attachment = upload(&alice).await;
+        let message: serde_json::Value = send(&alice, vec![attachment.clone()])
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        // An attachment links to one message only.
+        let status = send(&alice, vec![attachment.clone()])
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(blob(&attachment).exists());
+        let status = app
+            .request(
+                Method::DELETE,
+                &format!("/v1/messages/{}", message["id"].as_str().unwrap()),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(
+            !blob(&attachment).exists(),
+            "the encrypted blob is deleted with its message"
+        );
+        let rows = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM attachments WHERE id=?")
+            .bind(&attachment)
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+        assert_eq!(rows, 0);
+        assert!(blob(&bobs).exists(), "an unrelated upload is kept");
     }
 }
