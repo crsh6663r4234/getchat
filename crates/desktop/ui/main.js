@@ -242,6 +242,8 @@
     "You’re up to date ({version}).": "Güncelsin ({version}).",
     "GhostChat is up to date.": "GhostChat güncel.",
     "Could not check for updates. Try again when you’re online.": "Güncellemeler kontrol edilemedi. Çevrimiçiyken tekrar dene.",
+    "Could not read your saved session": "Kayıtlı oturumun okunamadı",
+    "Windows Credential Manager could not be read. Your session was not removed; try again.": "Windows Kimlik Bilgisi Yöneticisi okunamadı. Oturumun silinmedi; tekrar dene.",
     "The update could not be installed.": "Güncelleme yüklenemedi.",
     "New friend request": "Yeni arkadaşlık isteği", "{name} sent you a friend request.": "{name} sana arkadaşlık isteği gönderdi."
   });
@@ -1003,9 +1005,19 @@
     try { await invoke("credential_set", { serverKey: await serverKey(activeBase()), token }); }
     catch (error) { console.warn("Credential Manager unavailable", error); toast("Session active, but Windows could not save it. Keep your recovery key safe.", true); }
   }
+  // Returns false when the saved session could not be read (a Credential
+  // Manager error), which is not the same as having no saved session.
   async function restoreToken() {
-    try { state.token = await invoke("credential_get", { serverKey: await serverKey(activeBase()) }) || ""; }
-    catch { state.token = ""; }
+    try { state.token = await invoke("credential_get", { serverKey: await serverKey(activeBase()) }) || ""; return true; }
+    catch (error) { console.warn("Could not read the saved session", error); state.token = ""; return false; }
+  }
+  function showCredentialReadError() {
+    for (const id of ["authView", "recoveryView", "appView"]) $(`#${id}`).classList.add("hidden");
+    $("#startupUpdateGate").classList.remove("hidden");
+    $("#startupUpdateTitle").textContent = translate("Could not read your saved session");
+    $("#startupUpdateStatus").textContent = translate("Windows Credential Manager could not be read. Your session was not removed; try again.");
+    $("#startupUpdateProgress").style.setProperty("--progress", "1");
+    $("#retryStartupUpdate").classList.remove("hidden");
   }
   async function clearToken() {
     clearAttachmentUrls();
@@ -4207,7 +4219,7 @@
       state.cryptoDevice = null;
       resetCryptoViewState();
       updateServerLabels(); $("#settingsDialog").close();
-      await restoreToken();
+      if (!await restoreToken()) { showCredentialReadError(); return; }
       try { state.pendingRecovery = await invoke("credential_get_pending_recovery", { serverKey: await serverKey(activeBase()) }) || ""; } catch { state.pendingRecovery = ""; }
       if (state.pendingRecovery) {
         try { await saveRecoveryKey(state.pendingRecovery); } catch (error) { console.warn("Could not promote the pending recovery key", error); }
@@ -4337,7 +4349,7 @@
       state.base = normalizedBase(savedServer);
     }
     updateServerLabels();
-    await restoreToken();
+    if (!await restoreToken()) { showCredentialReadError(); return; }
     await processPendingGroupInvites();
     try { state.pendingRecovery = await invoke("credential_get_pending_recovery", { serverKey: await serverKey(activeBase()) }) || ""; } catch {}
     if (state.pendingRecovery) {

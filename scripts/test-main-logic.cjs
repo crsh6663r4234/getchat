@@ -615,6 +615,32 @@ test('an interrupted default-server credential migration is retried on the next 
   assert.deepEqual(setKeys, [await serverKey(current)], 'the next launch moves the token to the new server key');
 });
 
+test('a Credential Manager read error keeps the user on a retryable screen', async () => {
+  let fail = true;
+  const app = harness({
+    storage: { 'ghostchat.server': 'https://a.example' },
+    hooks: { credential_get: () => { if (fail) throw new Error('Element not found. (os error 1168)'); return null; } },
+  });
+  // index.html starts with every view hidden.
+  for (const view of ['#authView', '#recoveryView', '#appView']) app.$(view).classList.add('hidden');
+  await app.flush(() => app.invokes.some(item => item.command === 'credential_get'));
+  await app.flush();
+  assert.ok(app.$('#authView').classList.contains('hidden'), 'a read error is not a logout');
+  assert.ok(!app.$('#startupUpdateGate').classList.contains('hidden'), 'the startup gate explains the error');
+  assert.ok(!app.$('#retryStartupUpdate').classList.contains('hidden'), 'and offers a retry');
+  fail = false;
+  app.$('#retryStartupUpdate').onclick();
+  await app.flush(() => !app.$('#authView').classList.contains('hidden'));
+  assert.ok(app.$('#startupUpdateGate').classList.contains('hidden'), 'a retry that finds no saved session shows the login');
+});
+
+test('no saved session still shows the login screen', async () => {
+  const app = harness({ storage: { 'ghostchat.server': 'https://a.example' } });
+  for (const view of ['#authView', '#recoveryView', '#appView']) app.$(view).classList.add('hidden');
+  await app.flush(() => !app.$('#authView').classList.contains('hidden'));
+  assert.ok(app.$('#startupUpdateGate').classList.contains('hidden'));
+});
+
 test('an unreachable update host does not block startup', async () => {
   const app = harness({
     storage: { 'ghostchat.server': 'https://a.example' },
