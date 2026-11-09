@@ -61,5 +61,31 @@ const track = () => ({ kind: 'video', source: 'screen', mediaStreamTrack: { mute
   await Promise.all([shared.watch('conversation'), shared.watch('conversation')]);
   assert.equal(rooms.length - roomsBeforeShared, 1, 'concurrent ensures for one conversation open one room');
   await shared.leave();
+
+  // A second ensure that arrives while connect() is still in flight must wait
+  // for that connect rather than receive the not-yet-connected room.
+  let releaseConnect;
+  const slowRoomsBefore = rooms.length;
+  const slow = window.GhostChatShare.create({ getToken: async () => ({ url: 'wss://fixture', token: 'fixture' }) });
+  const originalConnect = Room.prototype.connect;
+  Room.prototype.connect = function (url, token, options) {
+    this.connectOptions = options;
+    return new Promise(resolve => { releaseConnect = () => { this.connected = true; resolve(); }; });
+  };
+  const firstEnsure = slow.watch('conversation');
+  for (let i = 0; i < 5 && !releaseConnect; i++) await new Promise(resolve => setImmediate(resolve));
+  assert(releaseConnect, 'the first ensure reached connect()');
+  let secondRoomConnected = null;
+  const secondEnsure = slow.start('conversation').then(() => { secondRoomConnected = rooms[slowRoomsBefore].connected === true; });
+  rooms[slowRoomsBefore].localParticipant.setScreenShareEnabled = async () => {
+    if (!rooms[slowRoomsBefore].connected) throw new Error('published on an unconnected room');
+  };
+  await new Promise(resolve => setImmediate(resolve));
+  releaseConnect();
+  await firstEnsure; await secondEnsure;
+  Room.prototype.connect = originalConnect;
+  assert.equal(secondRoomConnected, true, 'a caller during the connect window gets the connected room');
+  assert.equal(rooms.length - slowRoomsBefore, 1, 'the connect window opens one room');
+  await slow.leave();
   console.log('GhostShare recovery, replacement, stale-room and leave checks passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

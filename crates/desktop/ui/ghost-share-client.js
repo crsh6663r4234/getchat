@@ -91,8 +91,10 @@
 
     async function ensure(nextConversationId) {
       if (!LK?.Room) throw new Error("GhostShare could not load the media module.");
-      if (room && conversationId === nextConversationId) return room;
+      // A connect still in flight assigns `room` before it resolves, so the
+      // pending promise must win over the not-yet-connected room.
       if (pending?.conversationId === nextConversationId) return pending.promise;
+      if (room && conversationId === nextConversationId) return room;
       const promise = connectRoom(nextConversationId);
       pending = { conversationId: nextConversationId, promise };
       try { return await promise; }
