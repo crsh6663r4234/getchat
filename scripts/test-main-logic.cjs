@@ -404,10 +404,10 @@ function pendingCommitHarness({ relayEvents, rowsAfter, inspect }) {
         crypto_group_fingerprint: () => 'fp-group',
         crypto_get_event_cursor: () => 0,
         crypto_advance_event_cursor: args => args.sequence,
-        crypto_get_cached_sent_text: args => {
+        crypto_get_cached_text_state: args => {
           // The cache is looked up for this account, conversation and sender.
           if (args.userId !== 'me' || args.conversationId !== 'g1' || args.senderId !== 'bob') order.push(`bad-cache-key:${JSON.stringify(args)}`);
-          return cached.has(args.clientMessageId) ? 'text' : null;
+          return { content: cached.has(args.clientMessageId) ? 'text' : null, undecryptable: false };
         },
         crypto_inspect_event: args => { order.push(`inspect:${args.eventSequence}`); return inspect(args); },
         crypto_decode_pending_history: args => { order.push(`history:${args.clientMessageId}`); cached.add(args.clientMessageId); return { kind: 'application', content: 'text' }; },
@@ -459,6 +459,42 @@ test('pending rows are decoded only before an authenticated commit', async () =>
   assert.ok(!order.some(item => item.startsWith('history:')), `a relay event that is not a valid commit must not trigger the local-epoch decode (order: ${order.join(', ')})`);
 });
 
+test('a row marked undecryptable is not decoded again', async () => {
+  const base = 'https://a.example';
+  const group = { id: 'g1', kind: 'group', display_name: 'Group' };
+  const order = [];
+  const app = harness({
+    storage: { 'ghostchat.server': base, [`ghostchat.cryptoPeerTrusted.${base}.me.g1`]: 'fp-group' },
+    credentials: { [await serverKey(base)]: 'token-A' },
+    hooks: {
+      crypto_has_direct_group: () => true,
+      crypto_group_fingerprint: () => 'fp-group',
+      crypto_get_event_cursor: () => 0,
+      crypto_advance_event_cursor: args => args.sequence,
+      crypto_get_cached_sent_text: () => null,
+      crypto_get_cached_text_state: args => ({ content: null, undecryptable: args.clientMessageId === 'c6' }),
+      crypto_inspect_event: () => ({ kind: 'commit' }),
+      crypto_decode_pending_history: args => { order.push(`history:${args.clientMessageId}`); return { kind: 'application', content: 'text' }; },
+      crypto_process_event: args => { order.push(args.eventSequence == null ? `row:${args.clientMessageId}` : `relay:${args.eventSequence}`); return { kind: 'commit' }; },
+    },
+    fetchHandler: url => {
+      if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
+      if (url.endsWith('/v1/conversations')) return { body: [group] };
+      if (url.endsWith('/conversations/g1/crypto-lock')) return { body: { locked: true, setupComplete: true, lockedBy: 'bob', deletedMemberIds: [] } };
+      if (url.endsWith('/conversations/g1/members')) return { body: [{ id: 'me', role: 'member' }, { id: 'bob', role: 'owner' }] };
+      if (url.includes('/conversations/g1/crypto-events?after=0')) return { body: [{ sequence: 1, id: 'e1', sender_id: 'bob', recipient_id: 'me', payload: 'commit', created_at: '' }] };
+      if (url.includes('/conversations/g1/messages?')) return { body: ['c6', 'c7'].map(id => ({ sequence: Number(id.slice(1)), id: `m-${id}`, conversation_id: 'g1', sender_id: 'bob', client_message_id: id, content: 'e2e1:cipher', created_at: '' })) };
+      return { body: [] };
+    },
+  });
+  await app.flush(() => app.sockets.length > 0);
+  app.voiceOptions.voice.onIncoming({ conversationId: 'g1' });
+  await app.flush(() => order.includes('relay:1'));
+  await app.flush();
+  assert.ok(order.includes('history:c7'), `the unmarked row is decoded (order: ${order.join(', ')})`);
+  assert.ok(!order.includes('history:c6') && !order.includes('row:c6'), `a permanently undecryptable row is not retried (order: ${order.join(', ')})`);
+});
+
 test('a pending-commit decode retries a row whose ordinary decode failed', async () => {
   const base = 'https://a.example';
   const group = { id: 'g1', kind: 'group', display_name: 'Group' };
@@ -477,7 +513,7 @@ test('a pending-commit decode retries a row whose ordinary decode failed', async
       crypto_group_fingerprint: () => 'fp-group',
       crypto_get_event_cursor: () => 0,
       crypto_advance_event_cursor: args => args.sequence,
-      crypto_get_cached_sent_text: args => (cached.has(args.clientMessageId) ? 'text' : null),
+      crypto_get_cached_text_state: args => ({ content: cached.has(args.clientMessageId) ? 'text' : null, undecryptable: false }),
       crypto_inspect_event: () => ({ kind: 'commit' }),
       crypto_decode_pending_history: args => { order.push(`history:${args.clientMessageId}`); cached.add(args.clientMessageId); return { kind: 'application', content: 'text' }; },
       crypto_process_event: async args => {
