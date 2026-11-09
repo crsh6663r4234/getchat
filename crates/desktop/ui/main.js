@@ -1767,9 +1767,14 @@
     if (conversation?.kind !== "group") return [];
     return rememberDeletedCryptoMembers(conversationId, await request(`/v1/conversations/${encodeURIComponent(conversationId)}/crypto-lock`));
   }
-  // The group owner removes leaves of deleted accounts, one staged commit at
-  // a time, through the ordinary membership outbox. Only the owner does it so
-  // two admins never race conflicting commits for the same epoch.
+  // Leaves of deleted accounts are removed one staged commit at a time
+  // through the ordinary membership outbox. The owner does it at once; each
+  // admin, in join order, only after a further grace period, so an offline
+  // owner does not leave the leaf in place while two online managers rarely
+  // race. The server accepts one removal per leaf and answers a later one
+  // with 410, which counts as done.
+  const DELETED_LEAF_ADMIN_GRACE_MS = 2 * 60 * 1000;
+  const deletedLeafChecks = new Map();
   const deletedLeafRefusals = new Map();
   function scheduleDeletedLeafCheck(conversationId, delay) {
     if (deletedLeafChecks.has(conversationId)) return;
@@ -1783,7 +1788,19 @@
     const deletedMemberIds = await deletedCryptoMemberIds(conversationId);
     if (!deletedMemberIds.length || state.cryptoMembershipPending.has(conversationId)) return;
     const members = await request(`/v1/conversations/${encodeURIComponent(conversationId)}/members`);
-    if (members.find(member => member.id === state.user?.id)?.role !== "owner") return;
+    const me = members.find(member => member.id === state.user?.id);
+    if (!me || !["owner", "admin"].includes(me.role)) return;
+    if (me.role !== "owner") {
+      const admins = members.filter(member => member.role === "admin")
+        .sort((left, right) => (Number(left.joined_seq) || 0) - (Number(right.joined_seq) || 0) || String(left.id).localeCompare(String(right.id)));
+      const rank = admins.findIndex(member => member.id === me.id) + 1;
+      const lock = await request(`/v1/conversations/${encodeURIComponent(conversationId)}/crypto-lock`);
+      const pendingSince = (Array.isArray(lock?.deletedMembers) ? lock.deletedMembers : [])
+        .filter(member => !member.removalCommittedAt).map(member => Date.parse(member.deletedAt)).filter(Number.isFinite);
+      if (!pendingSince.length) return;
+      const due = Math.min(...pendingSince) + rank * DELETED_LEAF_ADMIN_GRACE_MS;
+      if (Date.now() < due) { scheduleDeletedLeafCheck(conversationId, due - Date.now()); return; }
+    }
     const expectedMemberIds = members.map(member => member.id).sort();
     // After a refusal (or a 410) the same removal is not staged again until
     // the roster or the deleted list changes, so the error shows only once.

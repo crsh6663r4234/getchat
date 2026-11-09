@@ -501,6 +501,15 @@ test('a removal another owner/admin already committed counts as done', async () 
   assert.ok(!app.$('#toast').textContent.includes('refused'), 'no error is shown for an already removed leaf');
 });
 
+test('an admin removes a deleted leaf after the owner\'s grace period', async () => {
+  const late = await deletedLeafHarness({ role: 'admin', deletedAt: '2000-01-01T00:00:00.000Z' });
+  await late.flush(() => late.removals().length > 0);
+  assert.ok(late.removals()[0].url.endsWith('/crypto-membership/remove/carol'));
+  const early = await deletedLeafHarness({ role: 'admin', deletedAt: new Date().toISOString() });
+  assert.equal(early.removals().length, 0, 'an admin waits while the owner may still remove the leaf');
+  assert.ok(early.timers.some(timer => !timer.done && timer.ms > 0), 'and checks again when its turn comes');
+});
+
 test('pending encrypted rows are decoded before a relay commit is applied', async () => {
   const base = 'https://a.example';
   const group = { id: 'g1', kind: 'group', display_name: 'Group' };
