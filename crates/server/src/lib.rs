@@ -1988,6 +1988,18 @@ async fn unblock_user(
     Path(target_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let user = authenticate(&headers, &state).await?;
+    // Same budget as block_user: SECURITY.md limits all blocking changes.
+    if !allow_rate(
+        &state,
+        &format!("block:{}", user.id),
+        60,
+        Duration::from_secs(3600),
+    ) {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Please wait before changing block settings.",
+        ));
+    }
     sqlx::query("DELETE FROM user_blocks WHERE blocker_id=? AND blocked_id=?")
         .bind(&user.id)
         .bind(&target_id)
@@ -7514,6 +7526,30 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(votes, 1);
+    }
+
+    #[tokio::test]
+    async fn unblock_is_rate_limited_like_block() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let path = format!("/v1/users/{}/block", bob.id);
+        let mut limited = false;
+        for _ in 0..61 {
+            let status = app
+                .request(Method::DELETE, &path, &alice)
+                .send()
+                .await
+                .unwrap()
+                .status();
+            if status == StatusCode::TOO_MANY_REQUESTS {
+                limited = true;
+                break;
+            }
+            assert_eq!(status, StatusCode::NO_CONTENT);
+        }
+        assert!(limited, "61 unblock requests in an hour were all accepted");
     }
 
 }
