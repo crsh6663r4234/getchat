@@ -415,9 +415,19 @@ async fn crypto_encrypt_text(
 #[tauri::command]
 async fn crypto_get_cached_sent_text(
     state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    sender_id: String,
     client_message_id: String,
 ) -> Result<Option<String>, String> {
-    crypto::get_cached_sent_text(&state.crypto_db, &client_message_id).await
+    crypto::get_cached_sent_text(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &sender_id,
+        &client_message_id,
+    )
+    .await
 }
 
 #[tauri::command]

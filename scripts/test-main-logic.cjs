@@ -404,7 +404,11 @@ function pendingCommitHarness({ relayEvents, rowsAfter, inspect }) {
         crypto_group_fingerprint: () => 'fp-group',
         crypto_get_event_cursor: () => 0,
         crypto_advance_event_cursor: args => args.sequence,
-        crypto_get_cached_sent_text: args => (cached.has(args.clientMessageId) ? 'text' : null),
+        crypto_get_cached_sent_text: args => {
+          // The cache is looked up for this account, conversation and sender.
+          if (args.userId !== 'me' || args.conversationId !== 'g1' || args.senderId !== 'bob') order.push(`bad-cache-key:${JSON.stringify(args)}`);
+          return cached.has(args.clientMessageId) ? 'text' : null;
+        },
         crypto_inspect_event: args => { order.push(`inspect:${args.eventSequence}`); return inspect(args); },
         crypto_decode_pending_history: args => { order.push(`history:${args.clientMessageId}`); cached.add(args.clientMessageId); return { kind: 'application', content: 'text' }; },
         crypto_process_event: args => {
@@ -442,6 +446,7 @@ test('pending rows are decoded again before each later commit', async () => {
   const at = item => order.indexOf(item);
   assert.ok(at('history:c7') >= 0 && at('history:c7') < at('relay:1'), `c7 before commit 1 (order: ${order.join(', ')})`);
   assert.ok(at('history:c8') > at('relay:1') && at('history:c8') < at('relay:2'), `c8 before commit 2 (order: ${order.join(', ')})`);
+  assert.ok(!order.some(item => item.startsWith('bad-cache-key')), `cache key (order: ${order.join(', ')})`);
 });
 
 test('pending rows are decoded only before an authenticated commit', async () => {

@@ -138,17 +138,7 @@ async fn prepare_crypto_storage(db: &SqlitePool) -> Result<(), String> {
     .execute(db)
     .await
     .map_err(|_| "GhostChat could not prepare its local encryption database.".to_string())?;
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS ghostchat_crypto_text_cache (\
-            client_message_id TEXT PRIMARY KEY NOT NULL,\
-            conversation_id TEXT NOT NULL,\
-            encrypted_content BLOB NOT NULL,\
-            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))\
-        )",
-    )
-    .execute(db)
-    .await
-    .map_err(|_| "GhostChat could not prepare its encrypted message cache.".to_string())?;
+    prepare_text_cache(db).await?;
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS ghostchat_crypto_application_outbox (\
             client_message_id TEXT PRIMARY KEY NOT NULL,\
@@ -193,6 +183,87 @@ async fn prepare_crypto_storage(db: &SqlitePool) -> Result<(), String> {
         .map_err(|_| "GhostChat could not initialize its encrypted MLS storage.".to_string())?;
     drop(connection);
     migrate_hash_reference_keys(db).await
+}
+
+/// The local plaintext cache is keyed like the server's message uniqueness:
+/// (account, conversation, sender, client message id). A sender-chosen id can
+/// therefore never answer for another sender's, conversation's or account's
+/// message. Rows from the old table, keyed by client message id only, are
+/// kept as legacy rows (empty account and sender) so earlier history stays
+/// readable; they are only read for their own conversation and never written.
+async fn prepare_text_cache(db: &SqlitePool) -> Result<(), String> {
+    let error = || "GhostChat could not prepare its encrypted message cache.".to_string();
+    let mut transaction = db.begin().await.map_err(|_| error())?;
+    let legacy_columns = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM pragma_table_info('ghostchat_crypto_text_cache')",
+    )
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|_| error())?;
+    let needs_rebuild =
+        !legacy_columns.is_empty() && !legacy_columns.iter().any(|name| name == "sender_id");
+    if needs_rebuild {
+        sqlx::query(
+            "ALTER TABLE ghostchat_crypto_text_cache RENAME TO ghostchat_crypto_text_cache_legacy",
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| error())?;
+    }
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS ghostchat_crypto_text_cache (\
+            user_id TEXT NOT NULL,\
+            conversation_id TEXT NOT NULL,\
+            sender_id TEXT NOT NULL,\
+            client_message_id TEXT NOT NULL,\
+            encrypted_content BLOB NOT NULL,\
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),\
+            PRIMARY KEY(user_id,conversation_id,sender_id,client_message_id)\
+        )",
+    )
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| error())?;
+    if needs_rebuild {
+        sqlx::query(
+            "INSERT OR IGNORE INTO ghostchat_crypto_text_cache(user_id,conversation_id,sender_id,client_message_id,encrypted_content,created_at) \
+             SELECT '',conversation_id,'',client_message_id,encrypted_content,created_at FROM ghostchat_crypto_text_cache_legacy",
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| error())?;
+        sqlx::query("DROP TABLE ghostchat_crypto_text_cache_legacy")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| error())?;
+    }
+    transaction.commit().await.map_err(|_| error())
+}
+
+/// Reads a cached plaintext for exactly this account, conversation and
+/// sender, falling back to a legacy row of the same conversation.
+async fn cached_text_row<'e, E>(
+    executor: E,
+    user_id: &str,
+    conversation_id: &str,
+    sender_id: &str,
+    client_message_id: &str,
+) -> Result<Option<Vec<u8>>, String>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT encrypted_content FROM ghostchat_crypto_text_cache \
+         WHERE conversation_id=? AND client_message_id=? AND ((user_id=? AND sender_id=?) OR (user_id='' AND sender_id='')) \
+         ORDER BY user_id='' LIMIT 1",
+    )
+    .bind(conversation_id)
+    .bind(client_message_id)
+    .bind(user_id)
+    .bind(sender_id)
+    .fetch_optional(executor)
+    .await
+    .map_err(|_| "GhostChat could not load the encrypted message cache.".to_string())
 }
 
 fn normalized_uuid(value: &str, label: &str) -> Result<String, String> {
@@ -2010,17 +2081,15 @@ pub async fn encrypt_text(
     .map_err(|_| "GhostChat could not load this device's encryption identity.".to_string())?
     .ok_or_else(|| "Prepare this device for encryption in Settings first.".to_string())?;
 
-    let existing = sqlx::query_as::<_, (String, Vec<u8>)>(
-        "SELECT conversation_id,encrypted_content FROM ghostchat_crypto_text_cache WHERE client_message_id=?",
+    let existing = cached_text_row(
+        &mut *transaction,
+        &user_id,
+        &conversation_id,
+        &user_id,
+        &client_message_id,
     )
-    .bind(&client_message_id)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(|_| "GhostChat could not load the encrypted message cache.".to_string())?;
-    if let Some((cached_conversation, existing)) = existing {
-        if cached_conversation != conversation_id {
-            return Err("This message ID belongs to another conversation.".into());
-        }
+    .await?;
+    if let Some(existing) = existing {
         let existing: String = EncryptedJsonCodec::from_slice(&existing)
             .map_err(|_| "The local encrypted message cache could not be decrypted.".to_string())?;
         if existing != content {
@@ -2055,9 +2124,11 @@ pub async fn encrypt_text(
         if orphaned_outbox != 0 {
             return Err("This message's encrypted retry record is incomplete.".into());
         }
-        sqlx::query("INSERT INTO ghostchat_crypto_text_cache(client_message_id,conversation_id,encrypted_content) VALUES(?,?,?)")
-            .bind(&client_message_id)
+        sqlx::query("INSERT INTO ghostchat_crypto_text_cache(user_id,conversation_id,sender_id,client_message_id,encrypted_content) VALUES(?,?,?,?,?)")
+            .bind(&user_id)
             .bind(&conversation_id)
+            .bind(&user_id)
+            .bind(&client_message_id)
             .bind(cached_content)
             .execute(&mut *transaction)
             .await
@@ -2110,18 +2181,25 @@ pub async fn encrypt_text(
 
 pub async fn get_cached_sent_text(
     db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    sender_id: &str,
     client_message_id: &str,
 ) -> Result<Option<String>, String> {
     let _operation = CRYPTO_OPERATION_LOCK.lock().await;
+    let user_id = normalized_uuid(user_id, "account")?;
+    let conversation_id = normalized_uuid(conversation_id, "conversation")?;
+    let sender_id = normalized_uuid(sender_id, "sender account")?;
     let client_message_id = normalized_uuid(client_message_id, "message")?;
     prepare_crypto_storage(db).await?;
-    let encrypted_content = sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT encrypted_content FROM ghostchat_crypto_text_cache WHERE client_message_id=?",
+    let encrypted_content = cached_text_row(
+        db,
+        &user_id,
+        &conversation_id,
+        &sender_id,
+        &client_message_id,
     )
-    .bind(&client_message_id)
-    .fetch_optional(db)
-    .await
-    .map_err(|_| "GhostChat could not load the encrypted message cache.".to_string())?;
+    .await?;
     encrypted_content
         .map(|bytes| {
             EncryptedJsonCodec::from_slice(&bytes).map_err(|_| {
@@ -2697,9 +2775,11 @@ async fn process_crypto_event_core(
     {
         let encrypted_content = EncryptedJsonCodec::to_vec(content)
             .map_err(|_| "GhostChat could not encrypt the local message cache.".to_string())?;
-        sqlx::query("INSERT OR IGNORE INTO ghostchat_crypto_text_cache(client_message_id,conversation_id,encrypted_content) VALUES(?,?,?)")
-            .bind(client_message_id)
+        sqlx::query("INSERT OR IGNORE INTO ghostchat_crypto_text_cache(user_id,conversation_id,sender_id,client_message_id,encrypted_content) VALUES(?,?,?,?,?)")
+            .bind(&user_id)
             .bind(&conversation_id)
+            .bind(&sender_id)
+            .bind(client_message_id)
             .bind(encrypted_content)
             .execute(&mut *transaction)
             .await
@@ -3156,7 +3236,7 @@ mod tests {
         .await
         .is_err());
         assert_eq!(
-            get_cached_sent_text(&alice_db, &first_id)
+            get_cached_sent_text(&alice_db, &alice_id, &conversation_id, &alice_id, &first_id)
                 .await
                 .expect("Alice's encrypted cache should reopen")
                 .as_deref(),
@@ -3244,10 +3324,12 @@ mod tests {
         )
         .await
         .is_err());
-        assert!(get_cached_sent_text(&alice_db, &third_id)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            get_cached_sent_text(&alice_db, &alice_id, &conversation_id, &alice_id, &third_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
         sqlx::query("DROP TRIGGER fail_application_outbox")
             .execute(&alice_db)
             .await
@@ -3277,8 +3359,10 @@ mod tests {
         assert_eq!(third_received.content.as_deref(), Some("atomic retry"));
 
         let legacy_id = Uuid::new_v4().to_string();
-        sqlx::query("INSERT INTO ghostchat_crypto_text_cache(client_message_id,conversation_id,encrypted_content) VALUES(?,?,?)")
-            .bind(&legacy_id).bind(&conversation_id)
+        // A legacy row (from before the cache was keyed by account and
+        // sender) has an empty account and sender.
+        sqlx::query("INSERT INTO ghostchat_crypto_text_cache(user_id,conversation_id,sender_id,client_message_id,encrypted_content) VALUES('',?,'',?,?)")
+            .bind(&conversation_id).bind(&legacy_id)
             .bind(EncryptedJsonCodec::to_vec(&"legacy message".to_string()).unwrap())
             .execute(&alice_db).await.unwrap();
         let legacy_error = encrypt_text(
@@ -3304,6 +3388,183 @@ mod tests {
         )
         .await
         .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_cache_is_bound_to_account_conversation_and_sender() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-cache-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let mallory_db = open_database(&root.join("mallory.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let mallory_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), mallory_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let mut groups = Vec::new();
+        for _ in 0..2 {
+            let conversation_id = Uuid::new_v4().to_string();
+            let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+            let mallory_device = prepare_device(&mallory_db, &mallory_id).await.unwrap();
+            let start = create_group(
+                &alice_db,
+                &alice_id,
+                &conversation_id,
+                &[
+                    GroupPeerKeyPackage {
+                        user_id: bob_id.clone(),
+                        device_id: bob_device.device_id.clone(),
+                        payload: bob_device.payload.clone(),
+                    },
+                    GroupPeerKeyPackage {
+                        user_id: mallory_id.clone(),
+                        device_id: mallory_device.device_id.clone(),
+                        payload: mallory_device.payload.clone(),
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+            for (db, id) in [(&bob_db, &bob_id), (&mallory_db, &mallory_id)] {
+                process_crypto_event(
+                    db,
+                    id,
+                    &conversation_id,
+                    &alice_id,
+                    None,
+                    Some(1),
+                    true,
+                    &roster,
+                    &start.welcome_payload,
+                )
+                .await
+                .unwrap();
+            }
+            groups.push(conversation_id);
+        }
+        let (first, second) = (&groups[0], &groups[1]);
+
+        // Mallory learns the id of Alice's next message and pre-seeds Bob's
+        // cache with it, in the same conversation and in another one.
+        let message_id = Uuid::new_v4().to_string();
+        for conversation_id in [first, second] {
+            // A malicious client is not bound by its own local retry records.
+            sqlx::query("DELETE FROM ghostchat_crypto_application_outbox")
+                .execute(&mallory_db)
+                .await
+                .unwrap();
+            let forged = encrypt_text(
+                &mallory_db,
+                &mallory_id,
+                conversation_id,
+                &message_id,
+                "forged",
+            )
+            .await
+            .unwrap();
+            process_crypto_event(
+                &bob_db,
+                &bob_id,
+                conversation_id,
+                &mallory_id,
+                Some(&message_id),
+                None,
+                true,
+                &roster,
+                &forged.payload,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &bob_id, first, &alice_id, &message_id)
+                .await
+                .unwrap(),
+            None,
+            "another sender's row must not answer for Alice's message"
+        );
+        let real = encrypt_text(&alice_db, &alice_id, first, &message_id, "real")
+            .await
+            .unwrap();
+        let received = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            first,
+            &alice_id,
+            Some(&message_id),
+            None,
+            true,
+            &roster,
+            &real.payload,
+        )
+        .await
+        .unwrap();
+        assert_eq!(received.content.as_deref(), Some("real"));
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &bob_id, first, &alice_id, &message_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("real")
+        );
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &bob_id, second, &mallory_id, &message_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("forged"),
+            "each conversation keeps its own entry"
+        );
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &mallory_id, first, &mallory_id, &message_id)
+                .await
+                .unwrap(),
+            None,
+            "another account on this profile cannot read Bob's entry"
+        );
+        // Alice's own sent text is cached under her account as the sender.
+        assert_eq!(
+            get_cached_sent_text(&alice_db, &alice_id, first, &alice_id, &message_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("real")
+        );
+
+        // An existing profile's cache (keyed by client message id only) is
+        // rebuilt; its rows stay readable, but only in their conversation.
+        let legacy_id = Uuid::new_v4().to_string();
+        sqlx::query("DROP TABLE ghostchat_crypto_text_cache")
+            .execute(&bob_db)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE ghostchat_crypto_text_cache (client_message_id TEXT PRIMARY KEY NOT NULL, conversation_id TEXT NOT NULL, encrypted_content BLOB NOT NULL, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))")
+            .execute(&bob_db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO ghostchat_crypto_text_cache(client_message_id,conversation_id,encrypted_content) VALUES(?,?,?)")
+            .bind(&legacy_id)
+            .bind(first)
+            .bind(EncryptedJsonCodec::to_vec(&"older text".to_string()).unwrap())
+            .execute(&bob_db)
+            .await
+            .unwrap();
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &bob_id, first, &alice_id, &legacy_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("older text")
+        );
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &bob_id, second, &alice_id, &legacy_id)
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3546,7 +3807,7 @@ mod tests {
         assert_eq!(received.kind, "application");
         assert_eq!(received.content.as_deref(), Some("history text"));
         assert_eq!(
-            get_cached_sent_text(&bob_db, &message_id)
+            get_cached_sent_text(&bob_db, &bob_id, &conversation_id, &alice_id, &message_id)
                 .await
                 .unwrap()
                 .as_deref(),
@@ -4514,7 +4775,7 @@ mod tests {
         .unwrap();
         assert_eq!(applied.kind, "commit");
         assert_eq!(
-            get_cached_sent_text(&bob_db, &missed_id)
+            get_cached_sent_text(&bob_db, &bob_id, &conversation_id, &alice_id, &missed_id)
                 .await
                 .unwrap()
                 .as_deref(),

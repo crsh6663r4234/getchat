@@ -1842,7 +1842,7 @@
       let reachedCached = false;
       for (const row of rows) {
         if (typeof row.content !== "string" || !row.content.startsWith("e2e1:") || !row.client_message_id || row.sender_id === state.user.id) continue;
-        if (await invoke("crypto_get_cached_sent_text", { clientMessageId: row.client_message_id }) != null) reachedCached = true;
+        if (await invoke("crypto_get_cached_sent_text", { userId: state.user.id, conversationId, senderId: row.sender_id, clientMessageId: row.client_message_id }) != null) reachedCached = true;
         else pending.push(row);
       }
       pages.unshift(pending);
@@ -2305,7 +2305,8 @@
     // roster; the pending-commit pass then decodes the row in its own mode.
     if (inFlight) { try { return await inFlight; } catch {} }
     const task = (async () => {
-      let content = await invoke("crypto_get_cached_sent_text", { clientMessageId: message.client_message_id });
+      const cacheKey = { userId: state.user.id, conversationId: message.conversation_id, senderId: message.sender_id, clientMessageId: message.client_message_id };
+      let content = await invoke("crypto_get_cached_sent_text", cacheKey);
       if (content == null && beforePendingCommits) {
         const result = await invoke("crypto_decode_pending_history", {
           userId: state.user.id, conversationId: message.conversation_id, senderId: message.sender_id,
@@ -2323,7 +2324,7 @@
           deletedMemberIds: await deletedCryptoMemberIds(message.conversation_id), payload: message.content.slice(5),
         });
         if (result.kind === "application") content = result.content;
-        else if (result.kind === "own_message") content = await invoke("crypto_get_cached_sent_text", { clientMessageId: message.client_message_id });
+        else if (result.kind === "own_message") content = await invoke("crypto_get_cached_sent_text", cacheKey);
       }
       if (typeof content !== "string") throw new Error(translate("This message could not be decrypted on this device."));
       return { ...message, content, encrypted: true };
@@ -2662,7 +2663,7 @@
       method: "POST", body: JSON.stringify({ client_message_id: pending.clientMessageId, content: `e2e1:${pending.payload}`, reply_to_id: null }),
     });
     localStorage.removeItem(key);
-    const plaintext = await invoke("crypto_get_cached_sent_text", { clientMessageId: pending.clientMessageId });
+    const plaintext = await invoke("crypto_get_cached_sent_text", { userId: state.user.id, conversationId: conversation.id, senderId: state.user.id, clientMessageId: pending.clientMessageId });
     if (state.active?.id === conversation.id && plaintext) appendMessage({ ...sent, content: plaintext, encrypted: true });
     return true;
   }
