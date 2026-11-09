@@ -4217,6 +4217,11 @@
       const oldSocket = state.socket; state.socket = null; oldSocket?.close();
       state.user = null; state.recoveryKey = ""; state.active = null; state.friends = []; state.conversations = []; state.pending = [];
       state.cryptoDevice = null;
+      // Nothing from the previous server may linger: its presence (including
+      // our own saved mode), reply target and attachment views.
+      state.presence = new Map(); state.presenceMode = "online";
+      setReplyTarget(null);
+      clearAttachmentUrls();
       resetCryptoViewState();
       updateServerLabels(); $("#settingsDialog").close();
       if (!await restoreToken()) { showCredentialReadError(); return; }

@@ -14,6 +14,7 @@ function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {} } = 
   const fetches = [];
   const invokes = [];
   const created = [];
+  const observerDisconnects = { count: 0 };
   const store = new Map(Object.entries(storage));
 
   const STRING_PROPS = new Set(['textContent', 'value', 'title', 'innerHTML', 'className', 'placeholder', 'id', 'tagName', 'type', 'src', 'href']);
@@ -117,6 +118,7 @@ function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {} } = 
     GhostChatVoice: { create: voiceStub('voice') }, GhostChatGroupVoice: { create: voiceStub('group') }, GhostChatWatchParty: { create: voiceStub('watch') },
     GhostChatRingtone: { setIncoming: () => {} },
     addEventListener: () => {}, innerWidth: 1280, innerHeight: 800,
+    IntersectionObserver: class { observe() {} unobserve() {} disconnect() { observerDisconnects.count += 1; } },
   };
   const sandbox = {
     window, document, localStorage, WebSocket: FakeWebSocket, fetch: fakeFetch, Headers, URL, TextEncoder, crypto: globalThis.crypto,
@@ -127,6 +129,7 @@ function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {} } = 
     setInterval: () => 0, clearInterval: () => {}, requestAnimationFrame: () => 0, cancelAnimationFrame: () => {},
     queueMicrotask, console: { log() {}, warn() {}, error() {}, info() {} }, Promise, Date, Math, JSON, Number, String, Array, Object, Map, Set, Error,
   };
+  sandbox.IntersectionObserver = window.IntersectionObserver;
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(source, sandbox, { filename: 'main.js' });
@@ -141,7 +144,7 @@ function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {} } = 
     }
   };
   const runTimers = () => { for (const timer of timers.splice(0)) if (!timer.done) { timer.done = true; timer.fn(); } };
-  return { $, store, sockets, fetches, invokes, created, timers, flush, runTimers, voiceOptions };
+  return { $, store, sockets, fetches, invokes, created, observerDisconnects, timers, flush, runTimers, voiceOptions };
 }
 
 async function serverKey(base) {
@@ -224,6 +227,45 @@ test('changing the server never sends the previous server token to the new one',
   }
   const leaked = app.fetches.filter(item => item.url.startsWith(B) && item.authorization === 'Bearer token-A');
   assert.deepEqual(leaked, [], 'server B must never receive server A token over HTTP');
+});
+
+test('changing the server drops the previous server\'s presence, reply target and attachment views', async () => {
+  const A = 'https://a.example';
+  const B = 'https://b.example';
+  const conversation = { id: 'c1', kind: 'direct', peer_id: 'peer', display_name: 'Peer', username: 'peer' };
+  const history = [
+    { sequence: 1, id: 'm1', conversation_id: 'c1', sender_id: 'peer', sender_name: 'Peer', client_message_id: 'x1', content: 'earlier', created_at: '2026-01-01T00:00:00Z' },
+    { sequence: 2, id: 'm2', conversation_id: 'c1', sender_id: 'peer', sender_name: 'Peer', client_message_id: 'x2', content: 'file:0b3c9a52-6f1e-4c55-9d43-3f6d2f6c1a10', created_at: '2026-01-01T00:00:00Z' },
+  ];
+  const app = harness({
+    storage: { 'ghostchat.server': A },
+    credentials: { [await serverKey(A)]: 'token-A' },
+    fetchHandler: url => {
+      if (url.startsWith(B)) return url.endsWith('/v1/me/presence') ? { status: 500, body: {} } : { status: 401, body: {} };
+      if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
+      if (url.endsWith('/v1/me/presence')) return { body: [{ user_id: 'me', mode: 'invisible' }] };
+      if (url.endsWith('/v1/conversations')) return { body: [conversation] };
+      if (url.includes('/conversations/c1/messages?')) return { body: history };
+      return { body: [] };
+    },
+  });
+  await app.flush(() => app.sockets.length > 0);
+  const socket = app.sockets.at(-1);
+  socket.emit('open');
+  socket.emit('message', { data: JSON.stringify({ type: 'ready' }) });
+  await app.flush(() => app.voiceOptions.voice.isInvisible());
+  app.voiceOptions.voice.onIncoming({ conversationId: 'c1' });
+  await app.flush(() => app.created.some(node => node.className === 'message-inline-action' && node.textContent === 'Reply'));
+  await app.flush();
+  app.created.find(node => node.className === 'message-inline-action' && node.textContent === 'Reply').onclick();
+  assert.ok(!app.$('#replyComposerPreview').classList.contains('hidden'), 'a reply target is set on server A');
+  const disconnectsBefore = app.observerDisconnects.count;
+  app.$('#serverAddressInput').value = B;
+  await app.$('#changeServerButton').onclick({ currentTarget: app.$('#changeServerButton') });
+  await app.flush();
+  assert.equal(app.voiceOptions.voice.isInvisible(), false, 'server A\'s saved presence does not apply on server B');
+  assert.ok(app.$('#replyComposerPreview').classList.contains('hidden'), 'the reply target from server A is cleared');
+  assert.ok(app.observerDisconnects.count > disconnectsBefore, 'attachment views (and their object URLs) from server A are released');
 });
 
 async function openChatAndFailSend({ encrypted = false, history = [], beforeSend = null, extraHooks = {} } = {}) {
