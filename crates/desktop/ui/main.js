@@ -66,10 +66,10 @@
     });
   }
   const askConfirm = options => askUser(options).then(value => value === true);
-  const state = { localBase: "", base: "", token: "", user: null, presence: new Map(), presenceMode: "online", pendingRecovery: "", recoveryKey: "", pendingGroupInviteCode: null, page: "messages", conversations: [], friends: [], pending: [], blockedUserIds: new Set(), attachmentObserver: null, attachmentObjectUrls: [], seenFriendRequestIds: new Set(), active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null, cryptoDevice: null, cryptoEnabled: new Set(), cryptoLocked: new Set(), cryptoSetupComplete: new Set(), cryptoCanManage: new Set(), cryptoPeerFingerprints: new Map(), cryptoSyncing: new Map(), cryptoMessageDecoding: new Map(), cryptoMemberIds: new Map(), cryptoMembershipPending: new Set(), cryptoMembershipOperations: new Map(), replyingTo: null, lastReadSequence: new Map(), typingUsers: new Map(), typingTimers: new Map(), typingActive: false, typingStopTimer: null, typingSentAt: 0, groupInviteCodes: new Map(), groupVoiceAvailable: null };
+  const state = { localBase: "", base: "", token: "", user: null, presence: new Map(), presenceMode: "online", pendingRecovery: "", recoveryKey: "", pendingGroupInviteCode: null, page: "messages", conversations: [], friends: [], pending: [], blockedUserIds: new Set(), attachmentObserver: null, attachmentObjectUrls: [], seenFriendRequestIds: new Set(), active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null, cryptoDevice: null, cryptoEnabled: new Set(), cryptoLocked: new Set(), cryptoSetupComplete: new Set(), cryptoCanManage: new Set(), cryptoPeerFingerprints: new Map(), cryptoSyncing: new Map(), cryptoMessageDecoding: new Map(), cryptoMemberIds: new Map(), cryptoDeletedMemberIds: new Map(), cryptoMembershipPending: new Set(), cryptoMembershipOperations: new Map(), replyingTo: null, lastReadSequence: new Map(), typingUsers: new Map(), typingTimers: new Map(), typingActive: false, typingStopTimer: null, typingSentAt: 0, groupInviteCodes: new Map(), groupVoiceAvailable: null };
   function resetCryptoViewState() {
     state.cryptoEnabled.clear(); state.cryptoLocked.clear(); state.cryptoSetupComplete.clear(); state.cryptoCanManage.clear(); state.cryptoPeerFingerprints.clear(); state.cryptoMembershipPending.clear();
-    state.cryptoSyncing.clear(); state.cryptoMessageDecoding.clear(); state.cryptoMemberIds.clear(); state.cryptoMembershipOperations.clear();
+    state.cryptoSyncing.clear(); state.cryptoMessageDecoding.clear(); state.cryptoMemberIds.clear(); state.cryptoDeletedMemberIds.clear(); state.cryptoMembershipOperations.clear();
   }
   let signupAvatarData = null;
   let profileAvatarData = null;
@@ -1465,7 +1465,7 @@
     }
   }
   async function refreshConversations() {
-    try { state.conversations = await request("/v1/conversations"); state.cryptoMemberIds.clear(); } catch (error) { console.warn(error); }
+    try { state.conversations = await request("/v1/conversations"); state.cryptoMemberIds.clear(); state.cryptoDeletedMemberIds.clear(); } catch (error) { console.warn(error); }
     renderSidebar();
   }
   async function refreshBlockedUsers() {
@@ -1736,6 +1736,39 @@
     state.cryptoMemberIds.set(conversationId, ids);
     return ids;
   }
+  function rememberDeletedCryptoMembers(conversationId, cryptoLock) {
+    const ids = Array.isArray(cryptoLock?.deletedMemberIds) ? [...new Set(cryptoLock.deletedMemberIds.filter(id => typeof id === "string"))].sort() : [];
+    state.cryptoDeletedMemberIds.set(conversationId, ids);
+    return ids;
+  }
+  // Accounts the server recorded as deleted from this MLS-locked group. Their
+  // leaves may remain in the MLS roster until the owner commits their removal.
+  async function deletedCryptoMemberIds(conversationId) {
+    const cached = state.cryptoDeletedMemberIds.get(conversationId);
+    if (cached) return cached;
+    const conversation = state.active?.id === conversationId ? state.active : state.conversations.find(item => item.id === conversationId);
+    if (conversation?.kind !== "group") return [];
+    return rememberDeletedCryptoMembers(conversationId, await request(`/v1/conversations/${encodeURIComponent(conversationId)}/crypto-lock`));
+  }
+  // The group owner removes leaves of deleted accounts, one staged commit at
+  // a time, through the ordinary membership outbox. Only the owner does it so
+  // two admins never race conflicting commits for the same epoch.
+  async function removeDeletedCryptoMembers(conversation) {
+    const conversationId = conversation.id;
+    const deletedMemberIds = await deletedCryptoMemberIds(conversationId);
+    if (!deletedMemberIds.length || state.cryptoMembershipPending.has(conversationId)) return;
+    const members = await request(`/v1/conversations/${encodeURIComponent(conversationId)}/members`);
+    if (members.find(member => member.id === state.user?.id)?.role !== "owner") return;
+    const expectedMemberIds = members.map(member => member.id).sort();
+    for (let attempt = 0; attempt < 16; attempt++) {
+      const update = await invoke("crypto_prepare_deleted_member_removal", {
+        userId: state.user.id, conversationId, expectedMemberIds, deletedMemberIds,
+      });
+      if (!update) return;
+      await publishGroupMembershipUpdate(conversation, update);
+      if (update.action !== "remove_deleted") return;
+    }
+  }
   function currentCryptoFingerprint(conversationId) {
     return state.cryptoPeerFingerprints.get(conversationId) || localStorage.getItem(cryptoObservedFingerprintKey(conversationId)) || "";
   }
@@ -1801,6 +1834,7 @@
       const conversation = state.active?.id === conversationId ? state.active : state.conversations.find(item => item.id === conversationId);
       const conversationIsGroup = conversation?.kind === "group";
       const expectedMemberIds = await expectedCryptoMemberIds(conversationId);
+      const deletedMemberIds = conversationIsGroup ? await deletedCryptoMemberIds(conversationId) : [];
       const savedCursor = await invoke("crypto_get_event_cursor", { userId: state.user.id, conversationId });
       const localCursor = Number(localStorage.getItem(cryptoEventCursorKey(conversationId)) || 0);
       let cursor;
@@ -1828,7 +1862,7 @@
             try {
               result = await invoke("crypto_process_event", {
                 userId: state.user.id, conversationId, senderId: event.sender_id,
-                clientMessageId: event.id, eventSequence: sequence, conversationIsGroup, expectedMemberIds, payload: event.payload,
+                clientMessageId: event.id, eventSequence: sequence, conversationIsGroup, expectedMemberIds, deletedMemberIds, payload: event.payload,
               });
             } catch (error) {
               if (conversationIsGroup && event.recipient_id == null) {
@@ -1883,6 +1917,9 @@
         if (holdForVerification) break;
         if (events.length < 100) break;
       }
+      if (conversationIsGroup && !holdForVerification && await invoke("crypto_has_direct_group", { userId: state.user.id, conversationId })) {
+        await removeDeletedCryptoMembers(conversation || { id: conversationId, kind: "group" });
+      }
       if (conversationIsGroup && await invoke("crypto_has_direct_group", { userId: state.user.id, conversationId })) {
         const fingerprint = await invoke("crypto_group_fingerprint", { userId: state.user.id, conversationId });
         if (fingerprint) {
@@ -1908,6 +1945,7 @@
         const cryptoLock = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/crypto-lock`);
         if (cryptoLock.locked) state.cryptoLocked.add(conversation.id); else state.cryptoLocked.delete(conversation.id);
         if (cryptoLock.setupComplete) state.cryptoSetupComplete.add(conversation.id); else state.cryptoSetupComplete.delete(conversation.id);
+        rememberDeletedCryptoMembers(conversation.id, cryptoLock);
         const members = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/members`);
         const memberIds = members.map(member => member.id).sort();
         state.cryptoMemberIds.set(conversation.id, memberIds);
@@ -2012,7 +2050,7 @@
     if (inFlight) return inFlight;
     state.cryptoMembershipPending.add(conversationId);
     const task = (async () => {
-      if (pending.action === "remove") {
+      if (pending.action === "remove" || pending.action === "remove_deleted") {
         if (!Array.isArray(pending.memberIds) || pending.memberIds.length !== 1) throw new Error(translate("The saved encrypted removal is invalid."));
         await request(`/v1/conversations/${encodeURIComponent(conversationId)}/crypto-membership/remove/${encodeURIComponent(pending.memberIds[0])}`, {
           method: "POST",
@@ -2220,7 +2258,8 @@
           userId: state.user.id, conversationId: message.conversation_id, senderId: message.sender_id,
           clientMessageId: message.client_message_id,
           conversationIsGroup: (state.active?.id === message.conversation_id ? state.active : state.conversations.find(item => item.id === message.conversation_id))?.kind === "group",
-          expectedMemberIds: await expectedCryptoMemberIds(message.conversation_id), payload: message.content.slice(5),
+          expectedMemberIds: await expectedCryptoMemberIds(message.conversation_id),
+          deletedMemberIds: await deletedCryptoMemberIds(message.conversation_id), payload: message.content.slice(5),
         });
         if (result.kind === "application") content = result.content;
         else if (result.kind === "own_message") content = await invoke("crypto_get_cached_sent_text", { clientMessageId: message.client_message_id });
@@ -2910,6 +2949,7 @@
               state.cryptoCanManage.delete(data.conversation_id);
               state.cryptoPeerFingerprints.delete(data.conversation_id);
               state.cryptoMemberIds.delete(data.conversation_id);
+              state.cryptoDeletedMemberIds.delete(data.conversation_id);
               state.cryptoMembershipPending.delete(data.conversation_id);
               state.cryptoSyncing.delete(data.conversation_id);
               localStorage.removeItem(cryptoObservedFingerprintKey(data.conversation_id));

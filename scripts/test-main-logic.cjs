@@ -280,6 +280,50 @@ test('a failed encrypted send that is queued for retry is not restored', async (
   assert.equal(app.$('#messageInput').value, '', 'restoring a queued message would let it be sent twice');
 });
 
+test('the group owner removes a deleted account leaf and others tolerate it', async () => {
+  const base = 'https://a.example';
+  const group = { id: 'g1', kind: 'group', display_name: 'Group' };
+  const processed = [];
+  let removalPrepared = 0;
+  const app = harness({
+    storage: { 'ghostchat.server': base },
+    credentials: { [await serverKey(base)]: 'token-A' },
+    hooks: {
+      crypto_has_direct_group: () => true,
+      crypto_group_fingerprint: () => 'fp-group',
+      crypto_get_event_cursor: () => 0,
+      crypto_advance_event_cursor: args => args.sequence,
+      crypto_process_event: args => { processed.push(args); return { kind: 'application', content: 'hi' }; },
+      crypto_prepare_deleted_member_removal: args => {
+        removalPrepared += 1;
+        assert.deepEqual([...args.deletedMemberIds], ['carol']);
+        return removalPrepared === 1
+          ? { operationId: 'op-1', action: 'remove_deleted', memberIds: ['carol'], expectedMemberIds: ['bob', 'me'], commitPayload: 'commit', welcomePayload: '' }
+          : false;
+      },
+      crypto_finalize_group_membership_update: () => 'fp-after',
+    },
+    fetchHandler: (url, options) => {
+      if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
+      if (url.endsWith('/v1/conversations')) return { body: [group] };
+      if (url.endsWith('/conversations/g1/crypto-lock')) return { body: { locked: true, setupComplete: true, lockedBy: 'me', deletedMemberIds: ['carol'] } };
+      if (url.endsWith('/conversations/g1/members')) return { body: [{ id: 'me', role: 'owner' }, { id: 'bob', role: 'member' }] };
+      if (url.includes('/conversations/g1/crypto-events?after=0')) return { body: [{ sequence: 1, id: 'e1', sender_id: 'bob', recipient_id: null, payload: 'p', created_at: '' }] };
+      if (options.method === 'POST' && url.includes('/crypto-membership/remove/')) return { status: 204, body: {} };
+      return { body: [] };
+    },
+  });
+  await app.flush(() => app.sockets.length > 0);
+  app.voiceOptions.voice.onIncoming({ conversationId: 'g1' });
+  await app.flush(() => app.fetches.some(item => item.method === 'POST' && item.url.includes('/crypto-membership/remove/')));
+  assert.ok(processed.length > 0, 'the relay event was processed');
+  assert.deepEqual([...processed[0].deletedMemberIds], ['carol'], 'recorded deleted accounts reach the roster check');
+  const removal = app.fetches.find(item => item.method === 'POST' && item.url.includes('/crypto-membership/remove/'));
+  assert.ok(removal.url.endsWith('/conversations/g1/crypto-membership/remove/carol'));
+  assert.equal(JSON.parse(removal.body).operation_id, 'op-1');
+  await app.flush(() => app.invokes.some(item => item.command === 'crypto_finalize_group_membership_update'));
+});
+
 test('an unreachable update host does not block startup', async () => {
   const app = harness({
     storage: { 'ghostchat.server': 'https://a.example' },
