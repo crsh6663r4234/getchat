@@ -3914,6 +3914,9 @@ struct GroupCryptoLockStatus {
     /// the group owner (or the oldest admin when there is no owner) may take
     /// it over through the lock route.
     locked_by_deleted_account: bool,
+    /// Counts takeovers of an unfinished setup. A takeover is a reset, so a
+    /// device holding the group of an older generation must drop it.
+    setup_generation: i64,
 }
 
 #[derive(Serialize, FromRow)]
@@ -3942,8 +3945,8 @@ async fn group_crypto_lock_status(
     db: &SqlitePool,
     conversation_id: &str,
 ) -> Result<GroupCryptoLockStatus, ApiError> {
-    let lock = sqlx::query_as::<_, (String, i64, bool)>(
-        "SELECT l.locked_by,l.setup_complete,NOT EXISTS(SELECT 1 FROM users u WHERE u.id=l.locked_by) FROM conversation_crypto_locks l WHERE l.conversation_id=?",
+    let lock = sqlx::query_as::<_, (String, i64, bool, i64)>(
+        "SELECT l.locked_by,l.setup_complete,NOT EXISTS(SELECT 1 FROM users u WHERE u.id=l.locked_by),l.setup_generation FROM conversation_crypto_locks l WHERE l.conversation_id=?",
     )
     .bind(conversation_id)
     .fetch_optional(db)
@@ -3951,13 +3954,16 @@ async fn group_crypto_lock_status(
     .map_err(|_| ApiError::internal())?;
     Ok(GroupCryptoLockStatus {
         locked: lock.is_some(),
-        locked_by: lock.as_ref().map(|(locked_by, _, _)| locked_by.clone()),
-        setup_complete: lock.as_ref().is_some_and(|(_, complete, _)| *complete != 0),
+        locked_by: lock.as_ref().map(|(locked_by, ..)| locked_by.clone()),
+        setup_complete: lock
+            .as_ref()
+            .is_some_and(|(_, complete, ..)| *complete != 0),
         deleted_member_ids: deleted_crypto_member_ids(db, conversation_id).await?,
         deleted_members: deleted_crypto_members(db, conversation_id).await?,
         locked_by_deleted_account: lock
             .as_ref()
-            .is_some_and(|(_, complete, deleted)| *complete == 0 && *deleted),
+            .is_some_and(|(_, complete, deleted, _)| *complete == 0 && *deleted),
+        setup_generation: lock.as_ref().map_or(0, |(.., generation)| *generation),
     })
 }
 
@@ -4068,6 +4074,8 @@ async fn lock_group_crypto_roster(
             deleted_member_ids: Vec::new(),
             deleted_members: Vec::new(),
             locked_by_deleted_account: false,
+            // Only a group setup can be taken over.
+            setup_generation: 0,
         }));
     }
     let actor_role = sqlx::query_scalar::<_, String>(
@@ -4123,8 +4131,13 @@ async fn lock_group_crypto_roster(
             .await
             .map_err(|_| ApiError::internal())?;
             if locker_deleted && successor.as_deref() == Some(user.id.as_str()) {
+                // The takeover is a reset, never an adoption: nobody can
+                // know which members received the old Welcome. A new setup
+                // generation starts, and the old setup's relay events and
+                // deleted-leaf records go with it, so no device can still
+                // join the old group or tolerate its leaves.
                 sqlx::query(
-                    "UPDATE conversation_crypto_locks SET locked_by=? WHERE conversation_id=? AND locked_by=? AND setup_complete=0",
+                    "UPDATE conversation_crypto_locks SET locked_by=?,setup_generation=setup_generation+1 WHERE conversation_id=? AND locked_by=? AND setup_complete=0",
                 )
                 .bind(&user.id)
                 .bind(&conversation_id)
@@ -4132,6 +4145,13 @@ async fn lock_group_crypto_roster(
                 .execute(&mut *tx)
                 .await
                 .map_err(|_| ApiError::internal())?;
+                for table in ["crypto_events", "crypto_group_deleted_members"] {
+                    sqlx::query(&format!("DELETE FROM {table} WHERE conversation_id=?"))
+                        .bind(&conversation_id)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|_| ApiError::internal())?;
+                }
             } else if locker_deleted {
                 return Err(ApiError::forbidden());
             } else {
@@ -5281,6 +5301,16 @@ struct CryptoEventRow {
     created_at: String,
 }
 
+/// A relay event as listed for a member, with the setup generation of its
+/// conversation at the time of the listing.
+#[derive(Serialize, FromRow)]
+struct CryptoEventListRow {
+    #[serde(flatten)]
+    #[sqlx(flatten)]
+    event: CryptoEventRow,
+    setup_generation: i64,
+}
+
 #[derive(Deserialize)]
 struct SendCryptoEvent {
     client_event_id: String,
@@ -5293,7 +5323,7 @@ async fn list_crypto_events(
     headers: HeaderMap,
     Path(conversation_id): Path<String>,
     Query(query): Query<HashMap<String, String>>,
-) -> Result<Json<Vec<CryptoEventRow>>, ApiError> {
+) -> Result<Json<Vec<CryptoEventListRow>>, ApiError> {
     let user = authenticate(&headers, &state).await?;
     if !is_member(&state.db, &conversation_id, &user.id).await? {
         return Err(ApiError::not_found());
@@ -5309,8 +5339,11 @@ async fn list_crypto_events(
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or(100)
         .clamp(1, 100);
-    let events = sqlx::query_as::<_, CryptoEventRow>(
-        "SELECT sequence,id,conversation_id,sender_id,recipient_id,payload,created_at FROM crypto_events WHERE conversation_id=? AND sequence>? AND (recipient_id IS NULL OR recipient_id=?) ORDER BY sequence ASC LIMIT ?",
+    // The generation is read in the same statement as the events, so every
+    // listed event belongs to the setup generation it is listed with (a
+    // takeover deletes the older setup's events in its own transaction).
+    let events = sqlx::query_as::<_, CryptoEventListRow>(
+        "SELECT sequence,id,conversation_id,sender_id,recipient_id,payload,created_at,COALESCE((SELECT l.setup_generation FROM conversation_crypto_locks l WHERE l.conversation_id=crypto_events.conversation_id),0) AS setup_generation FROM crypto_events WHERE conversation_id=? AND sequence>? AND (recipient_id IS NULL OR recipient_id=?) ORDER BY sequence ASC LIMIT ?",
     )
     .bind(&conversation_id)
     .bind(after)
@@ -8683,6 +8716,183 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ids(db.clone()).await, ["e-4"]);
+        db.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn taking_over_a_deleted_accounts_setup_starts_a_new_setup_generation() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let status = app
+            .request(
+                Method::PATCH,
+                &format!("/v1/conversations/{group}/members/{}", carol.id),
+                &alice,
+            )
+            .json(&serde_json::json!({"role": "admin"}))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let lock = |user: &TestUser, mut roster: Vec<String>| {
+            roster.sort();
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/crypto-lock"),
+                user,
+            )
+            .json(&serde_json::json!({"member_ids": roster}))
+            .send()
+        };
+        let welcome = |sender: &TestUser, recipient: &TestUser, event: &'static str| {
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/crypto-events"),
+                sender,
+            )
+            .json(&serde_json::json!({
+                "client_event_id": event,
+                "recipient_user_id": recipient.id,
+                "payload": "AAAA",
+            }))
+            .send()
+        };
+        let events = |viewer: &TestUser| {
+            app.request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/crypto-events"),
+                viewer,
+            )
+            .send()
+        };
+        // Admin Carol starts the setup and delivers a Welcome to Bob only,
+        // then deletes her account before Alice gets hers.
+        let started: serde_json::Value = lock(
+            &carol,
+            vec![alice.id.clone(), bob.id.clone(), carol.id.clone()],
+        )
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+        assert_eq!(started["setupGeneration"], 0);
+        assert_eq!(
+            welcome(&carol, &bob, "welcome-0").await.unwrap().status(),
+            StatusCode::OK
+        );
+        let listed: serde_json::Value = events(&bob).await.unwrap().json().await.unwrap();
+        assert_eq!(listed[0]["setup_generation"], 0);
+        let status = app
+            .request(Method::DELETE, "/v1/me/account", &carol)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let before: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/crypto-lock"),
+                &bob,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(before["setupGeneration"], 0);
+        assert_eq!(before["deletedMemberIds"], serde_json::json!([carol.id]));
+
+        // The owner's takeover is a reset: a new generation, and nothing of
+        // the old setup (its Welcomes, its deleted-leaf record) is left for
+        // a device to join or tolerate.
+        let remaining = vec![alice.id.clone(), bob.id.clone()];
+        let taken: serde_json::Value = lock(&alice, remaining.clone())
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(taken["lockedBy"], alice.id.as_str());
+        assert_eq!(taken["setupComplete"], false);
+        assert_eq!(taken["setupGeneration"], 1);
+        assert_eq!(taken["deletedMemberIds"], serde_json::json!([]));
+        let listed: serde_json::Value = events(&bob).await.unwrap().json().await.unwrap();
+        assert_eq!(
+            listed,
+            serde_json::json!([]),
+            "the old setup's Welcome is gone"
+        );
+        // Resuming the taken-over setup is not another reset.
+        let resumed: serde_json::Value = lock(&alice, remaining.clone())
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(resumed["setupGeneration"], 1);
+        assert_eq!(
+            welcome(&alice, &bob, "welcome-1").await.unwrap().status(),
+            StatusCode::OK
+        );
+        let listed: serde_json::Value = events(&bob).await.unwrap().json().await.unwrap();
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["setup_generation"], 1);
+        assert_eq!(listed[0]["sender_id"], alice.id.as_str());
+    }
+
+    #[tokio::test]
+    async fn migration_0030_keeps_crypto_locks_at_generation_zero() {
+        let dir = std::env::temp_dir().join(format!("ghostchat-migrate-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("db.sqlite");
+        let old = database_migrated_to(&path, 29).await;
+        for user in ["u-a", "u-b"] {
+            seed_user(&old, user).await;
+        }
+        seed_group(&old, "g-1", &["u-a", "u-b"]).await;
+        seed_group(&old, "g-2", &["u-a", "u-b"]).await;
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete,locked_at) VALUES('g-1','u-a',1,'2026-01-02T03:04:05.000Z'),('g-2','u-gone',0,'2026-02-02T03:04:05.000Z')",
+        )
+        .execute(&old)
+        .await
+        .unwrap();
+        old.close().await;
+        let db = open_database(&path.to_string_lossy()).await.unwrap();
+        let rows: Vec<(String, String, i64, String, i64)> = sqlx::query_as(
+            "SELECT conversation_id,locked_by,setup_complete,locked_at,setup_generation FROM conversation_crypto_locks ORDER BY conversation_id",
+        )
+        .fetch_all(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            [
+                (
+                    "g-1".into(),
+                    "u-a".into(),
+                    1,
+                    "2026-01-02T03:04:05.000Z".into(),
+                    0
+                ),
+                (
+                    "g-2".into(),
+                    "u-gone".into(),
+                    0,
+                    "2026-02-02T03:04:05.000Z".into(),
+                    0
+                ),
+            ]
+        );
         db.close().await;
         let _ = std::fs::remove_dir_all(&dir);
     }
