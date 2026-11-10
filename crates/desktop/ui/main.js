@@ -66,7 +66,7 @@
     });
   }
   const askConfirm = options => askUser(options).then(value => value === true);
-  const state = { localBase: "", base: "", token: "", user: null, presence: new Map(), presenceMode: "online", pendingRecovery: "", recoveryKey: "", pendingGroupInviteCode: null, page: "messages", conversations: [], friends: [], pending: [], blockedUserIds: new Set(), attachmentObserver: null, attachmentObjectUrls: [], seenFriendRequestIds: new Set(), active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null, cryptoDevice: null, cryptoEnabled: new Set(), cryptoLocked: new Set(), cryptoSetupComplete: new Set(), cryptoCanManage: new Set(), cryptoPeerFingerprints: new Map(), cryptoSyncing: new Map(), cryptoMessageDecoding: new Map(), cryptoMemberIds: new Map(), cryptoDeletedMemberIds: new Map(), cryptoMembershipPending: new Set(), cryptoMembershipOperations: new Map(), replyingTo: null, lastReadSequence: new Map(), typingUsers: new Map(), typingTimers: new Map(), typingActive: false, typingStopTimer: null, typingSentAt: 0, groupInviteCodes: new Map(), groupVoiceAvailable: null };
+  const state = { localBase: "", base: "", token: "", user: null, presence: new Map(), presenceMode: "online", presenceLoaded: false, pendingRecovery: "", recoveryKey: "", pendingGroupInviteCode: null, page: "messages", conversations: [], friends: [], pending: [], blockedUserIds: new Set(), attachmentObserver: null, attachmentObjectUrls: [], seenFriendRequestIds: new Set(), active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null, cryptoDevice: null, cryptoEnabled: new Set(), cryptoLocked: new Set(), cryptoSetupComplete: new Set(), cryptoCanManage: new Set(), cryptoPeerFingerprints: new Map(), cryptoSyncing: new Map(), cryptoMessageDecoding: new Map(), cryptoMemberIds: new Map(), cryptoDeletedMemberIds: new Map(), cryptoMembershipPending: new Set(), cryptoMembershipOperations: new Map(), replyingTo: null, lastReadSequence: new Map(), typingUsers: new Map(), typingTimers: new Map(), typingActive: false, typingStopTimer: null, typingSentAt: 0, groupInviteCodes: new Map(), groupVoiceAvailable: null };
   function resetCryptoViewState() {
     state.cryptoEnabled.clear(); state.cryptoLocked.clear(); state.cryptoSetupComplete.clear(); state.cryptoCanManage.clear(); state.cryptoPeerFingerprints.clear(); state.cryptoMembershipPending.clear();
     state.cryptoSyncing.clear(); state.cryptoMessageDecoding.clear(); state.cryptoMemberIds.clear(); state.cryptoDeletedMemberIds.clear(); state.cryptoMembershipOperations.clear();
@@ -1209,7 +1209,8 @@
     $("#profileTagLabel").textContent = `@${state.user.username}`;
   }
   async function enterApp() {
-    try { state.user = await request("/v1/me"); }
+    // Another account's saved mode says nothing about this one.
+    try { state.presenceLoaded = false; state.user = await request("/v1/me"); }
     catch { await clearToken(); state.user = null; show("authView"); return; }
     resetCryptoViewState();
     show("appView"); updateIdentity(); setTheme(); seasonalIdentity(); setPage("messages");
@@ -1464,7 +1465,7 @@
     try {
       const rows = await request("/v1/me/presence");
       state.presence = new Map(rows.map(row => [row.user_id, row.mode]));
-      state.presenceMode = state.presence.get(state.user?.id) || "online";
+      state.presenceMode = state.presence.get(state.user?.id) || "online"; state.presenceLoaded = true;
       updateIdentity();
     } catch (error) { console.warn("Could not refresh presence", error); }
   }
@@ -1472,7 +1473,7 @@
     const previous = state.presenceMode;
     try {
       const result = await request("/v1/me/presence", { method: "PUT", body: JSON.stringify({ mode }) });
-      state.presenceMode = result.mode; state.presence.set(result.user_id, result.mode);
+      state.presenceMode = result.mode; state.presenceLoaded = true; state.presence.set(result.user_id, result.mode);
       updateIdentity(); renderSidebar();
       if (state.active?.kind === "direct") await openConversation(state.active.id, false);
       toast(translate(({ online: "You are online.", invisible: "You are invisible.", dnd: "Do not disturb is on." })[result.mode]));
@@ -3114,7 +3115,7 @@
       }
       else if (data.type === "presence_updated" && data.user_id) {
         state.presence.set(data.user_id, data.mode || "online");
-        if (data.user_id === state.user?.id) state.presenceMode = data.mode || "online";
+        if (data.user_id === state.user?.id) { state.presenceMode = data.mode || "online"; state.presenceLoaded = true; }
         updateIdentity(); renderSidebar();
         if (state.active?.kind === "direct" && state.active.peer_id === data.user_id) void openConversation(state.active.id, false);
       }
@@ -3406,7 +3407,9 @@
     voiceClient = window.GhostChatVoice.create({
       getSettings: voiceSettings,
       getUserId: () => state.user?.id || "",
-      isInvisible: () => state.presenceMode === "invisible",
+      // Until this account's saved mode is known (the presence request
+      // failed or has not answered) it may be invisible, so stay silent.
+      isInvisible: () => state.presenceMode === "invisible" || (!!state.user && !state.presenceLoaded),
       getIceConfiguration: async () => {
         try { return await request("/v1/voice/ice"); }
         catch (error) {
@@ -4280,7 +4283,7 @@
       state.cryptoDevice = null;
       // Nothing from the previous server may linger: its presence (including
       // our own saved mode), reply target and attachment views.
-      state.presence = new Map(); state.presenceMode = "online";
+      state.presence = new Map(); state.presenceMode = "online"; state.presenceLoaded = false;
       setReplyTarget(null);
       clearAttachmentUrls();
       resetCryptoViewState();

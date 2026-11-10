@@ -311,6 +311,31 @@ async function openChatAndFailSend({ encrypted = false, history = [], beforeSend
   return app;
 }
 
+test('a signed-in account whose presence could not be loaded stays silent like an invisible one', async () => {
+  const A = 'https://a.example';
+  let presenceFails = true;
+  const app = harness({
+    storage: { 'ghostchat.server': A },
+    credentials: { [await serverKey(A)]: 'token-A' },
+    fetchHandler: url => {
+      if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
+      if (url.endsWith('/v1/me/presence')) return presenceFails ? { status: 500, body: {} } : { body: [{ user_id: 'me', mode: 'online' }] };
+      return { body: [] };
+    },
+  });
+  await app.flush(() => app.sockets.length > 0);
+  const socket = app.sockets.at(-1);
+  socket.emit('open');
+  socket.emit('message', { data: JSON.stringify({ type: 'ready' }) });
+  await app.flush(() => app.fetches.some(item => item.url.endsWith('/v1/me/presence')));
+  await app.flush();
+  // The saved mode may be invisible; until the server says otherwise the
+  // automatic busy/decline replies must not reveal this device.
+  assert.equal(app.voiceOptions.voice.isInvisible(), true, 'an unknown saved mode is treated as invisible');
+  socket.emit('message', { data: JSON.stringify({ type: 'presence_updated', user_id: 'me', mode: 'online' }) });
+  assert.equal(app.voiceOptions.voice.isInvisible(), false, 'the server\'s own answer settles it');
+});
+
 test('a failed send puts the typed text back into the composer', async () => {
   const app = await openChatAndFailSend();
   assert.equal(app.$('#messageInput').value, 'hello there', 'a failed send must not discard the typed message');
