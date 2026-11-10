@@ -538,11 +538,16 @@ test('an admin removes a deleted leaf after the owner\'s grace period', async ()
 async function deletedLockerHarness(role) {
   const base = 'https://a.example';
   const group = { id: 'g1', kind: 'group', display_name: 'Group' };
+  // This device joined the deleted starter's group from its Welcome.
+  let holdsGroup = true;
+  let localGeneration = 0;
+  let takenOver = false;
   const app = harness({
     storage: { 'ghostchat.server': base },
     credentials: { [await serverKey(base)]: 'token-A' },
     hooks: {
-      crypto_has_direct_group: () => true,
+      crypto_has_direct_group: () => holdsGroup,
+      crypto_apply_setup_generation: args => { if (args.generation <= localGeneration) return false; localGeneration = args.generation; holdsGroup = false; return true; },
       crypto_group_fingerprint: () => 'fp-group',
       crypto_get_event_cursor: () => 0,
       crypto_advance_event_cursor: args => args.sequence,
@@ -550,9 +555,10 @@ async function deletedLockerHarness(role) {
     fetchHandler: (url, options) => {
       if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
       if (url.endsWith('/v1/conversations')) return { body: [group] };
-      if (url.endsWith('/conversations/g1/crypto-lock') && options.method === 'POST') return { body: { locked: true, setupComplete: false, lockedBy: 'me', deletedMemberIds: [], deletedMembers: [], lockedByDeletedAccount: false } };
-      if (url.endsWith('/conversations/g1/crypto-lock/complete')) return { body: { locked: true, setupComplete: true, lockedBy: 'me', deletedMemberIds: [], deletedMembers: [], lockedByDeletedAccount: false } };
-      if (url.endsWith('/conversations/g1/crypto-lock')) return { body: { locked: true, setupComplete: false, lockedBy: 'carol', deletedMemberIds: [], deletedMembers: [], lockedByDeletedAccount: true } };
+      if (url.endsWith('/conversations/g1/crypto-lock') && options.method === 'POST') { takenOver = true; return { body: { locked: true, setupComplete: false, lockedBy: 'me', deletedMemberIds: [], deletedMembers: [], lockedByDeletedAccount: false, setupGeneration: 1 } }; }
+      if (url.endsWith('/conversations/g1/crypto-lock/complete')) return { body: { locked: true, setupComplete: true, lockedBy: 'me', deletedMemberIds: [], deletedMembers: [], lockedByDeletedAccount: false, setupGeneration: 1 } };
+      if (url.endsWith('/conversations/g1/crypto-lock') && takenOver) return { body: { locked: true, setupComplete: false, lockedBy: 'me', deletedMemberIds: [], deletedMembers: [], lockedByDeletedAccount: false, setupGeneration: 1 } };
+      if (url.endsWith('/conversations/g1/crypto-lock')) return { body: { locked: true, setupComplete: false, lockedBy: 'carol', deletedMemberIds: [], deletedMembers: [], lockedByDeletedAccount: true, setupGeneration: 0 } };
       if (url.endsWith('/conversations/g1/members')) {
         return { body: role === 'owner'
           ? [{ id: 'me', role: 'owner', joined_seq: 1 }, { id: 'bob', role: 'admin', joined_seq: 2 }]
@@ -568,13 +574,65 @@ async function deletedLockerHarness(role) {
   return app;
 }
 
-test('the owner completes an encrypted setup left unfinished by a deleted account', async () => {
+test('the owner takes over a setup left unfinished by a deleted account as a reset, never completing the old one', async () => {
   const app = await deletedLockerHarness('owner');
-  await app.flush(() => app.fetches.some(item => item.url.endsWith('/conversations/g1/crypto-lock/complete')));
+  await app.flush(() => app.fetches.some(item => item.method === 'POST' && item.url.endsWith('/conversations/g1/crypto-lock')));
+  await app.flush();
   const takeover = app.fetches.find(item => item.method === 'POST' && item.url.endsWith('/conversations/g1/crypto-lock'));
   assert.deepEqual(JSON.parse(takeover.body).member_ids, ['bob', 'me'], 'the owner takes the lock over for the current roster');
+  // Nobody can know who received the deleted starter's Welcome, so the old
+  // group is never declared complete: it is dropped and set up again.
+  assert.ok(!app.fetches.some(item => item.url.endsWith('/conversations/g1/crypto-lock/complete')), 'the old setup is not completed');
+  const resets = app.invokes.filter(item => item.command === 'crypto_apply_setup_generation' && item.args.generation === 1);
+  assert.equal(resets.length, 1, 'the old group is dropped for the new setup generation');
+  assert.equal(resets[0].args.conversationId, 'g1');
+  assert.equal(app.$('#enableEncryptionButton').textContent, 'Continue encryption setup', 'the owner sets the group up again');
+  assert.equal(app.$('#enableEncryptionButton').disabled, false);
   const admin = await deletedLockerHarness('admin');
   assert.ok(!admin.fetches.some(item => item.method === 'POST' && item.url.includes('/crypto-lock')), 'an admin does not while there is an owner');
+});
+
+test('a relay event of a newer setup generation drops the old group before it is processed', async () => {
+  const base = 'https://a.example';
+  const group = { id: 'g1', kind: 'group', display_name: 'Group' };
+  const order = [];
+  let holdsOldGroup = true;
+  let localGeneration = 0;
+  const prefix = `ghostchat.cryptoPeerTrusted.${base}.me.g1`;
+  const app = harness({
+    storage: { 'ghostchat.server': base, [prefix]: 'fp-old', [`ghostchat.cryptoPeerObserved.${base}.me.g1`]: 'fp-old' },
+    credentials: { [await serverKey(base)]: 'token-A' },
+    hooks: {
+      crypto_has_direct_group: () => true,
+      crypto_group_fingerprint: () => (holdsOldGroup ? 'fp-old' : 'fp-new'),
+      crypto_get_event_cursor: () => 4,
+      crypto_advance_event_cursor: args => args.sequence,
+      crypto_apply_setup_generation: args => {
+        order.push(`generation:${args.generation}`);
+        if (args.generation <= localGeneration) return false;
+        localGeneration = args.generation; holdsOldGroup = false; return true;
+      },
+      crypto_inspect_event: () => ({ kind: 'welcome' }),
+      crypto_process_event: args => {
+        order.push(`event:${args.eventSequence}`);
+        return holdsOldGroup ? { kind: 'welcome_duplicate' } : { kind: 'welcome', peerIdentityFingerprint: 'fp-new' };
+      },
+    },
+    fetchHandler: url => {
+      if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
+      if (url.endsWith('/v1/conversations')) return { body: [group] };
+      // The lock was read just before the takeover; the events after it.
+      if (url.endsWith('/conversations/g1/crypto-lock')) return { body: { locked: true, setupComplete: false, lockedBy: 'carol', deletedMemberIds: ['carol'], deletedMembers: [], lockedByDeletedAccount: true, setupGeneration: 0 } };
+      if (url.endsWith('/conversations/g1/members')) return { body: [{ id: 'olga', role: 'owner', joined_seq: 1 }, { id: 'me', role: 'member', joined_seq: 2 }] };
+      if (url.includes('/conversations/g1/crypto-events?after=4')) return { body: [{ sequence: 9, id: 'e9', sender_id: 'olga', recipient_id: 'me', payload: 'welcome', created_at: '', setup_generation: 1 }] };
+      return { body: [] };
+    },
+  });
+  await app.flush(() => app.sockets.length > 0);
+  app.voiceOptions.voice.onIncoming({ conversationId: 'g1' });
+  await app.flush(() => order.includes('event:9'));
+  assert.deepEqual(order.filter(step => step !== 'generation:0'), ['generation:1', 'event:9'], 'the old group is dropped before the new Welcome is processed');
+  assert.equal(app.store.get(prefix) ?? null, null, 'the old group\'s verified security code does not vouch for the new group');
 });
 
 test('pending encrypted rows are decoded before a relay commit is applied', async () => {

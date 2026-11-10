@@ -66,10 +66,10 @@
     });
   }
   const askConfirm = options => askUser(options).then(value => value === true);
-  const state = { localBase: "", base: "", token: "", user: null, presence: new Map(), presenceMode: "online", presenceLoaded: false, pendingRecovery: "", recoveryKey: "", pendingGroupInviteCode: null, page: "messages", conversations: [], friends: [], pending: [], blockedUserIds: new Set(), attachmentObserver: null, attachmentObjectUrls: [], seenFriendRequestIds: new Set(), active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null, cryptoDevice: null, cryptoEnabled: new Set(), cryptoLocked: new Set(), cryptoSetupComplete: new Set(), cryptoCanManage: new Set(), cryptoPeerFingerprints: new Map(), cryptoSyncing: new Map(), cryptoMessageDecoding: new Map(), cryptoMemberIds: new Map(), cryptoDeletedMemberIds: new Map(), cryptoMembershipPending: new Set(), cryptoMembershipOperations: new Map(), replyingTo: null, lastReadSequence: new Map(), typingUsers: new Map(), typingTimers: new Map(), typingActive: false, typingStopTimer: null, typingSentAt: 0, groupInviteCodes: new Map(), groupVoiceAvailable: null };
+  const state = { localBase: "", base: "", token: "", user: null, presence: new Map(), presenceMode: "online", presenceLoaded: false, pendingRecovery: "", recoveryKey: "", pendingGroupInviteCode: null, page: "messages", conversations: [], friends: [], pending: [], blockedUserIds: new Set(), attachmentObserver: null, attachmentObjectUrls: [], seenFriendRequestIds: new Set(), active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null, cryptoDevice: null, cryptoEnabled: new Set(), cryptoLocked: new Set(), cryptoSetupComplete: new Set(), cryptoCanManage: new Set(), cryptoPeerFingerprints: new Map(), cryptoSyncing: new Map(), cryptoMessageDecoding: new Map(), cryptoMemberIds: new Map(), cryptoDeletedMemberIds: new Map(), cryptoSetupGenerations: new Map(), cryptoMembershipPending: new Set(), cryptoMembershipOperations: new Map(), replyingTo: null, lastReadSequence: new Map(), typingUsers: new Map(), typingTimers: new Map(), typingActive: false, typingStopTimer: null, typingSentAt: 0, groupInviteCodes: new Map(), groupVoiceAvailable: null };
   function resetCryptoViewState() {
     state.cryptoEnabled.clear(); state.cryptoLocked.clear(); state.cryptoSetupComplete.clear(); state.cryptoCanManage.clear(); state.cryptoPeerFingerprints.clear(); state.cryptoMembershipPending.clear();
-    state.cryptoSyncing.clear(); state.cryptoMessageDecoding.clear(); state.cryptoMemberIds.clear(); state.cryptoDeletedMemberIds.clear(); state.cryptoMembershipOperations.clear();
+    state.cryptoSyncing.clear(); state.cryptoMessageDecoding.clear(); state.cryptoMemberIds.clear(); state.cryptoDeletedMemberIds.clear(); state.cryptoSetupGenerations.clear(); state.cryptoMembershipOperations.clear();
   }
   let signupAvatarData = null;
   let profileAvatarData = null;
@@ -1817,6 +1817,27 @@
       if (update.action !== "remove_deleted") return;
     }
   }
+  // A takeover of a setup whose starter deleted their account is a reset: the
+  // server starts a new setup generation. The local group of an older
+  // generation is dropped (in the encryption database, together with the new
+  // generation) before anything of the new setup is processed; an equal or
+  // older value changes nothing there. The map only saves repeated calls.
+  async function applyCryptoSetupGeneration(conversationId, value) {
+    const generation = Number(value);
+    if (value == null || !Number.isSafeInteger(generation) || generation < 0) return false;
+    if ((state.cryptoSetupGenerations.get(conversationId) ?? -1) >= generation) return false;
+    const reset = await invoke("crypto_apply_setup_generation", { userId: state.user.id, conversationId, generation });
+    state.cryptoSetupGenerations.set(conversationId, generation);
+    if (!reset) return false;
+    // Nothing verified or staged for the old group applies to the new one.
+    localStorage.removeItem(cryptoBootstrapKey(conversationId));
+    localStorage.removeItem(cryptoObservedFingerprintKey(conversationId));
+    localStorage.removeItem(cryptoTrustedFingerprintKey(conversationId));
+    state.cryptoEnabled.delete(conversationId); state.cryptoPeerFingerprints.delete(conversationId);
+    state.cryptoDeletedMemberIds.delete(conversationId); state.cryptoMembershipPending.delete(conversationId);
+    deletedLeafRefusals.delete(conversationId);
+    return true;
+  }
   function currentCryptoFingerprint(conversationId) {
     return state.cryptoPeerFingerprints.get(conversationId) || localStorage.getItem(cryptoObservedFingerprintKey(conversationId)) || "";
   }
@@ -1913,7 +1934,7 @@
       const conversation = state.active?.id === conversationId ? state.active : state.conversations.find(item => item.id === conversationId);
       const conversationIsGroup = conversation?.kind === "group";
       const expectedMemberIds = await expectedCryptoMemberIds(conversationId);
-      const deletedMemberIds = conversationIsGroup ? await deletedCryptoMemberIds(conversationId) : [];
+      let deletedMemberIds = conversationIsGroup ? await deletedCryptoMemberIds(conversationId) : [];
       const savedCursor = await invoke("crypto_get_event_cursor", { userId: state.user.id, conversationId });
       const localCursor = Number(localStorage.getItem(cryptoEventCursorKey(conversationId)) || 0);
       let cursor;
@@ -1936,6 +1957,11 @@
         for (const event of events) {
           const sequence = Number(event.sequence);
           if (!Number.isSafeInteger(sequence) || sequence <= cursor) continue;
+          // Every listed event carries the setup generation it belongs to.
+          if (conversationIsGroup && await applyCryptoSetupGeneration(conversationId, event.setup_generation)) {
+            deletedMemberIds = await deletedCryptoMemberIds(conversationId);
+            pendingRowsDecoded = false;
+          }
           if (state.cryptoEnabled.has(conversationId) && !cryptoIdentityTrusted(conversationId)) {
             holdForVerification = true;
             break;
@@ -2043,6 +2069,7 @@
         if (cryptoLock.locked) state.cryptoLocked.add(conversation.id); else state.cryptoLocked.delete(conversation.id);
         if (cryptoLock.setupComplete) state.cryptoSetupComplete.add(conversation.id); else state.cryptoSetupComplete.delete(conversation.id);
         rememberDeletedCryptoMembers(conversation.id, cryptoLock);
+        await applyCryptoSetupGeneration(conversation.id, cryptoLock.setupGeneration);
         const members = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/members`);
         const memberIds = members.map(member => member.id).sort();
         state.cryptoMemberIds.set(conversation.id, memberIds);
@@ -2054,13 +2081,14 @@
           .sort((left, right) => (left.role === "owner" ? 0 : 1) - (right.role === "owner" ? 0 : 1) || (Number(left.joined_seq) || 0) - (Number(right.joined_seq) || 0))[0];
         const canTakeOver = cryptoLock.locked && !cryptoLock.setupComplete && cryptoLock.lockedByDeletedAccount === true && successor?.id === state.user.id;
         if (canStart || canResume || canTakeOver) state.cryptoCanManage.add(conversation.id); else state.cryptoCanManage.delete(conversation.id);
-        // If this device already joined that setup's group from its Welcome,
-        // taking over only needs the lock and the completion.
-        if (canTakeOver && await invoke("crypto_has_direct_group", { userId: state.user.id, conversationId: conversation.id })) {
-          await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/crypto-lock`, { method: "POST", body: JSON.stringify({ member_ids: memberIds }) });
-          await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/crypto-lock/complete`, { method: "POST" });
-          state.cryptoSetupComplete.add(conversation.id);
-          state.cryptoCanManage.delete(conversation.id);
+        // The takeover is always a reset, never an adoption: nobody can know
+        // which members received the deleted starter's Welcome. The server
+        // starts a new setup generation; this device drops the old group
+        // (if it joined it) and then sets the group up again like any other.
+        if (canTakeOver) {
+          const taken = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/crypto-lock`, { method: "POST", body: JSON.stringify({ member_ids: memberIds }) });
+          rememberDeletedCryptoMembers(conversation.id, taken);
+          await applyCryptoSetupGeneration(conversation.id, taken?.setupGeneration);
         }
       } else {
         const cryptoLock = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/crypto-lock`);
@@ -2328,9 +2356,12 @@
         const approved = await askConfirm({ title: state.language === "tr" ? "Grup güvenlik kodları" : "Group security codes", message: `${translate("Verify the full group security code with every member through another trusted channel before continuing. The list below shows each member's device code.")}\n\n${deviceCodes.join("\n\n")}`, confirmText: state.language === "tr" ? "Doğruladım" : "I verified them" });
         if (!approved) { toast(translate("Encryption setup was cancelled. The one-time key packages were already claimed; members may need to publish fresh packages.")); return; }
         const roster = members.map(member => member.id).sort();
-        await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/crypto-lock`, {
+        const locked = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/crypto-lock`, {
           method: "POST", body: JSON.stringify({ member_ids: roster }),
         });
+        // A lock taken over from a deleted account starts a new generation:
+        // an old group on this device must be gone before the new one is made.
+        await applyCryptoSetupGeneration(conversation.id, locked?.setupGeneration);
         state.cryptoMemberIds.set(conversation.id, roster);
         state.cryptoLocked.add(conversation.id);
         state.cryptoSetupComplete.delete(conversation.id);
