@@ -4006,6 +4006,17 @@ struct GroupCryptoLockStatus {
     /// Counts the accepted membership commits (and setup takeovers). A
     /// membership commit names the value it was built on.
     commit_seq: i64,
+    /// The server's clock, in the format of `deletedAt`. A client measures
+    /// how long a deleted account's leaf has been waiting as the difference
+    /// of the two, so its own clock does not matter.
+    server_now: String,
+}
+
+async fn server_now(db: &SqlitePool) -> Result<String, ApiError> {
+    sqlx::query_scalar::<_, String>("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+        .fetch_one(db)
+        .await
+        .map_err(|_| ApiError::internal())
 }
 
 #[derive(Serialize, FromRow)]
@@ -4054,6 +4065,7 @@ async fn group_crypto_lock_status(
             .is_some_and(|(_, complete, deleted, ..)| *complete == 0 && *deleted),
         setup_generation: lock.as_ref().map_or(0, |(.., generation, _)| *generation),
         commit_seq: lock.as_ref().map_or(0, |(.., commit_seq)| *commit_seq),
+        server_now: server_now(db).await?,
     })
 }
 
@@ -4168,6 +4180,7 @@ async fn lock_group_crypto_roster(
             // conversation has no membership commits.
             setup_generation: 0,
             commit_seq: 0,
+            server_now: server_now(&state.db).await?,
         }));
     }
     let actor_role = sqlx::query_scalar::<_, String>(
@@ -9277,6 +9290,69 @@ mod tests {
         );
         db.close().await;
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn crypto_lock_reports_the_server_clock_next_to_deleted_at() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete) VALUES(?,?,1)",
+        )
+        .bind(&group)
+        .bind(&alice.id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        let status = app
+            .request(Method::DELETE, "/v1/me/account", &carol)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        // The record is backdated, so the grace period a client derives is
+        // the difference of two server timestamps, whatever its own clock.
+        sqlx::query(
+            "UPDATE crypto_group_deleted_members SET deleted_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-90 seconds') WHERE conversation_id=?",
+        )
+        .bind(&group)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        let lock: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/crypto-lock"),
+                &bob,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let parse = |value: &serde_json::Value| {
+            let text = value.as_str().expect("an RFC 3339 timestamp");
+            assert_eq!(text.len(), 24, "{text}");
+            assert!(text.ends_with('Z'), "{text}");
+            let (date, time) = text.trim_end_matches('Z').split_once('T').unwrap();
+            let day: Vec<i64> = date.split('-').map(|part| part.parse().unwrap()).collect();
+            let clock: Vec<f64> = time.split(':').map(|part| part.parse().unwrap()).collect();
+            (day, clock[0] * 3600.0 + clock[1] * 60.0 + clock[2])
+        };
+        let (now_day, now_seconds) = parse(&lock["serverNow"]);
+        let (deleted_day, deleted_seconds) = parse(&lock["deletedMembers"][0]["deletedAt"]);
+        let elapsed =
+            now_seconds - deleted_seconds + if now_day == deleted_day { 0.0 } else { 86400.0 };
+        assert!(
+            (89.0..120.0).contains(&elapsed),
+            "serverNow - deletedAt was {elapsed}s"
+        );
     }
 
     #[tokio::test]
