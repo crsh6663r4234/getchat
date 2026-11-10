@@ -8422,6 +8422,271 @@ mod tests {
         assert_eq!(lock_other(&alice).await.unwrap().status(), StatusCode::OK);
     }
 
+    /// A database migrated only up to `last_version`, for upgrade tests:
+    /// seed it, close it, then let `open_database` apply the rest.
+    async fn database_migrated_to(path: &std::path::Path, last_version: i64) -> SqlitePool {
+        let all = sqlx::migrate!("./migrations");
+        let migrations: Vec<_> = all
+            .iter()
+            .filter(|migration| migration.version <= last_version)
+            .cloned()
+            .collect();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(path)
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+        sqlx::migrate::Migrator {
+            migrations: std::borrow::Cow::Owned(migrations),
+            ..sqlx::migrate::Migrator::DEFAULT
+        }
+        .run(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    async fn seed_user(pool: &SqlitePool, id: &str) {
+        sqlx::query(
+            "INSERT INTO users(id,username,display_name,recovery_lookup,recovery_verifier) VALUES(?,?,?,?,?)",
+        )
+        .bind(id)
+        .bind(id)
+        .bind(id)
+        .bind(format!("lookup-{id}"))
+        .bind("verifier")
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn seed_group(pool: &SqlitePool, id: &str, members: &[&str]) {
+        sqlx::query("INSERT INTO conversations(id,kind,title) VALUES(?,'group','Seeded')")
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+        for (index, member) in members.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO conversation_members(conversation_id,user_id,role) VALUES(?,?,?)",
+            )
+            .bind(id)
+            .bind(member)
+            .bind(if index == 0 { "owner" } else { "member" })
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn deleted_account_crypto_events_stay_for_members_who_have_not_fetched_them() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let direct = app.direct(&carol, &bob).await;
+        for conversation in [&group, &direct] {
+            sqlx::query(
+                "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete) VALUES(?,?,1)",
+            )
+            .bind(conversation)
+            .bind(&carol.id)
+            .execute(&app.state.db)
+            .await
+            .unwrap();
+        }
+        // Carol relays a commit to the group, a Welcome to Bob and a direct
+        // event; Bob has fetched none of them when Carol deletes her account.
+        let send = |conversation: String, event: &'static str, recipient: Option<String>| {
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{conversation}/crypto-events"),
+                &carol,
+            )
+            .json(&serde_json::json!({
+                "client_event_id": event,
+                "recipient_user_id": recipient,
+                "payload": "AAAA",
+            }))
+            .send()
+        };
+        for (conversation, event, recipient) in [
+            (group.clone(), "commit-1", None),
+            (group.clone(), "welcome-1", Some(bob.id.clone())),
+            (direct.clone(), "direct-1", None),
+        ] {
+            let status = send(conversation, event, recipient).await.unwrap().status();
+            assert_eq!(status, StatusCode::OK, "{event}");
+        }
+        let status = app
+            .request(Method::DELETE, "/v1/me/account", &carol)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let events: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/crypto-events"),
+                &bob,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let events = events.as_array().unwrap();
+        assert_eq!(
+            events.len(),
+            2,
+            "the deleted account's commit and Welcome must still reach Bob"
+        );
+        assert!(events
+            .iter()
+            .all(|event| event["sender_id"] == carol.id.as_str()));
+        // The direct conversation went with the account, and its events too.
+        let left = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM crypto_events WHERE conversation_id=?",
+        )
+        .bind(&direct)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    #[tokio::test]
+    async fn migration_0029_keeps_crypto_events_and_their_sequence() {
+        let dir = std::env::temp_dir().join(format!("ghostchat-migrate-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("db.sqlite");
+        let old = database_migrated_to(&path, 28).await;
+        for user in ["u-a", "u-b", "u-c"] {
+            seed_user(&old, user).await;
+        }
+        seed_group(&old, "g-1", &["u-a", "u-b", "u-c"]).await;
+        seed_group(&old, "g-2", &["u-a", "u-b"]).await;
+        for (id, conversation, sender, recipient) in [
+            ("e-1", "g-1", "u-c", None),
+            ("e-2", "g-1", "u-c", Some("u-b")),
+            ("e-3", "g-1", "u-a", Some("u-c")),
+            ("e-4", "g-2", "u-a", None),
+            ("e-5", "g-1", "u-a", None),
+        ] {
+            sqlx::query(
+                "INSERT INTO crypto_events(id,conversation_id,sender_id,client_event_id,recipient_id,payload,created_at) VALUES(?,?,?,?,?,?,'2026-01-02T03:04:05.000Z')",
+            )
+            .bind(id)
+            .bind(conversation)
+            .bind(sender)
+            .bind(format!("client-{id}"))
+            .bind(recipient)
+            .bind(format!("payload-{id}"))
+            .execute(&old)
+            .await
+            .unwrap();
+        }
+        // The newest event is gone before the upgrade: its sequence number
+        // must still never be handed out again (clients keep a cursor).
+        sqlx::query("DELETE FROM crypto_events WHERE id='e-5'")
+            .execute(&old)
+            .await
+            .unwrap();
+        type Row = (
+            i64,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+        );
+        let dump = "SELECT sequence,id,conversation_id,sender_id,client_event_id,recipient_id,payload,created_at FROM crypto_events ORDER BY sequence";
+        let before: Vec<Row> = sqlx::query_as(dump).fetch_all(&old).await.unwrap();
+        assert_eq!(before.len(), 4);
+        old.close().await;
+
+        let db = open_database(&path.to_string_lossy()).await.unwrap();
+        let after: Vec<Row> = sqlx::query_as(dump).fetch_all(&db).await.unwrap();
+        assert_eq!(after, before);
+        let violations = sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+        assert!(violations.is_empty());
+        let leftovers = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM sqlite_master WHERE name LIKE '%0029%'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(leftovers, 0);
+        let indexes = sqlx::query_scalar::<_, String>(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='crypto_events' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .fetch_all(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            indexes,
+            [
+                "crypto_events_conversation_recipient_sequence_idx",
+                "crypto_events_conversation_sequence_idx"
+            ]
+        );
+        sqlx::query(
+            "INSERT INTO crypto_events(id,conversation_id,sender_id,client_event_id,payload) VALUES('e-6','g-1','u-a','client-e-6','p')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let sequence =
+            sqlx::query_scalar::<_, i64>("SELECT sequence FROM crypto_events WHERE id='e-6'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(sequence, 6, "a deleted event's sequence is not reused");
+        let duplicate = sqlx::query(
+            "INSERT INTO crypto_events(id,conversation_id,sender_id,client_event_id,payload) VALUES('e-7','g-1','u-a','client-e-6','p')",
+        )
+        .execute(&db)
+        .await;
+        assert!(duplicate.is_err(), "the idempotency key is still unique");
+
+        // A deleted sender keeps its events; a deleted recipient's targeted
+        // events and a deleted conversation's events still go.
+        sqlx::query("DELETE FROM users WHERE id='u-c'")
+            .execute(&db)
+            .await
+            .unwrap();
+        let ids = |db: SqlitePool| async move {
+            sqlx::query_scalar::<_, String>("SELECT id FROM crypto_events ORDER BY sequence")
+                .fetch_all(&db)
+                .await
+                .unwrap()
+        };
+        assert_eq!(ids(db.clone()).await, ["e-1", "e-2", "e-4", "e-6"]);
+        sqlx::query("DELETE FROM conversations WHERE id='g-1'")
+            .execute(&db)
+            .await
+            .unwrap();
+        assert_eq!(ids(db.clone()).await, ["e-4"]);
+        db.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn group_members_report_their_join_order() {
         use reqwest::Method;
