@@ -268,6 +268,7 @@ async fn crypto_prepare_group_membership_update(
     conversation_id: String,
     expected_member_ids: Vec<String>,
     peers: Vec<crypto::GroupPeerKeyPackage>,
+    expected_commit_seq: Option<i64>,
 ) -> Result<crypto::GroupMembershipUpdate, String> {
     crypto::prepare_group_membership_update(
         &state.crypto_db,
@@ -275,6 +276,7 @@ async fn crypto_prepare_group_membership_update(
         &conversation_id,
         &expected_member_ids,
         &peers,
+        expected_commit_seq,
     )
     .await
 }
@@ -286,6 +288,7 @@ async fn crypto_prepare_group_removal_update(
     conversation_id: String,
     expected_member_ids: Vec<String>,
     removed_member_ids: Vec<String>,
+    expected_commit_seq: Option<i64>,
 ) -> Result<crypto::GroupMembershipUpdate, String> {
     crypto::prepare_group_removal_update(
         &state.crypto_db,
@@ -293,6 +296,7 @@ async fn crypto_prepare_group_removal_update(
         &conversation_id,
         &expected_member_ids,
         &removed_member_ids,
+        expected_commit_seq,
     )
     .await
 }
@@ -304,6 +308,7 @@ async fn crypto_prepare_deleted_member_removal(
     conversation_id: String,
     expected_member_ids: Vec<String>,
     deleted_member_ids: Vec<String>,
+    expected_commit_seq: Option<i64>,
 ) -> Result<Option<crypto::GroupMembershipUpdate>, String> {
     crypto::prepare_deleted_member_removal(
         &state.crypto_db,
@@ -311,6 +316,7 @@ async fn crypto_prepare_deleted_member_removal(
         &conversation_id,
         &expected_member_ids,
         &deleted_member_ids,
+        expected_commit_seq,
     )
     .await
 }
@@ -339,6 +345,7 @@ async fn crypto_prepare_group_leave_commit(
     operation_id: String,
     leaving_user_id: String,
     expected_member_ids: Vec<String>,
+    expected_commit_seq: Option<i64>,
 ) -> Result<crypto::GroupMembershipUpdate, String> {
     crypto::prepare_group_leave_commit(
         &state.crypto_db,
@@ -347,6 +354,7 @@ async fn crypto_prepare_group_leave_commit(
         &operation_id,
         &leaving_user_id,
         &expected_member_ids,
+        expected_commit_seq,
     )
     .await
 }

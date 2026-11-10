@@ -175,6 +175,20 @@ pub struct GroupMembershipUpdate {
     pub expected_member_ids: Vec<String>,
     pub commit_payload: String,
     pub welcome_payload: String,
+    /// The server's commit sequence this commit was built on (the client's
+    /// synced value when it was staged). It is saved with the staged commit
+    /// and sent with every attempt, so the server can refuse a commit built
+    /// on a group state it has already moved past. `None` for a server
+    /// without the sequence and for updates staged by an earlier version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_commit_seq: Option<i64>,
+}
+
+fn checked_commit_seq(expected_commit_seq: Option<i64>) -> Result<Option<i64>, String> {
+    match expected_commit_seq {
+        Some(value) if value < 0 => Err("The encrypted group commit sequence is invalid.".into()),
+        other => Ok(other),
+    }
 }
 
 fn default_membership_action() -> String {
@@ -1448,6 +1462,7 @@ pub async fn prepare_group_membership_update(
     conversation_id: &str,
     expected_member_ids: &[String],
     peers: &[GroupPeerKeyPackage],
+    expected_commit_seq: Option<i64>,
 ) -> Result<GroupMembershipUpdate, String> {
     prepare_group_membership_change(
         db,
@@ -1458,6 +1473,7 @@ pub async fn prepare_group_membership_update(
         &[],
         &[],
         peers,
+        expected_commit_seq,
     )
     .await?
     .ok_or_else(|| "There is no encrypted membership update to prepare.".to_string())
@@ -1469,6 +1485,7 @@ pub async fn prepare_group_removal_update(
     conversation_id: &str,
     expected_member_ids: &[String],
     removed_member_ids: &[String],
+    expected_commit_seq: Option<i64>,
 ) -> Result<GroupMembershipUpdate, String> {
     prepare_group_membership_change(
         db,
@@ -1479,6 +1496,7 @@ pub async fn prepare_group_removal_update(
         removed_member_ids,
         &[],
         &[],
+        expected_commit_seq,
     )
     .await?
     .ok_or_else(|| "There is no encrypted membership update to prepare.".to_string())
@@ -1495,6 +1513,7 @@ pub async fn prepare_deleted_member_removal(
     conversation_id: &str,
     expected_member_ids: &[String],
     deleted_member_ids: &[String],
+    expected_commit_seq: Option<i64>,
 ) -> Result<Option<GroupMembershipUpdate>, String> {
     prepare_group_membership_change(
         db,
@@ -1505,6 +1524,7 @@ pub async fn prepare_deleted_member_removal(
         &[],
         deleted_member_ids,
         &[],
+        expected_commit_seq,
     )
     .await
 }
@@ -1519,10 +1539,12 @@ async fn prepare_group_membership_change(
     selected_member_ids: &[String],
     deleted_member_ids: &[String],
     peers: &[GroupPeerKeyPackage],
+    expected_commit_seq: Option<i64>,
 ) -> Result<Option<GroupMembershipUpdate>, String> {
     let _operation = CRYPTO_OPERATION_LOCK.lock().await;
     let user_id = normalized_uuid(user_id, "account")?;
     let conversation_id = normalized_uuid(conversation_id, "conversation")?;
+    let expected_commit_seq = checked_commit_seq(expected_commit_seq)?;
     if action == "add" && (peers.is_empty() || peers.len() > 15 || !selected_member_ids.is_empty())
     {
         return Err("Choose 1 to 15 friends to add to the encrypted group.".into());
@@ -1748,6 +1770,7 @@ async fn prepare_group_membership_change(
         expected_member_ids,
         commit_payload,
         welcome_payload,
+        expected_commit_seq,
     };
     let encrypted_update = EncryptedJsonCodec::to_vec(&update).map_err(|_| {
         "GhostChat could not protect the pending MLS membership update.".to_string()
@@ -1920,6 +1943,8 @@ pub async fn prepare_group_leave_proposal(
         expected_member_ids,
         commit_payload: proposal_payload,
         welcome_payload: String::new(),
+        // A proposal is not a commit; the owner's commit of it is stamped.
+        expected_commit_seq: None,
     };
     let encrypted_update = EncryptedJsonCodec::to_vec(&update)
         .map_err(|_| "GhostChat could not protect the pending leave request.".to_string())?;
@@ -1946,8 +1971,10 @@ pub async fn prepare_group_leave_commit(
     operation_id: &str,
     leaving_user_id: &str,
     expected_member_ids: &[String],
+    expected_commit_seq: Option<i64>,
 ) -> Result<GroupMembershipUpdate, String> {
     let _operation = CRYPTO_OPERATION_LOCK.lock().await;
+    let expected_commit_seq = checked_commit_seq(expected_commit_seq)?;
     let user_id = normalized_uuid(user_id, "account")?;
     let conversation_id = normalized_uuid(conversation_id, "conversation")?;
     let operation_id = normalized_uuid(operation_id, "leave operation")?;
@@ -2085,6 +2112,7 @@ pub async fn prepare_group_leave_commit(
         expected_member_ids,
         commit_payload,
         welcome_payload: String::new(),
+        expected_commit_seq,
     };
     let encrypted_update = EncryptedJsonCodec::to_vec(&update)
         .map_err(|_| "GhostChat could not protect the pending MLS leave commit.".to_string())?;
@@ -4280,6 +4308,7 @@ mod tests {
             &leave.operation_id,
             &bob_id,
             &roster,
+            None,
         )
         .await
         .expect("The owner should load the queued proposal and commit it");
@@ -4843,9 +4872,16 @@ mod tests {
         assert_eq!(decrypted.content.as_deref(), Some("before removal"));
 
         assert!(
-            prepare_deleted_member_removal(&alice_db, &alice_id, &conversation_id, &remaining, &[])
-                .await
-                .is_err(),
+            prepare_deleted_member_removal(
+                &alice_db,
+                &alice_id,
+                &conversation_id,
+                &remaining,
+                &[],
+                None
+            )
+            .await
+            .is_err(),
             "without the deleted record the roster mismatch is still refused"
         );
         let removal = prepare_deleted_member_removal(
@@ -4854,6 +4890,7 @@ mod tests {
             &conversation_id,
             &remaining,
             &deleted,
+            None,
         )
         .await
         .unwrap()
@@ -4897,7 +4934,8 @@ mod tests {
             &alice_id,
             &conversation_id,
             &remaining,
-            &deleted
+            &deleted,
+            None
         )
         .await
         .unwrap()
@@ -5092,6 +5130,186 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn a_staged_commit_keeps_the_commit_sequence_it_was_built_on() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-seq-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let carol_db = open_database(&root.join("carol.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let carol_device = prepare_device(&carol_db, &carol_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[
+                GroupPeerKeyPackage {
+                    user_id: bob_id.clone(),
+                    device_id: bob_device.device_id.clone(),
+                    payload: bob_device.payload.clone(),
+                },
+                GroupPeerKeyPackage {
+                    user_id: carol_id.clone(),
+                    device_id: carol_device.device_id.clone(),
+                    payload: carol_device.payload.clone(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(1),
+            true,
+            &roster,
+            &start.welcome_payload,
+        )
+        .await
+        .unwrap();
+
+        // The server's commit sequence the commit was built on is saved with
+        // the staged update, so a retry after a restart sends the same value.
+        let mut remaining = vec![alice_id.clone(), bob_id.clone()];
+        remaining.sort();
+        let deleted = vec![carol_id.clone()];
+        let staged = prepare_deleted_member_removal(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &remaining,
+            &deleted,
+            Some(4),
+        )
+        .await
+        .unwrap()
+        .expect("Carol's leaf is still in the group");
+        assert_eq!(staged.expected_commit_seq, Some(4));
+        let json = serde_json::to_value(&staged).unwrap();
+        assert_eq!(json["expectedCommitSeq"], 4);
+        let saved = get_pending_group_membership_update(&alice_db, &alice_id, &conversation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.operation_id, staged.operation_id);
+        assert_eq!(saved.expected_commit_seq, Some(4));
+        // The pending update was built on the earlier state: asking again
+        // after the group moved on must not relabel it.
+        let again = prepare_deleted_member_removal(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &remaining,
+            &deleted,
+            Some(9),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(again.operation_id, staged.operation_id);
+        assert_eq!(again.expected_commit_seq, Some(4));
+        discard_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &staged.operation_id,
+        )
+        .await
+        .unwrap();
+
+        // A server without the sequence gives no value; none is invented.
+        let plain = prepare_deleted_member_removal(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &remaining,
+            &deleted,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(plain.expected_commit_seq, None);
+        assert!(serde_json::to_value(&plain)
+            .unwrap()
+            .get("expectedCommitSeq")
+            .is_none());
+        discard_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &plain.operation_id,
+        )
+        .await
+        .unwrap();
+        assert!(prepare_deleted_member_removal(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &remaining,
+            &deleted,
+            Some(-1),
+        )
+        .await
+        .is_err());
+
+        // A leave commit is stamped the same way.
+        let leave = prepare_group_leave_proposal(&bob_db, &bob_id, &conversation_id, &roster)
+            .await
+            .unwrap();
+        process_crypto_event_with_deleted(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &bob_id,
+            Some(&leave.operation_id),
+            Some(2),
+            true,
+            &roster,
+            &[],
+            &leave.commit_payload,
+        )
+        .await
+        .unwrap();
+        let commit = prepare_group_leave_commit(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &leave.operation_id,
+            &bob_id,
+            &roster,
+            Some(6),
+        )
+        .await
+        .unwrap();
+        assert_eq!(commit.action, "leave");
+        assert_eq!(commit.expected_commit_seq, Some(6));
+        let retried = prepare_group_leave_commit(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &leave.operation_id,
+            &bob_id,
+            &roster,
+            Some(7),
+        )
+        .await
+        .unwrap();
+        assert_eq!(retried.expected_commit_seq, Some(6));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn a_refused_staged_removal_is_dropped_and_the_accepted_one_applies() {
         let root = std::env::temp_dir().join(format!("ghostchat-mls-refused-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&root).expect("test directory should be created");
@@ -5151,6 +5369,7 @@ mod tests {
             &conversation_id,
             &remaining,
             &deleted,
+            None,
         )
         .await
         .unwrap()
@@ -5169,6 +5388,7 @@ mod tests {
             &conversation_id,
             &remaining,
             &deleted,
+            None,
         )
         .await
         .unwrap()
@@ -5282,6 +5502,7 @@ mod tests {
             &conversation_id,
             &remaining,
             &deleted,
+            None,
         )
         .await
         .unwrap()
@@ -5321,6 +5542,7 @@ mod tests {
                 device_id: dave_device.device_id.clone(),
                 payload: dave_device.payload.clone(),
             }],
+            None,
         )
         .await
         .unwrap();
@@ -5363,6 +5585,7 @@ mod tests {
                 device_id: carol_again.device_id.clone(),
                 payload: carol_again.payload.clone(),
             }],
+            None,
         )
         .await
         .unwrap();
@@ -5456,6 +5679,7 @@ mod tests {
             &conversation_id,
             &roster,
             std::slice::from_ref(&carol_id),
+            None,
         )
         .await
         .unwrap();
@@ -5604,6 +5828,7 @@ mod tests {
             &conversation_id,
             &roster,
             std::slice::from_ref(&carol_id),
+            None,
         )
         .await
         .unwrap();
@@ -5756,6 +5981,7 @@ mod tests {
             &conversation_id,
             &roster,
             std::slice::from_ref(&carol_id),
+            None,
         )
         .await
         .unwrap();
