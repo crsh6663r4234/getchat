@@ -5127,8 +5127,12 @@ async fn vote_group_poll(
     Json(body): Json<VoteGroupPollRequest>,
 ) -> Result<StatusCode, ApiError> {
     let user = authenticate(&headers, &state).await?;
+    // A closing time stored before it was validated may not be a time:
+    // julianday() is then NULL and so is the comparison. Such a poll has no
+    // deadline that can be enforced and stays open; COALESCE says so in SQL
+    // instead of leaving it to how the driver reads a NULL boolean.
     let (conversation_id, expired) = sqlx::query_as::<_, (String, bool)>(
-        "SELECT conversation_id,(closes_at IS NOT NULL AND julianday(closes_at)<=julianday('now')) FROM group_polls WHERE id=? AND closed_at IS NULL",
+        "SELECT conversation_id,COALESCE(julianday(closes_at)<=julianday('now'),0) FROM group_polls WHERE id=? AND closed_at IS NULL",
     )
     .bind(&poll_id)
     .fetch_optional(&state.db)
@@ -7883,6 +7887,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(votes, 1);
+
+        // A row stored before closing times were validated can hold a value
+        // that is not a time. It has no deadline that can be enforced, so it
+        // takes votes as it always did instead of failing the request.
+        let polls: serde_json::Value = create(serde_json::Value::Null)
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let legacy = polls
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["closes_at"].is_null())
+            .unwrap()
+            .clone();
+        sqlx::query("UPDATE group_polls SET closes_at='not a time' WHERE id=?")
+            .bind(legacy["id"].as_str().unwrap())
+            .execute(&app.state.db)
+            .await
+            .unwrap();
+        assert_eq!(
+            vote(&legacy).await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+        let votes = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM group_poll_votes")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+        assert_eq!(votes, 2);
     }
 
     #[tokio::test]
