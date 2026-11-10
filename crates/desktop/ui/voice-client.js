@@ -631,35 +631,7 @@
       if (message) api.onError(message);
     }
 
-    // Ask the TURN server for one allocation before a call. A configured but
-    // unreachable relay must not silently block all audio, so the result
-    // decides whether the call may fall back to a direct connection.
-    let relayProbe = { key: "", result: null, at: 0 };
-    async function probeRelay(iceServers) {
-      const key = JSON.stringify(iceServers.map(server => server.urls));
-      if (relayProbe.key === key && relayProbe.result !== null && Date.now() - relayProbe.at < 60_000) return relayProbe.result;
-      let pc;
-      const result = await new Promise(resolve => {
-        let settled = false;
-        const finish = value => { if (settled) return; settled = true; clearTimeout(timer); resolve(value); };
-        const timer = setTimeout(() => finish(false), 4_000);
-        try {
-          pc = new RTCPeerConnection({ iceServers, iceTransportPolicy: "relay" });
-          pc.onicecandidate = event => {
-            if (!event.candidate) return finish(false);
-            if (event.candidate.type === "relay" || /\btyp relay(?:\s|$)/.test(event.candidate.candidate || "")) finish(true);
-          };
-          pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === "complete") finish(false); };
-          pc.createDataChannel("relay-probe");
-          pc.createOffer().then(offer => pc.setLocalDescription(offer)).catch(() => finish(false));
-        } catch { finish(false); }
-      });
-      try { pc?.close(); } catch {}
-      relayProbe = { key, result, at: Date.now() };
-      return result;
-    }
-
-    async function loadIceConfiguration(settings) {
+    async function loadIceConfiguration() {
       const config = await api.getIceConfiguration();
       const servers = Array.isArray(config?.ice_servers) ? config.ice_servers : [];
       const turnServers = servers.flatMap(server => {
@@ -667,26 +639,19 @@
         const urls = (Array.isArray(server.urls) ? server.urls : [server.urls]).filter(url => typeof url === "string" && /^turns?:[^\s]+$/i.test(url));
         return urls.length ? [{ urls, username: server.username, credential: server.credential }] : [];
       });
-      const stunServers = servers.flatMap(server => {
-        const urls = (Array.isArray(server?.urls) ? server.urls : [server?.urls]).filter(url => typeof url === "string" && /^stuns?:[^\s]+$/i.test(url));
-        return urls.length ? [{ urls }] : [];
-      });
-      const turnConfigured = !!config?.turn_available && turnServers.length > 0;
-      const base = { ghostShareAvailable: !!config?.group_voice_available, bundlePolicy: "max-bundle", rtcpMuxPolicy: "require" };
-      if (settings.relayOnly) {
-        // Strict mode: the user chose never to reveal their address.
-        if (!turnConfigured) throw new Error("Relay-only calls need an authenticated TURN relay, and this server has none. Turn off relay-only in Settings to call directly.");
-        return { ...base, iceServers: turnServers, iceTransportPolicy: "relay" };
+      if (!config?.turn_available || !turnServers.length) {
+        throw new Error("Calls require an authenticated TURN relay. No direct fallback is allowed because it could reveal your network address.");
       }
-      if (turnConfigured && await probeRelay(turnServers)) {
-        return { ...base, iceServers: turnServers, iceTransportPolicy: "relay" };
-      }
-      if (turnConfigured) console.warn("The TURN relay did not respond; this call uses a direct connection.");
-      return { ...base, iceServers: [...stunServers, ...turnServers], iceTransportPolicy: "all" };
+      return {
+        ghostShareAvailable: !!config?.group_voice_available,
+        iceServers: turnServers,
+        iceTransportPolicy: "relay",
+        bundlePolicy: "max-bundle",
+        rtcpMuxPolicy: "require",
+      };
     }
 
     function makePeer(activeCall, configuration) {
-      const relayOnly = configuration.iceTransportPolicy === "relay";
       const pc = new RTCPeerConnection(configuration);
       activeCall.pc = pc;
       activeCall.relayCandidates = 0;
@@ -694,13 +659,13 @@
       // gathering finishes with none, fail loudly instead of leaving the call
       // stuck in "connecting" with no audio in either direction.
       pc.onicegatheringstatechange = () => {
-        if (!relayOnly || call !== activeCall || pc.iceGatheringState !== "complete" || activeCall.relayCandidates) return;
+        if (call !== activeCall || pc.iceGatheringState !== "complete" || activeCall.relayCandidates) return;
         closeCall({ notifyPeer: true, message: "The TURN relay server did not respond, so no audio can be sent. Check that coturn is running and that port 3478 (UDP and TCP) and the relay port range are open on the server firewall." });
       };
       pc.onicecandidate = event => {
         if (call !== activeCall || !event.candidate) return;
         const isRelay = event.candidate.type === "relay" || /\btyp relay(?:\s|$)/.test(event.candidate.candidate || "");
-        if (relayOnly && !isRelay) return;
+        if (!isRelay) return;
         if (isRelay) activeCall.relayCandidates += 1;
         const candidate = event.candidate.toJSON();
         try {
@@ -734,9 +699,7 @@
         }
         else if (pc.connectionState === "disconnected") activeCall.status = "reconnecting";
         else if (pc.connectionState === "failed") {
-          closeCall({ message: relayOnly
-            ? "The required TURN relay connection failed. Check the relay service and network, then call again."
-            : "The call could not connect across these networks. Check your connection and call again; a working TURN relay on the server helps on strict networks." });
+          closeCall({ message: "The required TURN relay connection failed. Check the relay service and network, then call again." });
           return;
         }
         notify();

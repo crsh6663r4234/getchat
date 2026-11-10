@@ -7131,3 +7131,62 @@ label:has(> input.visually-hidden:focus-visible) {
   outline-offset: 3px;
   border-radius: var(--radius-control);
 }
+
+/* 4.0.50: final layout guardrails. These rules deliberately sit last so
+   consolidated legacy layers cannot reintroduce clipped text or oversized
+   voice/settings panels at narrower desktop widths. */
+.app-shell,
+.content,
+.message-panel,
+.messages,
+.voice-stage,
+.dialog,
+.dialog-body {
+  min-width: 0;
+}
+
+.messages {
+  overflow-x: hidden;
+}
+
+.message,
+.message-body,
+.attachment-filename,
+.message-link {
+  overflow-wrap: anywhere;
+}
+
+#settingsDialog.dialog {
+  width: min(100% - (var(--space-4) * 2), 1080px);
+  max-height: min(880px, calc(100dvh - (var(--space-4) * 2)));
+}
+
+#settingsDialog .dialog-body {
+  min-height: 0;
+  overscroll-behavior: contain;
+}
+
+.voice-stage {
+  min-height: 0;
+  max-height: calc(100dvh - var(--space-5));
+}
+
+.voice-stage-scroll,
+.voice-stage-body {
+  min-height: 0;
+}
+
+@media (max-width: 680px) {
+  #settingsDialog.dialog {
+    width: calc(100% - (var(--space-3) * 2));
+    max-height: calc(100dvh - (var(--space-3) * 2));
+  }
+
+  .messages {
+    padding-inline: var(--space-3);
+  }
+
+  .message {
+    max-width: 100%;
+  }
+}
