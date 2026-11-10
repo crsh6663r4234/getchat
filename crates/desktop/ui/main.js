@@ -674,9 +674,8 @@
       pushToTalk: localStorage.getItem("ghostchat.voice.ptt") === "true",
       shareSystemAudio: localStorage.getItem("ghostchat.voice.systemAudio") === "true",
       shareQuality: localStorage.getItem("ghostchat.share.quality") || "balanced",
-      // 4.0.45 force-wrote "true" to ghostchat.voice.relayOnly for everyone,
-      // so the opt-in strict mode lives under a fresh key.
-      relayOnly: localStorage.getItem("ghostchat.voice.strictRelay") === "true",
+      // Calls never fall back to peer-to-peer. This preserves caller IP privacy.
+      relayOnly: true,
       volume: Number(localStorage.getItem("ghostchat.voice.volume") || "100"),
       speakerMuted: localStorage.getItem("ghostchat.voice.speakerMuted") === "true",
     };
@@ -694,7 +693,7 @@
     localStorage.setItem("ghostchat.voice.ptt", String($("#voicePushToTalk").checked));
     localStorage.setItem("ghostchat.voice.systemAudio", String($("#voiceShareAudio").checked));
     localStorage.setItem("ghostchat.share.quality", $("#voiceShareQuality").value);
-    localStorage.setItem("ghostchat.voice.strictRelay", String($("#voiceRelayOnly").checked));
+    localStorage.setItem("ghostchat.voice.strictRelay", "true");
     localStorage.setItem("ghostchat.voice.volume", $("#voiceVolume").value);
   }
 
@@ -709,7 +708,8 @@
     $("#voicePushToTalk").checked = settings.pushToTalk;
     $("#voiceShareAudio").checked = settings.shareSystemAudio;
     $("#voiceShareQuality").value = ["balanced", "detail", "motion", "saver"].includes(settings.shareQuality) ? settings.shareQuality : "balanced";
-    $("#voiceRelayOnly").checked = settings.relayOnly;
+    $("#voiceRelayOnly").checked = true;
+    $("#voiceRelayOnly").disabled = true;
     $("#voiceVolume").value = String(Math.max(0, Math.min(100, settings.volume)));
     const micSelects = [$("#voiceMicSelect"), $("#voiceCallMicSelect")];
     const speakerSelects = [$("#voiceSpeakerSelect"), $("#voiceCallSpeakerSelect")];
@@ -752,10 +752,11 @@
         : translate("Group voice is not configured on this server. Configure LiveKit in the server environment.");
       renderVoiceControls();
       const enabled = !!config.turn_available;
-      relay.disabled = !enabled;
+      relay.checked = true;
+      relay.disabled = true;
       status.textContent = translate(enabled
-        ? "TURN relay is configured. Calls use it whenever it responds and fall back to a direct connection when it does not. Turn on relay-only to never reveal your address; calls then fail while the relay is down."
-        : "TURN relay is not configured. Direct calls can reveal your network address to the other caller and may fail on restrictive networks.");
+        ? "TURN relay is configured. Calls always use it and never connect directly, so your network address stays private."
+        : "TURN relay is not configured. Calls are unavailable until the server owner configures TURN; your network address will never be exposed.");
     } catch (error) {
       state.groupVoiceAvailable = false;
       const groupStatus = $("#groupVoiceNetworkStatus");
