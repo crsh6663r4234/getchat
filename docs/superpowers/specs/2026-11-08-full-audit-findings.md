@@ -7,19 +7,23 @@ Branch `claude/dreamy-knuth-j0wr07`. IDs A-1 to A-18 come from the build and ser
 | Severity | fixed | open | needs Windows verification | needs owner decision | not a defect | Total |
 |---|---|---|---|---|---|---|
 | S1 | 3 | 0 | 0 | 0 | 0 | 3 |
-| S2 | 17 | 0 | 0 | 0 | 0 | 17 |
-| S3 | 18 | 0 | 0 | 0 | 0 | 18 |
-| S4 | 39 | 0 | 2 | 0 | 2 | 43 |
+| S2 | 21 | 0 | 0 | 0 | 0 | 21 |
+| S3 | 18 | 1 | 0 | 0 | 0 | 19 |
+| S4 | 41 | 6 | 2 | 0 | 3 | 52 |
 | no severity (checked candidate) | 1 | 0 | 2 | 0 | 14 | 17 |
-| **Total** | 78 | 0 | 4 | 0 | 16 | 98 |
+| **Total** | 84 | 7 | 4 | 0 | 17 | 112 |
 
-Status notes: "fixed" rows marked "(needs Windows verification)" in the table are fixed and covered by tests where possible, but the real-device behavior is only checked on Windows (see below). No row is open: wave 2 fixed every remaining open item (owner: nothing deferred). The "needs Windows verification" column counts runtime-only candidates that had no code defect to fix.
+Status notes: "fixed" rows marked "(needs Windows verification)" in the table are fixed and covered by tests where possible, but the real-device behavior is only checked on Windows (see below). Seven rows are open (A-105 to A-111): the owner ended the audit on 2026-11-10 before they were fixed, and each row carries the fix that was proposed. Rows A-98 to A-104 (wave 3) pass the gate below but were not independently reviewed: the review of those commits was interrupted and not resumed. The areas the wave-2 review declined to judge (Windows-only code, every call site of the untranslated text path, the download cleanup paths) were not reviewed either. The "needs Windows verification" column counts runtime-only candidates that had no code defect to fix.
 
 ### Release notes callout
 
 The desktop MLS lookup-key migration (A-19, was T3-1) is **not downgrade-safe**. On first crypto use the new build rewrites existing KeyPackage and proposal rows in the local MLS storage (`HashReference` moves from a one-way digest to deterministic AEAD, `GCK\x02`). An older desktop build cannot read the migrated storage. Do not let users roll back to a build from before this change.
 
 Wave 2 adds two more one-way local changes: the plaintext cache table is rebuilt with account/conversation/sender keys (A-24), and MLS groups are moved to account-bound storage keys on first use (A-25). An older build cannot read either. The server gains migrations 0025-0028; 0027 rebuilds the planner tables (data kept, checked on a seeded database). Back up the server database before upgrading.
+
+Wave 3 adds server migrations 0029-0032: 0029 rebuilds `crypto_events` without the sender cascade, 0030 adds the setup generation, 0031 the per-conversation commit sequence, 0032 makes the attachment-by-message index non-unique. The automatic pre-upgrade backups proposed in the wave-2 review were **not** implemented (A-111). Before installing 4.0.51, copy the server database by hand and, on each PC, the GhostChat folder in the Windows account's application-data directory; restoring that copy is the only way back to an older build. The desktop app and the server changed together (new lock-status fields, commit sequencing), so run the same version on both; mixed versions were not tested.
+
+4.0.51 is this branch merged with 4.0.50 from `main` (relay-only calls: no relay probe, no direct fallback). The call lifecycle fixes of this audit were written against the 4.0.49 fallback; after the merge their tests run with an authenticated TURN relay and pass.
 
 ### Owner decisions
 
@@ -33,6 +37,7 @@ Wave 2 adds two more one-way local changes: the plaintext cache table is rebuilt
 - A-7b: tolerate leaves of deleted accounts in encrypted groups and let an owner/admin client remove them. Implemented as a server record per locked group plus a removal commit. The owner's client does it at once; admins follow after a grace period by join order (A-94); the server accepts one removal per leaf and answers a later one with 410, which counts as done. A tolerated leaf may stay or be removed by a commit, never be added (A-87). An unfinished setup of a deleted account is taken over by the owner, or the oldest admin without an owner (A-95).
 - A-69: decode pending encrypted messages before applying membership changes. `max_past_epochs` stays 0.
 - A-62 (T6-10): a failed startup update check shows the "Could not check for updates" warning and boots. A found update stays mandatory.
+- 2026-11-10: the owner ended the audit loop and asked for the update to be prepared. Unfinished wave-3 items stay open as A-105 to A-111; the pending reviews were not completed (see the status notes).
 
 ### Needs Windows verification
 
@@ -56,6 +61,10 @@ Wave 2 adds two more one-way local changes: the plaintext cache table is rebuilt
 - A-56 (T6-4): Open an encrypted chat with about 50 messages and switch to another chat while it decodes. The second timeline never shows messages from the first.
 - A-26 (T3-8): Configure the desktop with a server under a path prefix (for example a reverse proxy at `https://host/chat/`). Send an encrypted attachment in a locked chat and open it on the other PC. The proxy log shows `https://host/chat/v1/...` for upload and download, and the transfer succeeds.
 - A-31 (T3-13): Two Windows PCs, locked chat. Send a multi-chunk encrypted attachment (larger than one chunk) and download it on the other PC: the file matches byte for byte (compare hashes). Then, with a debugging proxy, swap two chunks, truncate the last one, and append bytes: each download fails with an error and leaves no partial file.
+- A-99: Two PCs. B sets Invisible, A calls B, B declines. A's call keeps ringing until A's own timeout, exactly as when B is offline.
+- A-100: Admin C starts encryption setup in a group and deletes her account before finishing. Owner A opens the group and starts the setup again. B, who had joined C's unfinished setup, drops that group and joins from A's Welcome; A and B then exchange encrypted messages and nobody sees a duplicate-Welcome error.
+- A-101: Encrypted group, owner A and admin B on two PCs, both online. A adds a member while B removes another at the same moment. Exactly one change is accepted; the other device shows the refusal, syncs and can repeat its action; both still decrypt each other's next message.
+- Whole build: none of the changes on this branch has run in the Windows app. Before relying on 4.0.51, start it once on a PC with existing data: sign-in is kept, old chats open, an encrypted chat still decrypts, a direct call connects through the relay.
 
 ## Findings
 
@@ -159,20 +168,35 @@ Wave 2 adds two more one-way local changes: the plaintext cache table is rebuilt
 | A-95 | MLS groups / deleted accounts (R2) | S3 | An unfinished encryption setup started by an account later deleted could not be completed. | Admin C starts setup and deletes her account: the group stays locked-incomplete, so membership changes (including the deleted-leaf removal) are refused forever. Fix: the owner, or the oldest admin when there is no owner, takes the lock over through the lock route (others 403); status `lockedByDeletedAccount`; the successor's client completes at once if it already joined that setup's group, otherwise "Continue encryption setup" takes over. Tests `owner_takes_over_an_unfinished_setup_of_a_deleted_account`, main-logic "the owner completes an encrypted setup left unfinished by a deleted account". | fixed (needs Windows verification) | b024a20, 47bfdf2 |
 | A-96 | ui/crypto (R3) | S4 | A row arriving between the early decode and the commit could be lost. | Fix: the pending rows are fetched again and decoded right before each authenticated relay commit (A-92) and again before every later commit (A-88), inside the serialized per-conversation sync. Residual by owner decision (`max_past_epochs` 0): a message encrypted in the old epoch that reaches the server after this device applied the commit cannot be decrypted. Tests: as A-88 and A-92. | fixed | 49819f0, 174a9e5 |
 | A-97 | desktop MLS / ui (R4) | S4 | A staged membership commit the server refused was retried forever. | Fix: `discard_group_membership_update` (clears the pending MLS commit and the outbox row for that operation); the UI drops a definitive refusal (4xx other than 401/429) once with a one-time en+tr error, treats a deleted-leaf 410 as done, and does not stage the same removal again until the roster or deleted list changes. Tests `a_refused_staged_removal_is_dropped_and_the_accepted_one_applies`, main-logic "a definitively refused staged removal is dropped once and not retried". | fixed | 752591e, e8d91c7 |
+| A-98 | Server / crypto events, account deletion | S2 | `crypto_events.sender_id` cascaded from `users`, so deleting an account deleted every commit and Welcome it had sent. | B has not fetched C's commit; C deletes her account; B can never advance and every later message is undecryptable on B. Migration 0029 rebuilds the table without that foreign key (recipient cascade kept). | fixed | d63e117 |
+| A-99 | Calls / invisible mode | S2 | An invisible callee who declined sent `hangup`, and an account whose saved presence had not loaded yet answered calls as visible. | A calls invisible B and B declines: A's call ends at once instead of ringing out as for an offline callee, so A learns B is online. | fixed (needs Windows verification) | 1ed1610, 2e8e77c |
+| A-100 | MLS groups / setup takeover | S2 | Taking over an encryption setup left unfinished by a deleted account completed a group nobody could verify, or created a second group under the same id. | Members who joined the old setup and members who join the new one cannot decrypt each other. The takeover now starts a new setup generation (migration 0030): the server drops the old setup's relay events and deleted-leaf records, every device drops the old group, and the successor runs the ordinary setup. | fixed (needs Windows verification) | dbc24c2, db639a9, 2b6d85b |
+| A-101 | MLS groups / commit ordering | S2 | Membership routes fenced only on the server roster, which the removal of a deleted leaf does not change, so two different commits built on one group state were both accepted. | An admin's automatic removal of a deleted leaf and the owner's add from the same epoch are both relayed; members apply the first and reject the second, whose author is forked. Migration 0031 adds a per-conversation commit sequence; every membership request carries the value it was built on and gets 409 on a mismatch. A refused add or removal is no longer reported as done. | fixed (needs Windows verification) | 49f8e22, 59e5e17, c4e7f96, 3ab1ee3 |
+| A-102 | MLS groups / admin fallback timing | S4 | The grace period before an admin removes a deleted leaf compared the server's `deletedAt` with the device clock. | A clock that is ahead fires the admin together with the owner; a clock that is behind delays the fallback by the skew. The lock status now reports `serverNow` and the wait is measured on the server's clock. | fixed | 7c4ef47, 769a321 |
+| A-103 | Server / encrypted attachments | S4 | `send_message` accepts up to eight `attachment_ids`, but migration 0026 made `attachments.message_id` unique. | A message with two encrypted attachments fails with 500. Migration 0032 drops the uniqueness and keeps the index. | fixed | 6279c70 |
+| A-104 | Server / planner | S4 | Reported: a vote on a poll whose `closes_at` cannot be parsed returns 500. | Not reproduced: the driver reads the NULL comparison as false and the vote is accepted. The query now states that outcome with COALESCE and a test pins it (such a poll stays open). | not a defect | 7e3ce1f |
+| A-105 | ui / refused membership commit | S4 | Every 4xx except 401 and 429 counts as a definitive refusal of a staged membership commit. | A 408, a 425 or an HTML 4xx page from a reverse proxy discards the staged commit and shows an error although a retry would have worked. Proposed fix: treat 408 and 425 as transient and require the app's JSON error shape. | open (owner ended the audit) |  |
+| A-106 | ui / deleted-leaf removal | S4 | Refusals are remembered by roster plus the whole deleted-member list, which keeps committed entries. | After a 410 for one deleted member the same manager does not stage the removal of a second deleted member until a restart or a roster change. Proposed fix: key the refusal by its target and record nothing for 410. | open (owner ended the audit) |  |
+| A-107 | desktop / text cache | S4 | Cache rows written before the cache was bound to a sender answer for any sender in the conversation. | A member reuses the client id of another sender's old cached message and the reader sees the old text under the new sender. Legacy rows and the same conversation only. Proposed fix: stamp a legacy row with its sender on the first verified read. | open (owner ended the audit) |  |
+| A-108 | desktop / past-epoch marker | S4 | The "cannot be decrypted here" marker is written from the unauthenticated header of a server-supplied row and keyed only by the row. | A malicious server can make one row permanently unreadable, which it can already do by corrupting it, but the marker survives a later honest delivery. Proposed hardening: key the marker by a hash of the payload too. | open (owner ended the audit) |  |
+| A-109 | Server / encrypted attachments | S4 | Two kinds of encrypted blobs are never deleted: those uploaded before migration 0026, and uploads no message ever claimed. | Disk use grows with abandoned uploads. Proposed fix: a periodic sweep of unclaimed encrypted uploads made after 0026 and older than a day; blobs from before 0026 must stay because messages the server cannot read may still point to them. | open (owner ended the audit) |  |
+| A-110 | MLS groups / stale-epoch send | S4 | A message encrypted in the old epoch that reaches the server after a device applied the commit is unreadable on that device. | A sends while B's commit is in flight; devices that already applied the commit show "could not be decrypted". Proposed fix: `send_message` carries the commit sequence and the server answers 409 so the client re-encrypts. | open (owner ended the audit) |  |
+| A-111 | Upgrade / downgrade safety | S3 | Server migrations 0025 and later, the desktop's cache rebuild and its account-bound group storage cannot be undone, and no backup is taken before they run. | A user who needs to go back to an older build has no copy of the old data: an older server refuses to start and an older desktop build cannot read the groups. Proposed fix: a `VACUUM INTO` backup before migrating, a one-time copy of the local crypto database, and documentation. Until then back up by hand before upgrading. | open (owner ended the audit) |  |
 
 ## Verified checks
 
-Final gate run on Linux, branch `claude/dreamy-knuth-j0wr07`, after wave 2 (2026-11-09), at 47bfdf2 (this report update changes only docs).
+Final gate run on Linux, branch `claude/dreamy-knuth-j0wr07`, on the release commit 409f401 (4.0.51: wave 3 plus the merge of 4.0.50 from `main`), 2026-11-10. This report update changes only docs.
 
 | Check | Result |
 | --- | --- |
 | `cargo fmt --all -- --check` | PASS |
-| `cargo test --locked -p ghostchat-server` | PASS (36 passed, 0 failed, 1 ignored) |
-| `cargo test --locked -p ghostchat-desktop` | PASS (19 passed, 0 failed) |
-| `for f in scripts/test-*.cjs; do node "$f"; done` | PASS (ghost-share, main-logic (27 tests), media-relay, voice-gate, watch-party all exit 0) |
+| `cargo test --locked -p ghostchat-server` | PASS (45 passed, 0 failed, 1 ignored) |
+| `cargo test --locked -p ghostchat-desktop` | PASS (21 passed, 0 failed) |
+| `for f in scripts/test-*.cjs; do node "$f"; done` | PASS (ghost-share, main-logic (37 tests), media-relay, voice-gate, watch-party all exit 0) |
 | `for f in crates/desktop/ui/*.js; do node --check "$f"; done` | PASS (7 files) |
 | `git diff --check` | PASS |
 | `cargo check --locked -p ghostchat-desktop --target x86_64-pc-windows-gnu` | PASS (Finished, no errors) |
+| `cargo check --locked -p ghostchat-server --target x86_64-pc-windows-gnu` | PASS (Finished, no errors) |
 
 Not run on Linux: anything under `cfg(windows)` (Credential Manager, attachment crypto) was only compiled with `cargo check --locked -p ghostchat-desktop --target x86_64-pc-windows-gnu`; runtime behavior is listed under "Needs Windows verification".
 
