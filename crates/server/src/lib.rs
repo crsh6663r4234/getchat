@@ -9356,6 +9356,153 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_encrypted_message_can_carry_several_encrypted_attachments() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let direct = app.direct(&alice, &bob).await;
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete) VALUES(?,?,1)",
+        )
+        .bind(&direct)
+        .bind(&alice.id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        let upload = || {
+            let attachment_id = Uuid::new_v4().to_string();
+            let request = app
+                .request(
+                    Method::POST,
+                    &format!(
+                        "/v1/conversations/{direct}/encrypted-attachments?attachment_id={attachment_id}&plain_size=0&chunk_size={ENCRYPTED_ATTACHMENT_CHUNK_BYTES}&chunk_count=1"
+                    ),
+                    &alice,
+                )
+                .body(vec![7u8; 16])
+                .send();
+            async move {
+                assert_eq!(request.await.unwrap().status(), StatusCode::OK);
+                attachment_id
+            }
+        };
+        let send = |attachment_ids: Vec<String>| {
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{direct}/messages"),
+                &alice,
+            )
+            .json(&serde_json::json!({
+                "client_message_id": Uuid::new_v4().to_string(),
+                "content": "e2e1:AAAA",
+                "attachment_ids": attachment_ids,
+            }))
+            .send()
+        };
+        let blob = |id: &str| app.state.attachment_dir.join(format!("{id}.blob"));
+        // The route allows up to eight attachments on one message (the
+        // upload rate limit is ten a minute, so nine are uploaded here).
+        let mut attachments = Vec::new();
+        for _ in 0..8 {
+            attachments.push(upload().await);
+        }
+        let other = upload().await;
+        // A ninth is over the limit, and nothing of that request is linked.
+        let mut too_many = attachments.clone();
+        too_many.push(other.clone());
+        assert_eq!(
+            send(too_many).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+        let linked = || async {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM attachments WHERE message_id IS NOT NULL",
+            )
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap()
+        };
+        assert_eq!(linked().await, 0);
+        let response = send(attachments.clone()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let message: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(linked().await, 8);
+        // Deleting the message deletes all of its blobs and only those.
+        let status = app
+            .request(
+                Method::DELETE,
+                &format!("/v1/messages/{}", message["id"].as_str().unwrap()),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        for attachment in &attachments {
+            assert!(!blob(attachment).exists());
+        }
+        assert!(blob(&other).exists());
+    }
+
+    #[tokio::test]
+    async fn migration_0032_keeps_attachment_links_and_allows_several_per_message() {
+        let dir = std::env::temp_dir().join(format!("ghostchat-migrate-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("db.sqlite");
+        let old = database_migrated_to(&path, 31).await;
+        for user in ["u-a", "u-b"] {
+            seed_user(&old, user).await;
+        }
+        seed_group(&old, "g-1", &["u-a", "u-b"]).await;
+        for (id, message) in [("a-1", Some("m-1")), ("a-2", None), ("a-3", Some("m-2"))] {
+            sqlx::query(
+                "INSERT INTO attachments(id,conversation_id,uploaded_by,filename,content_type,size_bytes,file_data,stored_on_disk,encrypted,message_id,created_at) VALUES(?,'g-1','u-a','f','application/octet-stream',3,x'010203',1,1,?,'2026-01-02T03:04:05.000Z')",
+            )
+            .bind(id)
+            .bind(message)
+            .execute(&old)
+            .await
+            .unwrap();
+        }
+        type Row = (
+            String,
+            String,
+            String,
+            i64,
+            Vec<u8>,
+            i64,
+            i64,
+            Option<String>,
+            String,
+        );
+        let dump = "SELECT id,conversation_id,uploaded_by,size_bytes,file_data,stored_on_disk,encrypted,message_id,created_at FROM attachments ORDER BY id";
+        let before: Vec<Row> = sqlx::query_as(dump).fetch_all(&old).await.unwrap();
+        assert_eq!(before.len(), 3);
+        old.close().await;
+
+        let db = open_database(&path.to_string_lossy()).await.unwrap();
+        let after: Vec<Row> = sqlx::query_as(dump).fetch_all(&db).await.unwrap();
+        assert_eq!(after, before);
+        // A second attachment can now be linked to the same message, and the
+        // lookup by message still has its index.
+        sqlx::query("UPDATE attachments SET message_id='m-1' WHERE id='a-2'")
+            .execute(&db)
+            .await
+            .unwrap();
+        let (unique, partial): (i64, i64) = sqlx::query_as(
+            "SELECT \"unique\",partial FROM pragma_index_list('attachments') WHERE name='attachments_by_message'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!((unique, partial), (0, 1));
+        db.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
     async fn group_members_report_their_join_order() {
         use reqwest::Method;
         let app = TestApp::new().await;
