@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 
 const source = fs.readFileSync(path.join(__dirname, '../crates/desktop/ui/main.js'), 'utf8');
 
-function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {}, selectAll = null } = {}) {
+function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {}, selectAll = null, dateNow = null } = {}) {
   const elements = new Map();
   const timers = [];
   const sockets = [];
@@ -127,7 +127,7 @@ function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {}, sel
     setTimeout: (fn, ms = 0) => { const timer = { fn, ms, done: false }; timers.push(timer); return timer; },
     clearTimeout: timer => { if (timer) timer.done = true; },
     setInterval: () => 0, clearInterval: () => {}, requestAnimationFrame: () => 0, cancelAnimationFrame: () => {},
-    queueMicrotask, console: { log() {}, warn() {}, error() {}, info() {} }, Promise, Date, Math, JSON, Number, String, Array, Object, Map, Set, Error,
+    queueMicrotask, console: { log() {}, warn() {}, error() {}, info() {} }, Promise, Date: dateNow ? class SkewedDate extends Date { static now() { return dateNow(); } } : Date, Math, JSON, Number, String, Array, Object, Map, Set, Error,
   };
   sandbox.IntersectionObserver = window.IntersectionObserver;
   sandbox.globalThis = sandbox;
@@ -468,13 +468,14 @@ test('the group owner removes a deleted account leaf and others tolerate it', as
   await app.flush(() => app.invokes.some(item => item.command === 'crypto_finalize_group_membership_update'));
 });
 
-async function deletedLeafHarness({ role = 'owner', deletedAt = '2000-01-01T00:00:00.000Z', removeStatus = 204, removeError = 'refused' } = {}) {
+async function deletedLeafHarness({ role = 'owner', deletedAt = '2000-01-01T00:00:00.000Z', removeStatus = 204, removeError = 'refused', serverNow = undefined, dateNow = null } = {}) {
   const base = 'https://a.example';
   const group = { id: 'g1', kind: 'group', display_name: 'Group' };
   let prepared = 0;
   const app = harness({
     storage: { 'ghostchat.server': base },
     credentials: { [await serverKey(base)]: 'token-A' },
+    dateNow,
     hooks: {
       crypto_has_direct_group: () => true,
       crypto_group_fingerprint: () => 'fp-group',
@@ -489,7 +490,7 @@ async function deletedLeafHarness({ role = 'owner', deletedAt = '2000-01-01T00:0
     fetchHandler: (url, options) => {
       if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
       if (url.endsWith('/v1/conversations')) return { body: [group] };
-      if (url.endsWith('/conversations/g1/crypto-lock')) return { body: { locked: true, setupComplete: true, lockedBy: 'olga', deletedMemberIds: ['carol'], deletedMembers: [{ userId: 'carol', deletedAt, removalCommittedAt: null }] } };
+      if (url.endsWith('/conversations/g1/crypto-lock')) return { body: { locked: true, setupComplete: true, lockedBy: 'olga', deletedMemberIds: ['carol'], deletedMembers: [{ userId: 'carol', deletedAt, removalCommittedAt: null }], serverNow } };
       if (url.endsWith('/conversations/g1/members')) {
         return { body: role === 'owner'
           ? [{ id: 'me', role: 'owner', joined_seq: 1 }, { id: 'bob', role: 'member', joined_seq: 2 }]
@@ -719,6 +720,22 @@ test('a refused encrypted add is not reported as done', async () => {
   assert.equal(app.discards().length, 1, 'the refused commit is dropped');
   assert.notEqual(app.$('#toast').textContent, 'Friends added to the group.', 'nobody was added');
   assert.ok(app.$('#groupManageStatus').textContent.includes('refused'), app.$('#groupManageStatus').textContent);
+});
+
+test('an admin measures the owner\'s grace period on the server\'s clock, not its own', async () => {
+  const minute = 60 * 1000;
+  const serverNow = '2026-03-01T12:00:00.000Z';
+  const server = Date.parse(serverNow);
+  // This device's clock is a day ahead. The account was deleted ten seconds
+  // ago on the server's clock: the owner's turn is not over.
+  const ahead = await deletedLeafHarness({ role: 'admin', serverNow, deletedAt: new Date(server - 10 * 1000).toISOString(), dateNow: () => server + 24 * 60 * minute });
+  assert.equal(ahead.removals().length, 0, 'a clock that runs ahead does not bring the fallback forward');
+  // Second admin in join order: two grace periods, less the ten seconds.
+  assert.ok(ahead.timers.some(timer => !timer.done && timer.ms === 4 * minute - 10 * 1000), 'it checks again when the server-side wait is over');
+  // The clock is a day behind and the leaf has waited an hour: remove now.
+  const behind = await deletedLeafHarness({ role: 'admin', serverNow, deletedAt: new Date(server - 60 * minute).toISOString(), dateNow: () => server - 24 * 60 * minute });
+  await behind.flush(() => behind.removals().length > 0);
+  assert.ok(behind.removals()[0].url.endsWith('/crypto-membership/remove/carol'), 'a clock that runs behind does not delay it');
 });
 
 async function deletedLockerHarness(role) {

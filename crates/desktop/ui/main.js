@@ -1831,8 +1831,14 @@
       const pendingSince = (Array.isArray(lock?.deletedMembers) ? lock.deletedMembers : [])
         .filter(member => !member.removalCommittedAt).map(member => Date.parse(member.deletedAt)).filter(Number.isFinite);
       if (!pendingSince.length) return;
-      const due = Math.min(...pendingSince) + rank * DELETED_LEAF_ADMIN_GRACE_MS;
-      if (Date.now() < due) { scheduleDeletedLeafCheck(conversationId, due - Date.now()); return; }
+      // How long the leaf has waited is the difference of two server
+      // timestamps (deletedAt and the server's own now), so a wrong clock on
+      // this device neither brings its turn forward nor delays it. Only a
+      // server without serverNow is compared with the local clock.
+      const serverNow = Date.parse(lock?.serverNow);
+      const waited = (Number.isFinite(serverNow) ? serverNow : Date.now()) - Math.min(...pendingSince);
+      const remaining = rank * DELETED_LEAF_ADMIN_GRACE_MS - waited;
+      if (remaining > 0) { scheduleDeletedLeafCheck(conversationId, remaining); return; }
     }
     const expectedMemberIds = members.map(member => member.id).sort();
     // After a refusal (or a 410) the same removal is not staged again until
