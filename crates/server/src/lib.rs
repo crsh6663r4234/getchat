@@ -89,11 +89,22 @@ struct ServerEvent {
 struct ApiError {
     status: StatusCode,
     message: &'static str,
+    /// A stable identifier for refusals a client must tell apart from other
+    /// errors with the same status (sent as `code` next to `error`).
+    code: Option<&'static str>,
 }
 
 impl ApiError {
     fn new(status: StatusCode, message: &'static str) -> Self {
-        Self { status, message }
+        Self {
+            status,
+            message,
+            code: None,
+        }
+    }
+    fn with_code(mut self, code: &'static str) -> Self {
+        self.code = Some(code);
+        self
     }
     fn bad(message: &'static str) -> Self {
         Self::new(StatusCode::BAD_REQUEST, message)
@@ -138,11 +149,11 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (
-            self.status,
-            Json(serde_json::json!({"error": self.message})),
-        )
-            .into_response()
+        let mut body = serde_json::json!({"error": self.message});
+        if let Some(code) = self.code {
+            body["code"] = code.into();
+        }
+        (self.status, Json(body)).into_response()
     }
 }
 
@@ -2638,9 +2649,69 @@ struct EncryptedGroupMembershipUpdate {
     /// Not part of the idempotency hash (the route target already is).
     #[serde(default, skip_serializing)]
     member_ids: Vec<String>,
+    /// The conversation's commit sequence this commit was built on. Not part
+    /// of the idempotency hash, so a retry of an accepted operation is
+    /// recognised whatever it carries here.
+    #[serde(default, skip_serializing)]
+    expected_commit_seq: Option<i64>,
     commit_payload: String,
     #[serde(default)]
     welcome_payload: String,
+}
+
+/// The server cannot read an MLS commit, so it cannot see which group state
+/// (epoch) a commit was built on. `conversation_crypto_locks.commit_seq`
+/// counts the commits accepted for a conversation; a membership commit must
+/// name the value it was built on. Two different commits built on the same
+/// state can therefore never both be accepted, which would fork the group.
+fn stale_crypto_commit(missing: bool) -> ApiError {
+    ApiError::conflict(if missing {
+        "This encrypted membership change does not say which group state it was built on. Update GhostChat and try again."
+    } else {
+        "The encrypted group changed while this update was being prepared. Sync the group and try again."
+    })
+    .with_code("stale_commit_seq")
+}
+
+async fn require_crypto_commit_seq(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    conversation_id: &str,
+    expected: Option<i64>,
+) -> Result<i64, ApiError> {
+    let expected = expected.ok_or_else(|| stale_crypto_commit(true))?;
+    let current = sqlx::query_scalar::<_, i64>(
+        "SELECT commit_seq FROM conversation_crypto_locks WHERE conversation_id=?",
+    )
+    .bind(conversation_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|_| ApiError::internal())?;
+    if current != Some(expected) {
+        return Err(stale_crypto_commit(false));
+    }
+    Ok(expected)
+}
+
+/// Counts an accepted commit, in the transaction that relays it. The update
+/// is conditional, so of two requests racing from the same value only one
+/// can be counted.
+async fn advance_crypto_commit_seq(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    conversation_id: &str,
+    expected: i64,
+) -> Result<(), ApiError> {
+    let advanced = sqlx::query(
+        "UPDATE conversation_crypto_locks SET commit_seq=commit_seq+1 WHERE conversation_id=? AND commit_seq=?",
+    )
+    .bind(conversation_id)
+    .bind(expected)
+    .execute(&mut **tx)
+    .await
+    .map_err(|_| ApiError::internal())?;
+    if advanced.rows_affected() != 1 {
+        return Err(stale_crypto_commit(false));
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -2796,6 +2867,12 @@ async fn add_group_members(
             ));
         }
     }
+    let built_on_commit_seq = match crypto_update.as_ref() {
+        Some(update) => {
+            Some(require_crypto_commit_seq(&mut tx, &id, update.expected_commit_seq).await?)
+        }
+        None => None,
+    };
 
     let current_member_ids = sqlx::query_scalar::<_, String>(
         "SELECT user_id FROM conversation_members WHERE conversation_id=? ORDER BY user_id",
@@ -2944,6 +3021,9 @@ async fn add_group_members(
         .execute(&mut *tx)
         .await
         .map_err(|_| ApiError::internal())?;
+        if let Some(built_on) = built_on_commit_seq {
+            advance_crypto_commit_seq(&mut tx, &id, built_on).await?;
+        }
     }
     tx.commit().await.map_err(|_| ApiError::internal())?;
     for event in &crypto_events {
@@ -3347,6 +3427,8 @@ async fn commit_encrypted_group_leave(
             "Finish encrypted group setup before changing its members.",
         ));
     }
+    let built_on_commit_seq =
+        require_crypto_commit_seq(&mut tx, &id, update.expected_commit_seq).await?;
     let current_member_ids = sqlx::query_scalar::<_, String>(
         "SELECT user_id FROM conversation_members WHERE conversation_id=? ORDER BY user_id",
     )
@@ -3431,6 +3513,7 @@ async fn commit_encrypted_group_leave(
     .await
     .map_err(|_| ApiError::internal())?;
     media_revocation::enqueue(&mut tx, &id, &target_id).await?;
+    advance_crypto_commit_seq(&mut tx, &id, built_on_commit_seq).await?;
     tx.commit().await.map_err(|_| ApiError::internal())?;
 
     if let Err(error) = remove_livekit_participant(&state, &id, &target_id).await {
@@ -3610,6 +3693,8 @@ async fn remove_encrypted_group_member(
             "Finish encrypted group setup before changing its members.",
         ));
     }
+    let built_on_commit_seq =
+        require_crypto_commit_seq(&mut tx, &id, update.expected_commit_seq).await?;
     let current_member_ids = sqlx::query_scalar::<_, String>(
         "SELECT user_id FROM conversation_members WHERE conversation_id=? ORDER BY user_id",
     )
@@ -3686,6 +3771,7 @@ async fn remove_encrypted_group_member(
     if !deleted_target {
         media_revocation::enqueue(&mut tx, &id, &target_id).await?;
     }
+    advance_crypto_commit_seq(&mut tx, &id, built_on_commit_seq).await?;
     tx.commit().await.map_err(|_| ApiError::internal())?;
 
     if !deleted_target {
@@ -3917,6 +4003,9 @@ struct GroupCryptoLockStatus {
     /// Counts takeovers of an unfinished setup. A takeover is a reset, so a
     /// device holding the group of an older generation must drop it.
     setup_generation: i64,
+    /// Counts the accepted membership commits (and setup takeovers). A
+    /// membership commit names the value it was built on.
+    commit_seq: i64,
 }
 
 #[derive(Serialize, FromRow)]
@@ -3945,8 +4034,8 @@ async fn group_crypto_lock_status(
     db: &SqlitePool,
     conversation_id: &str,
 ) -> Result<GroupCryptoLockStatus, ApiError> {
-    let lock = sqlx::query_as::<_, (String, i64, bool, i64)>(
-        "SELECT l.locked_by,l.setup_complete,NOT EXISTS(SELECT 1 FROM users u WHERE u.id=l.locked_by),l.setup_generation FROM conversation_crypto_locks l WHERE l.conversation_id=?",
+    let lock = sqlx::query_as::<_, (String, i64, bool, i64, i64)>(
+        "SELECT l.locked_by,l.setup_complete,NOT EXISTS(SELECT 1 FROM users u WHERE u.id=l.locked_by),l.setup_generation,l.commit_seq FROM conversation_crypto_locks l WHERE l.conversation_id=?",
     )
     .bind(conversation_id)
     .fetch_optional(db)
@@ -3962,8 +4051,9 @@ async fn group_crypto_lock_status(
         deleted_members: deleted_crypto_members(db, conversation_id).await?,
         locked_by_deleted_account: lock
             .as_ref()
-            .is_some_and(|(_, complete, deleted, _)| *complete == 0 && *deleted),
-        setup_generation: lock.as_ref().map_or(0, |(.., generation)| *generation),
+            .is_some_and(|(_, complete, deleted, ..)| *complete == 0 && *deleted),
+        setup_generation: lock.as_ref().map_or(0, |(.., generation, _)| *generation),
+        commit_seq: lock.as_ref().map_or(0, |(.., commit_seq)| *commit_seq),
     })
 }
 
@@ -4074,8 +4164,10 @@ async fn lock_group_crypto_roster(
             deleted_member_ids: Vec::new(),
             deleted_members: Vec::new(),
             locked_by_deleted_account: false,
-            // Only a group setup can be taken over.
+            // Only a group setup can be taken over, and a direct
+            // conversation has no membership commits.
             setup_generation: 0,
+            commit_seq: 0,
         }));
     }
     let actor_role = sqlx::query_scalar::<_, String>(
@@ -4135,9 +4227,11 @@ async fn lock_group_crypto_roster(
                 // know which members received the old Welcome. A new setup
                 // generation starts, and the old setup's relay events and
                 // deleted-leaf records go with it, so no device can still
-                // join the old group or tolerate its leaves.
+                // join the old group or tolerate its leaves. The commit
+                // sequence moves on too, so nothing built on the old group
+                // is accepted for the new one.
                 sqlx::query(
-                    "UPDATE conversation_crypto_locks SET locked_by=?,setup_generation=setup_generation+1 WHERE conversation_id=? AND locked_by=? AND setup_complete=0",
+                    "UPDATE conversation_crypto_locks SET locked_by=?,setup_generation=setup_generation+1,commit_seq=commit_seq+1 WHERE conversation_id=? AND locked_by=? AND setup_complete=0",
                 )
                 .bind(&user.id)
                 .bind(&conversation_id)
@@ -5309,6 +5403,7 @@ struct CryptoEventListRow {
     #[sqlx(flatten)]
     event: CryptoEventRow,
     setup_generation: i64,
+    commit_seq: i64,
 }
 
 #[derive(Deserialize)]
@@ -5342,8 +5437,11 @@ async fn list_crypto_events(
     // The generation is read in the same statement as the events, so every
     // listed event belongs to the setup generation it is listed with (a
     // takeover deletes the older setup's events in its own transaction).
+    // Likewise commit_seq: every commit counted in it was relayed before
+    // this listing, so a member that has applied the listed events (to the
+    // end of the list) has applied at least that many commits.
     let events = sqlx::query_as::<_, CryptoEventListRow>(
-        "SELECT sequence,id,conversation_id,sender_id,recipient_id,payload,created_at,COALESCE((SELECT l.setup_generation FROM conversation_crypto_locks l WHERE l.conversation_id=crypto_events.conversation_id),0) AS setup_generation FROM crypto_events WHERE conversation_id=? AND sequence>? AND (recipient_id IS NULL OR recipient_id=?) ORDER BY sequence ASC LIMIT ?",
+        "SELECT sequence,id,conversation_id,sender_id,recipient_id,payload,created_at,COALESCE((SELECT l.setup_generation FROM conversation_crypto_locks l WHERE l.conversation_id=crypto_events.conversation_id),0) AS setup_generation,COALESCE((SELECT l.commit_seq FROM conversation_crypto_locks l WHERE l.conversation_id=crypto_events.conversation_id),0) AS commit_seq FROM crypto_events WHERE conversation_id=? AND sequence>? AND (recipient_id IS NULL OR recipient_id=?) ORDER BY sequence ASC LIMIT ?",
     )
     .bind(&conversation_id)
     .bind(after)
@@ -7586,6 +7684,7 @@ mod tests {
             .json(&serde_json::json!({
                 "operation_id": operation,
                 "expected_member_ids": remaining,
+                "expected_commit_seq": 0,
                 "commit_payload": "AAAA",
                 "welcome_payload": "",
             }))
@@ -7860,6 +7959,7 @@ mod tests {
             .json(&serde_json::json!({
                 "operation_id": operation,
                 "expected_member_ids": roster,
+                "expected_commit_seq": 0,
                 "member_ids": [declared],
                 "commit_payload": "AAAA",
                 "welcome_payload": "",
@@ -8783,6 +8883,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(started["setupGeneration"], 0);
+        assert_eq!(started["commitSeq"], 0);
         assert_eq!(
             welcome(&carol, &bob, "welcome-0").await.unwrap().status(),
             StatusCode::OK
@@ -8824,6 +8925,8 @@ mod tests {
         assert_eq!(taken["lockedBy"], alice.id.as_str());
         assert_eq!(taken["setupComplete"], false);
         assert_eq!(taken["setupGeneration"], 1);
+        // Nothing built on the old setup's group may be accepted any more.
+        assert_eq!(taken["commitSeq"], 1);
         assert_eq!(taken["deletedMemberIds"], serde_json::json!([]));
         let listed: serde_json::Value = events(&bob).await.unwrap().json().await.unwrap();
         assert_eq!(
@@ -8839,6 +8942,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resumed["setupGeneration"], 1);
+        assert_eq!(resumed["commitSeq"], 1);
         assert_eq!(
             welcome(&alice, &bob, "welcome-1").await.unwrap().status(),
             StatusCode::OK
@@ -8889,6 +8993,284 @@ mod tests {
                     "u-gone".into(),
                     0,
                     "2026-02-02T03:04:05.000Z".into(),
+                    0
+                ),
+            ]
+        );
+        db.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn two_commits_built_on_one_group_state_are_not_both_accepted() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let dave = app.user("dave").await;
+        let eve = app.user("eve").await;
+        app.befriend(&alice, &eve).await;
+        let group = app.group(&alice, &[&bob, &carol, &dave]).await;
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete) VALUES(?,?,1)",
+        )
+        .bind(&group)
+        .bind(&alice.id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE conversation_members SET role='admin' WHERE conversation_id=? AND user_id=?",
+        )
+        .bind(&group)
+        .bind(&bob.id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        let status = app
+            .request(Method::DELETE, "/v1/me/account", &carol)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let sorted = |users: &[&TestUser]| {
+            let mut ids = users.iter().map(|user| user.id.clone()).collect::<Vec<_>>();
+            ids.sort();
+            ids
+        };
+        let commit_seq = |viewer: &TestUser| {
+            let request = app.request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/crypto-lock"),
+                viewer,
+            );
+            async move {
+                let lock: serde_json::Value = request.send().await.unwrap().json().await.unwrap();
+                lock["commitSeq"].as_i64()
+            }
+        };
+        let update = |operation: &str, roster: &[String], seq: Option<i64>| {
+            let mut body = serde_json::json!({
+                "operation_id": operation,
+                "expected_member_ids": roster,
+                "commit_payload": "AAAA",
+                "welcome_payload": "",
+            });
+            if let Some(seq) = seq {
+                body["expected_commit_seq"] = seq.into();
+            }
+            body
+        };
+        let remove = |actor: &TestUser, target: &TestUser, body: serde_json::Value| {
+            app.request(
+                Method::POST,
+                &format!(
+                    "/v1/conversations/{group}/crypto-membership/remove/{}",
+                    target.id
+                ),
+                actor,
+            )
+            .json(&body)
+            .send()
+        };
+        let add = |actor: &TestUser, target: &TestUser, mut body: serde_json::Value| {
+            body["welcome_payload"] = "AAAA".into();
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/members"),
+                actor,
+            )
+            .json(&serde_json::json!({"member_ids": [target.id], "crypto_update": body}))
+            .send()
+        };
+        let stale = |response: reqwest::Response| async move {
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(body["code"], "stale_commit_seq", "{body}");
+        };
+        assert_eq!(commit_seq(&alice).await, Some(0));
+
+        // Admin Bob removes the deleted account's leaf and, from the same
+        // group state, owner Alice adds Eve. Members can apply only one of
+        // the two commits, so the server takes only the first.
+        let roster = sorted(&[&alice, &bob, &dave]);
+        let bob_operation = Uuid::new_v4().to_string();
+        let status = remove(&bob, &carol, update(&bob_operation, &roster, Some(0)))
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(commit_seq(&alice).await, Some(1));
+        let add_operation = Uuid::new_v4().to_string();
+        stale(
+            add(&alice, &eve, update(&add_operation, &roster, Some(0)))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(!is_member(&app.state.db, &group, &eve.id).await.unwrap());
+        let relayed = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM crypto_events WHERE conversation_id=? AND sender_id=?",
+        )
+        .bind(&group)
+        .bind(&alice.id)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+        assert_eq!(relayed, 0, "the refused commit is not relayed");
+        assert_eq!(commit_seq(&alice).await, Some(1));
+        // A retry of the commit the server already took still succeeds.
+        let status = remove(&bob, &carol, update(&bob_operation, &roster, Some(0)))
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(commit_seq(&alice).await, Some(1));
+        // A commit that does not say what it was built on is refused too.
+        stale(
+            add(
+                &alice,
+                &eve,
+                update(&Uuid::new_v4().to_string(), &roster, None),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+
+        // Built on the current state, each kind of commit is taken once.
+        let status = add(&alice, &eve, update(&add_operation, &roster, Some(1)))
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(commit_seq(&alice).await, Some(2));
+        let roster = sorted(&[&alice, &bob, &dave, &eve]);
+        stale(
+            remove(
+                &alice,
+                &dave,
+                update(&Uuid::new_v4().to_string(), &roster, Some(1)),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        let status = remove(
+            &alice,
+            &dave,
+            update(&Uuid::new_v4().to_string(), &roster, Some(2)),
+        )
+        .await
+        .unwrap()
+        .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(commit_seq(&alice).await, Some(3));
+
+        // A leave commit is fenced the same way.
+        let roster = sorted(&[&alice, &bob, &eve]);
+        let leave_operation = Uuid::new_v4().to_string();
+        let status = app
+            .request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/crypto-membership/leave"),
+                &eve,
+            )
+            .json(&serde_json::json!({
+                "operation_id": leave_operation,
+                "expected_member_ids": roster,
+                "proposal_payload": "AAAA",
+            }))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let leave_commit = |seq: i64| {
+            app.request(
+                Method::POST,
+                &format!(
+                    "/v1/conversations/{group}/crypto-membership/leave/commit/{}",
+                    eve.id
+                ),
+                &alice,
+            )
+            .json(&update(&leave_operation, &roster, Some(seq)))
+            .send()
+        };
+        stale(leave_commit(2).await.unwrap()).await;
+        assert!(is_member(&app.state.db, &group, &eve.id).await.unwrap());
+        assert_eq!(
+            leave_commit(3).await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(commit_seq(&alice).await, Some(4));
+        // Listed relay events say which commit the conversation is at, read
+        // in the same statement as the events.
+        let listed: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/crypto-events"),
+                &bob,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(!listed.as_array().unwrap().is_empty());
+        assert!(listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event["commit_seq"] == 4));
+    }
+
+    #[tokio::test]
+    async fn migration_0031_keeps_crypto_locks_at_commit_zero() {
+        let dir = std::env::temp_dir().join(format!("ghostchat-migrate-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("db.sqlite");
+        let old = database_migrated_to(&path, 30).await;
+        for user in ["u-a", "u-b"] {
+            seed_user(&old, user).await;
+        }
+        seed_group(&old, "g-1", &["u-a", "u-b"]).await;
+        seed_group(&old, "g-2", &["u-a", "u-b"]).await;
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete,locked_at,setup_generation) VALUES('g-1','u-a',1,'2026-01-02T03:04:05.000Z',0),('g-2','u-b',0,'2026-02-02T03:04:05.000Z',2)",
+        )
+        .execute(&old)
+        .await
+        .unwrap();
+        old.close().await;
+        let db = open_database(&path.to_string_lossy()).await.unwrap();
+        let rows: Vec<(String, String, i64, String, i64, i64)> = sqlx::query_as(
+            "SELECT conversation_id,locked_by,setup_complete,locked_at,setup_generation,commit_seq FROM conversation_crypto_locks ORDER BY conversation_id",
+        )
+        .fetch_all(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            [
+                (
+                    "g-1".into(),
+                    "u-a".into(),
+                    1,
+                    "2026-01-02T03:04:05.000Z".into(),
+                    0,
+                    0
+                ),
+                (
+                    "g-2".into(),
+                    "u-b".into(),
+                    0,
+                    "2026-02-02T03:04:05.000Z".into(),
+                    2,
                     0
                 ),
             ]
