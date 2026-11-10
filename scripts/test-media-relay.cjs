@@ -174,6 +174,18 @@ async function run() {
       fixture.client.hangup();
     }
   }
+  // Declining tells the caller we are here; an offline callee says nothing
+  // and the caller rings to its own timeout. Invisible must look the same.
+  for (const invisible of [false, true]) {
+    const fixture = directFixture(plain, { invisible });
+    await fixture.client.handleSignal(offerSignal);
+    const before = fixture.signals.length;
+    fixture.client.decline();
+    assert.equal(fixture.client.getState().status, 'idle', 'a declined call stops ringing here');
+    const replies = fixture.signals.slice(before).map(signal => signal.kind);
+    if (invisible) assert.deepEqual(replies, [], 'an invisible decline sends the caller nothing');
+    else assert.deepEqual(replies, ['hangup'], 'a visible decline tells the caller once');
+  }
   // Invisible mode still receives the call and can answer it.
   {
     const fixture = directFixture(plain, { invisible: true });

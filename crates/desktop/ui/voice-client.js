@@ -1184,7 +1184,10 @@
 
     function hangup() { closeCall({ notifyPeer: true }); }
     function decline() {
-      if (incoming) {
+      // A decline tells the caller this device is online. In invisible
+      // mode the caller must see what an offline callee gives: nothing,
+      // until its own ring timeout.
+      if (incoming && !api.isInvisible?.()) {
         try { send(incoming.conversationId, incoming.peerId, "hangup", null); } catch {}
       }
       incoming = null;
