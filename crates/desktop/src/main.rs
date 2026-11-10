@@ -361,6 +361,16 @@ async fn crypto_forget_group_state(
 }
 
 #[tauri::command]
+async fn crypto_apply_setup_generation(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    generation: i64,
+) -> Result<bool, String> {
+    crypto::apply_setup_generation(&state.crypto_db, &user_id, &conversation_id, generation).await
+}
+
+#[tauri::command]
 async fn crypto_finalize_group_membership_update(
     state: State<'_, DesktopState>,
     user_id: String,
@@ -856,6 +866,7 @@ fn main() {
             crypto_prepare_group_leave_proposal,
             crypto_prepare_group_leave_commit,
             crypto_forget_group_state,
+            crypto_apply_setup_generation,
             crypto_finalize_group_membership_update,
             crypto_get_pending_bootstrap,
             crypto_clear_pending_bootstrap,

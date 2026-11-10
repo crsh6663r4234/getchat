@@ -257,6 +257,20 @@ async fn prepare_crypto_storage(db: &SqlitePool) -> Result<(), String> {
     .await
     .map_err(|_| "GhostChat could not prepare its pending encrypted setup storage.".to_string())?;
 
+    // The server's setup generation this account's local group state of a
+    // conversation belongs to (no row: generation 0).
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS ghostchat_crypto_setup_generations (\
+            user_id TEXT NOT NULL,\
+            conversation_id TEXT NOT NULL,\
+            generation INTEGER NOT NULL CHECK(generation >= 0),\
+            PRIMARY KEY(user_id,conversation_id)\
+        )",
+    )
+    .execute(db)
+    .await
+    .map_err(|_| "GhostChat could not prepare its encrypted setup storage.".to_string())?;
+
     let mut connection = db
         .acquire()
         .await
@@ -2132,6 +2146,83 @@ pub async fn forget_group_state(
         .commit()
         .await
         .map_err(|_| "GhostChat could not save local group cleanup.".to_string())
+}
+
+/// Brings this account's local state of a group conversation to the server's
+/// setup generation. A takeover of an unfinished setup starts a new
+/// generation and is always a reset, so when `generation` is newer than the
+/// stored one the local MLS group, the staged membership update and the
+/// pending bootstrap of the older setup are dropped, in one transaction with
+/// the new generation. Returns whether that happened. An equal or older
+/// value (a stale read) changes nothing, so a group joined in the current
+/// generation is never dropped. The decrypted text cache is kept.
+pub async fn apply_setup_generation(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    generation: i64,
+) -> Result<bool, String> {
+    let _operation = CRYPTO_OPERATION_LOCK.lock().await;
+    let user_id = normalized_uuid(user_id, "account")?;
+    let conversation_id = normalized_uuid(conversation_id, "conversation")?;
+    if generation < 0 {
+        return Err("The encrypted setup generation is invalid.".into());
+    }
+    let error = || "GhostChat could not reset the superseded encrypted setup.".to_string();
+    prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
+    let mut transaction = db.begin().await.map_err(|_| error())?;
+    let stored = sqlx::query_scalar::<_, i64>(
+        "SELECT generation FROM ghostchat_crypto_setup_generations WHERE user_id=? AND conversation_id=?",
+    )
+    .bind(&user_id)
+    .bind(&conversation_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| error())?
+    .unwrap_or(0);
+    if generation <= stored {
+        return Ok(false);
+    }
+    let group_id = group_id_for_conversation(&conversation_id);
+    {
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        let provider = DesktopMlsProvider {
+            crypto: RustCrypto::default(),
+            storage,
+        };
+        if let Some(mut group) =
+            MlsGroup::load(provider.storage(), &group_id).map_err(|_| error())?
+        {
+            group.delete(provider.storage()).map_err(|_| error())?;
+        }
+    }
+    for table in [
+        "ghostchat_crypto_membership_outbox",
+        "ghostchat_crypto_bootstrap",
+    ] {
+        sqlx::query(&format!(
+            "DELETE FROM {table} WHERE user_id=? AND conversation_id=?"
+        ))
+        .bind(&user_id)
+        .bind(&conversation_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| error())?;
+    }
+    sqlx::query(
+        "INSERT INTO ghostchat_crypto_setup_generations(user_id,conversation_id,generation) VALUES(?,?,?) \
+         ON CONFLICT(user_id,conversation_id) DO UPDATE SET generation=excluded.generation",
+    )
+    .bind(&user_id)
+    .bind(&conversation_id)
+    .bind(generation)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| error())?;
+    transaction.commit().await.map_err(|_| error())?;
+    Ok(true)
 }
 
 pub async fn finalize_group_membership_update(
@@ -4836,6 +4927,168 @@ mod tests {
         .await
         .expect("Bob should decrypt with the exact server roster");
         assert_eq!(decrypted.content.as_deref(), Some("after removal"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_newer_setup_generation_drops_the_old_group_so_the_new_welcome_is_joined() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-reset-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let carol_db = open_database(&root.join("carol.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+        let alice_device = prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        prepare_device(&carol_db, &carol_id).await.unwrap();
+        let package = |user_id: &str, device: &DevicePreparation| GroupPeerKeyPackage {
+            user_id: user_id.to_owned(),
+            device_id: device.device_id.clone(),
+            payload: device.payload.clone(),
+        };
+        // Carol starts the setup; only Bob receives her Welcome before her
+        // account is deleted.
+        let old_setup = create_group(
+            &carol_db,
+            &carol_id,
+            &conversation_id,
+            &[
+                package(&alice_id, &alice_device),
+                package(&bob_id, &bob_device),
+            ],
+        )
+        .await
+        .unwrap();
+        let joined = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &carol_id,
+            None,
+            Some(1),
+            true,
+            &roster,
+            &old_setup.welcome_payload,
+        )
+        .await
+        .unwrap();
+        assert_eq!(joined.kind, "welcome");
+
+        // Alice, who never joined, takes the setup over (generation 1) and
+        // creates the group again for the remaining roster.
+        let mut remaining = vec![alice_id.clone(), bob_id.clone()];
+        remaining.sort();
+        assert!(
+            apply_setup_generation(&alice_db, &alice_id, &conversation_id, 1)
+                .await
+                .unwrap()
+        );
+        let bob_fresh = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let new_setup = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[package(&bob_id, &bob_fresh)],
+        )
+        .await
+        .unwrap();
+        assert!(
+            get_pending_bootstrap(&alice_db, &alice_id, &conversation_id)
+                .await
+                .unwrap()
+                .is_some(),
+            "the new setup's own pending bootstrap is kept"
+        );
+        assert!(
+            !apply_setup_generation(&alice_db, &alice_id, &conversation_id, 1)
+                .await
+                .unwrap(),
+            "the same generation again changes nothing"
+        );
+        assert!(has_direct_group(&alice_db, &alice_id, &conversation_id)
+            .await
+            .unwrap());
+
+        // While Bob still holds the old group, the new Welcome is a duplicate
+        // for him and he would stay in a group nobody else is in.
+        let stuck = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(2),
+            true,
+            &remaining,
+            &new_setup.welcome_payload,
+        )
+        .await
+        .unwrap();
+        assert_eq!(stuck.kind, "welcome_duplicate");
+
+        // The newer generation drops the old group; an older (stale) value
+        // afterwards does nothing.
+        assert!(
+            apply_setup_generation(&bob_db, &bob_id, &conversation_id, 1)
+                .await
+                .unwrap()
+        );
+        assert!(!has_direct_group(&bob_db, &bob_id, &conversation_id)
+            .await
+            .unwrap());
+        assert!(
+            !apply_setup_generation(&bob_db, &bob_id, &conversation_id, 0)
+                .await
+                .unwrap()
+        );
+        let rejoined = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(3),
+            true,
+            &remaining,
+            &new_setup.welcome_payload,
+        )
+        .await
+        .expect("Bob should join the new setup's group");
+        assert_eq!(rejoined.kind, "welcome");
+        assert!(
+            !apply_setup_generation(&bob_db, &bob_id, &conversation_id, 1)
+                .await
+                .unwrap(),
+            "the joined group of the current generation is kept"
+        );
+        let hello = encrypt_text(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &Uuid::new_v4().to_string(),
+            "after the reset",
+        )
+        .await
+        .unwrap();
+        let decrypted = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            None,
+            true,
+            &remaining,
+            &hello.payload,
+        )
+        .await
+        .unwrap();
+        assert_eq!(decrypted.content.as_deref(), Some("after the reset"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
