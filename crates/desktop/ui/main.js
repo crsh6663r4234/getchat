@@ -1800,10 +1800,13 @@
     await syncCryptoEvents(conversationId);
     return knownCryptoCommitSeq(conversationId);
   }
-  // A staged commit the server refused as built on an older group state was
-  // dropped; the user repeats the action on the synced group.
+  // A staged commit the server refused was dropped, so the change the user
+  // asked for did not happen: the action ends as a failure, not as done.
+  // One refused as built on an older group state is repeated on the synced
+  // group.
   function requireCurrentMembershipResult(result) {
     if (result === "stale") throw new Error(translate("The encrypted group changed while this update was being prepared. Try again."));
+    if (result === "refused") throw new Error(translate("The server refused this encrypted membership change, so it was discarded."));
     return result;
   }
   function scheduleDeletedLeafCheck(conversationId, delay) {

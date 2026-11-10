@@ -702,6 +702,25 @@ test('adding a member syncs first and names the synced commit sequence', async (
   assert.notEqual(app.$('#toast').textContent, 'Friends added to the group.');
 });
 
+test('a refused encrypted add is not reported as done', async () => {
+  const friends = [{ id: 'dave', username: 'dave', display_name: 'Dave' }];
+  const lock = { locked: true, setupComplete: true, lockedBy: 'me', deletedMemberIds: [], deletedMembers: [], setupGeneration: 0, commitSeq: 3 };
+  const app = await commitFenceHarness({
+    lock, friends,
+    selectAll: selector => (selector === '#groupInviteList input:checked' ? [{ value: 'dave' }] : []),
+    replies: [{ for: 'add', status: 409, error: 'Resolve the pending encrypted leave request before changing group members.' }],
+  });
+  await app.flush(() => app.fetches.some(item => item.url.endsWith('/v1/friends')));
+  await app.flush();
+  const adding = app.$('#inviteGroupFriends').onclick({ currentTarget: app.$('#inviteGroupFriends') });
+  await app.flush(() => app.$('#appDecisionTitle').textContent === 'Member security codes');
+  app.$('#appDecisionConfirm').onclick();
+  await adding;
+  assert.equal(app.discards().length, 1, 'the refused commit is dropped');
+  assert.notEqual(app.$('#toast').textContent, 'Friends added to the group.', 'nobody was added');
+  assert.ok(app.$('#groupManageStatus').textContent.includes('refused'), app.$('#groupManageStatus').textContent);
+});
+
 async function deletedLockerHarness(role) {
   const base = 'https://a.example';
   const group = { id: 'g1', kind: 'group', display_name: 'Group' };
