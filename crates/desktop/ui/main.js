@@ -66,10 +66,10 @@
     });
   }
   const askConfirm = options => askUser(options).then(value => value === true);
-  const state = { localBase: "", base: "", token: "", user: null, presence: new Map(), presenceMode: "online", presenceLoaded: false, pendingRecovery: "", recoveryKey: "", pendingGroupInviteCode: null, page: "messages", conversations: [], friends: [], pending: [], blockedUserIds: new Set(), attachmentObserver: null, attachmentObjectUrls: [], seenFriendRequestIds: new Set(), active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null, cryptoDevice: null, cryptoEnabled: new Set(), cryptoLocked: new Set(), cryptoSetupComplete: new Set(), cryptoCanManage: new Set(), cryptoPeerFingerprints: new Map(), cryptoSyncing: new Map(), cryptoMessageDecoding: new Map(), cryptoMemberIds: new Map(), cryptoDeletedMemberIds: new Map(), cryptoSetupGenerations: new Map(), cryptoMembershipPending: new Set(), cryptoMembershipOperations: new Map(), replyingTo: null, lastReadSequence: new Map(), typingUsers: new Map(), typingTimers: new Map(), typingActive: false, typingStopTimer: null, typingSentAt: 0, groupInviteCodes: new Map(), groupVoiceAvailable: null };
+  const state = { localBase: "", base: "", token: "", user: null, presence: new Map(), presenceMode: "online", presenceLoaded: false, pendingRecovery: "", recoveryKey: "", pendingGroupInviteCode: null, page: "messages", conversations: [], friends: [], pending: [], blockedUserIds: new Set(), attachmentObserver: null, attachmentObjectUrls: [], seenFriendRequestIds: new Set(), active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null, cryptoDevice: null, cryptoEnabled: new Set(), cryptoLocked: new Set(), cryptoSetupComplete: new Set(), cryptoCanManage: new Set(), cryptoPeerFingerprints: new Map(), cryptoSyncing: new Map(), cryptoMessageDecoding: new Map(), cryptoMemberIds: new Map(), cryptoDeletedMemberIds: new Map(), cryptoSetupGenerations: new Map(), cryptoCommitSeq: new Map(), cryptoMembershipPending: new Set(), cryptoMembershipOperations: new Map(), replyingTo: null, lastReadSequence: new Map(), typingUsers: new Map(), typingTimers: new Map(), typingActive: false, typingStopTimer: null, typingSentAt: 0, groupInviteCodes: new Map(), groupVoiceAvailable: null };
   function resetCryptoViewState() {
     state.cryptoEnabled.clear(); state.cryptoLocked.clear(); state.cryptoSetupComplete.clear(); state.cryptoCanManage.clear(); state.cryptoPeerFingerprints.clear(); state.cryptoMembershipPending.clear();
-    state.cryptoSyncing.clear(); state.cryptoMessageDecoding.clear(); state.cryptoMemberIds.clear(); state.cryptoDeletedMemberIds.clear(); state.cryptoSetupGenerations.clear(); state.cryptoMembershipOperations.clear();
+    state.cryptoSyncing.clear(); state.cryptoMessageDecoding.clear(); state.cryptoMemberIds.clear(); state.cryptoDeletedMemberIds.clear(); state.cryptoSetupGenerations.clear(); state.cryptoCommitSeq.clear(); state.cryptoMembershipOperations.clear();
   }
   let signupAvatarData = null;
   let profileAvatarData = null;
@@ -244,6 +244,8 @@
     "Could not check for updates. Try again when you’re online.": "Güncellemeler kontrol edilemedi. Çevrimiçiyken tekrar dene.",
     "Could not read your saved session": "Kayıtlı oturumun okunamadı",
     "The server refused this encrypted membership change, so it was discarded.": "Sunucu bu şifreli üyelik değişikliğini reddetti; değişiklik iptal edildi.",
+    "The encrypted group changed while this update was being prepared. Try again.": "Bu güncelleme hazırlanırken şifreli grup değişti. Tekrar dene.",
+    "This device has not caught up with the encrypted group yet. Try again in a moment.": "Bu cihaz şifreli grubun son durumuna henüz yetişmedi. Birazdan tekrar dene.",
     "Windows Credential Manager could not be read. Your session was not removed; try again.": "Windows Kimlik Bilgisi Yöneticisi okunamadı. Oturumun silinmedi; tekrar dene.",
     "The update could not be installed.": "Güncelleme yüklenemedi.",
     "New friend request": "Yeni arkadaşlık isteği", "{name} sent you a friend request.": "{name} sana arkadaşlık isteği gönderdi."
@@ -997,6 +999,7 @@
     if (!response.ok) {
       const error = new Error(body.error || `Request failed (${response.status}).`);
       error.status = response.status;
+      if (typeof body.code === "string") error.code = body.code;
       throw error;
     }
     return body;
@@ -1630,19 +1633,20 @@
                 toast(translate("Leave request sent. You will remain in the group until its owner approves the encrypted update."));
               } else if (encryptedLocked) {
                 if (!await askConfirm({ title: translate("Remove from group"), message: translate("Remove this member from the encrypted group? GhostChat will send a signed MLS Commit to remaining members and they will need to verify the changed group security code."), confirmText: state.language === "tr" ? "Üyeyi çıkar" : "Remove member", dangerous: true })) return;
+                const expectedCommitSeq = await syncedCryptoCommitSeq(conversation.id);
                 const pending = await invoke("crypto_get_pending_group_membership_update", { userId: state.user.id, conversationId: conversation.id });
                 if (pending) {
                   if (pending.action !== "remove" || pending.memberIds?.length !== 1 || pending.memberIds[0] !== member.id) {
                     throw new Error(translate("Finish the pending encrypted membership update before starting another one."));
                   }
-                  await publishGroupMembershipUpdate(conversation, pending);
+                  requireCurrentMembershipResult(await publishGroupMembershipUpdate(conversation, pending));
                 } else {
                   const expectedMemberIds = members.map(item => item.id).sort();
                   const update = await invoke("crypto_prepare_group_removal_update", {
                     userId: state.user.id, conversationId: conversation.id,
-                    expectedMemberIds, removedMemberIds: [member.id],
+                    expectedMemberIds, removedMemberIds: [member.id], expectedCommitSeq,
                   });
-                  await publishGroupMembershipUpdate(conversation, update);
+                  requireCurrentMembershipResult(await publishGroupMembershipUpdate(conversation, update));
                 }
               } else {
                 await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/members/${encodeURIComponent(member.id)}`, { method: "DELETE" });
@@ -1777,6 +1781,31 @@
   const DELETED_LEAF_ADMIN_GRACE_MS = 2 * 60 * 1000;
   const deletedLeafChecks = new Map();
   const deletedLeafRefusals = new Map();
+  const deletedLeafStaleRetries = new Map();
+  // The server counts the membership commits it accepted for a conversation
+  // (commitSeq) and takes a commit only if it names the current count, so
+  // two commits built on the same group state are never both relayed.
+  // state.cryptoCommitSeq holds, per group, a count this device is known to
+  // have applied: it is set when a sync has read the relay to its end (the
+  // lock status is read before the events, and every listed page says the
+  // count at its listing), and moved on by this device's own accepted
+  // commit. No entry: not known, so no commit may be built. null: a server
+  // without the count.
+  function knownCryptoCommitSeq(conversationId) {
+    const commitSeq = state.cryptoCommitSeq.get(conversationId);
+    if (commitSeq === undefined) throw new Error(translate("This device has not caught up with the encrypted group yet. Try again in a moment."));
+    return commitSeq;
+  }
+  async function syncedCryptoCommitSeq(conversationId) {
+    await syncCryptoEvents(conversationId);
+    return knownCryptoCommitSeq(conversationId);
+  }
+  // A staged commit the server refused as built on an older group state was
+  // dropped; the user repeats the action on the synced group.
+  function requireCurrentMembershipResult(result) {
+    if (result === "stale") throw new Error(translate("The encrypted group changed while this update was being prepared. Try again."));
+    return result;
+  }
   function scheduleDeletedLeafCheck(conversationId, delay) {
     if (deletedLeafChecks.has(conversationId)) return;
     deletedLeafChecks.set(conversationId, setTimeout(() => {
@@ -1808,12 +1837,27 @@
     const attemptKey = `${expectedMemberIds.join(",")}|${deletedMemberIds.join(",")}`;
     if (deletedLeafRefusals.get(conversationId) === attemptKey) return;
     for (let attempt = 0; attempt < 16; attempt++) {
+      // A commit is only built on a state this device knows it has applied:
+      // without a sync that reached the end of the relay, the next one decides.
+      const expectedCommitSeq = state.cryptoCommitSeq.get(conversationId);
+      if (expectedCommitSeq === undefined) return;
       const update = await invoke("crypto_prepare_deleted_member_removal", {
-        userId: state.user.id, conversationId, expectedMemberIds, deletedMemberIds,
+        userId: state.user.id, conversationId, expectedMemberIds, deletedMemberIds, expectedCommitSeq,
       });
-      if (!update) return;
+      if (!update) { deletedLeafStaleRetries.delete(conversationId); return; }
       const result = await publishGroupMembershipUpdate(conversation, update);
+      if (result === "stale") {
+        // Another manager's commit was accepted first. It reaches this device
+        // on the relay; the removal is looked at again on the new state (a
+        // few times, then left to the next roster or deleted-list change).
+        const retries = (deletedLeafStaleRetries.get(conversationId) || 0) + 1;
+        deletedLeafStaleRetries.set(conversationId, retries);
+        if (retries <= 3) scheduleDeletedLeafCheck(conversationId, 1000 * retries);
+        else deletedLeafRefusals.set(conversationId, attemptKey);
+        return;
+      }
       if (result === "already_removed" || result === "refused") { deletedLeafRefusals.set(conversationId, attemptKey); return; }
+      deletedLeafStaleRetries.delete(conversationId);
       if (update.action !== "remove_deleted") return;
     }
   }
@@ -1835,7 +1879,7 @@
     localStorage.removeItem(cryptoTrustedFingerprintKey(conversationId));
     state.cryptoEnabled.delete(conversationId); state.cryptoPeerFingerprints.delete(conversationId);
     state.cryptoDeletedMemberIds.delete(conversationId); state.cryptoMembershipPending.delete(conversationId);
-    deletedLeafRefusals.delete(conversationId);
+    deletedLeafRefusals.delete(conversationId); deletedLeafStaleRetries.delete(conversationId);
     return true;
   }
   function currentCryptoFingerprint(conversationId) {
@@ -1933,6 +1977,24 @@
     const task = (async () => {
       const conversation = state.active?.id === conversationId ? state.active : state.conversations.find(item => item.id === conversationId);
       const conversationIsGroup = conversation?.kind === "group";
+      // A group's lock status is read before its relay events: every commit
+      // counted in its commitSeq was relayed before this read, so once the
+      // events below are applied to the end of the relay this device has
+      // applied at least that many commits. The same read brings the setup
+      // generation and the current deleted-member record.
+      let commitSeq = null;
+      let drained = false;
+      if (conversationIsGroup) {
+        const lock = await request(`/v1/conversations/${encodeURIComponent(conversationId)}/crypto-lock`);
+        rememberDeletedCryptoMembers(conversationId, lock);
+        await applyCryptoSetupGeneration(conversationId, lock?.setupGeneration);
+        if (Number.isSafeInteger(lock?.commitSeq)) {
+          commitSeq = lock.commitSeq;
+          // The server's count never goes back; if it did (a restored
+          // backup), what this device knew no longer means anything.
+          if (state.cryptoCommitSeq.get(conversationId) > commitSeq) state.cryptoCommitSeq.delete(conversationId);
+        } else state.cryptoCommitSeq.set(conversationId, null);
+      }
       const expectedMemberIds = await expectedCryptoMemberIds(conversationId);
       let deletedMemberIds = conversationIsGroup ? await deletedCryptoMemberIds(conversationId) : [];
       const savedCursor = await invoke("crypto_get_event_cursor", { userId: state.user.id, conversationId });
@@ -1953,7 +2015,7 @@
       let pendingRowsDecoded = false;
       for (let page = 0; page < 20; page++) {
         const events = await request(`/v1/conversations/${encodeURIComponent(conversationId)}/crypto-events?after=${cursor}&limit=100`);
-        if (!Array.isArray(events) || !events.length) break;
+        if (!Array.isArray(events) || !events.length) { drained = true; break; }
         for (const event of events) {
           const sequence = Number(event.sequence);
           if (!Number.isSafeInteger(sequence) || sequence <= cursor) continue;
@@ -2018,9 +2080,13 @@
               const currentMemberIds = members.map(member => member.id).sort();
               const me = members.find(member => member.id === state.user?.id);
               if (me?.role === "owner") {
+                // While a leave request waits the server takes no other
+                // commit, and everything relayed before it is applied here,
+                // so the count this event was listed with is this device's.
                 const update = await invoke("crypto_prepare_group_leave_commit", {
                   userId: state.user.id, conversationId, operationId: result.content,
                   leavingUserId: event.sender_id, expectedMemberIds: currentMemberIds,
+                  expectedCommitSeq: Number.isSafeInteger(event.commit_seq) ? event.commit_seq : null,
                 });
                 await publishGroupMembershipUpdate(conversation || { id: conversationId, kind: "group" }, update);
               }
@@ -2038,7 +2104,17 @@
           if (holdForVerification) break;
         }
         if (holdForVerification) break;
-        if (events.length < 100) break;
+        // The page says the server's commit count when it was listed, and
+        // everything relayed to this device up to then is applied now (once
+        // the relay is read to its end).
+        const listedCommitSeq = events[events.length - 1]?.commit_seq;
+        if (commitSeq != null && Number.isSafeInteger(listedCommitSeq)) commitSeq = Math.max(commitSeq, listedCommitSeq);
+        if (events.length < 100) { drained = true; break; }
+      }
+      if (conversationIsGroup && commitSeq != null && drained && !holdForVerification) {
+        // An own commit that is staged but not merged is not applied here yet.
+        const staged = await invoke("crypto_get_pending_group_membership_update", { userId: state.user.id, conversationId });
+        if (!staged || staged.action === "leave_request") state.cryptoCommitSeq.set(conversationId, Math.max(state.cryptoCommitSeq.get(conversationId) ?? 0, commitSeq));
       }
       if (conversationIsGroup && !holdForVerification && await invoke("crypto_has_direct_group", { userId: state.user.id, conversationId })) {
         await removeDeletedCryptoMembers(conversation || { id: conversationId, kind: "group" });
@@ -2188,6 +2264,8 @@
     if (inFlight) return inFlight;
     state.cryptoMembershipPending.add(conversationId);
     let accepted = false;
+    // The commit count the staged commit was built on (saved with it).
+    const expectedCommitSeq = Number.isSafeInteger(pending.expectedCommitSeq) ? pending.expectedCommitSeq : undefined;
     const task = (async () => { try {
       if (pending.action === "remove" || pending.action === "remove_deleted") {
         if (!Array.isArray(pending.memberIds) || pending.memberIds.length !== 1) throw new Error(translate("The saved encrypted removal is invalid."));
@@ -2196,6 +2274,7 @@
           body: JSON.stringify({
             operation_id: pending.operationId,
             expected_member_ids: pending.expectedMemberIds,
+            expected_commit_seq: expectedCommitSeq,
             member_ids: pending.memberIds,
             commit_payload: pending.commitPayload,
             welcome_payload: "",
@@ -2222,6 +2301,7 @@
           body: JSON.stringify({
             operation_id: pending.operationId,
             expected_member_ids: pending.expectedMemberIds,
+            expected_commit_seq: expectedCommitSeq,
             commit_payload: pending.commitPayload,
             welcome_payload: "",
           }),
@@ -2234,6 +2314,7 @@
             crypto_update: {
               operation_id: pending.operationId,
               expected_member_ids: pending.expectedMemberIds,
+              expected_commit_seq: expectedCommitSeq,
               commit_payload: pending.commitPayload,
               welcome_payload: pending.welcomePayload,
             },
@@ -2247,6 +2328,10 @@
         userId: state.user.id, conversationId, operationId: pending.operationId,
       });
       state.cryptoMembershipPending.delete(conversationId);
+      // The accepted commit is merged: this device is one commit further.
+      if (expectedCommitSeq !== undefined && state.cryptoCommitSeq.get(conversationId) !== null) {
+        state.cryptoCommitSeq.set(conversationId, Math.max(state.cryptoCommitSeq.get(conversationId) ?? 0, expectedCommitSeq + 1));
+      }
       const members = await request(`/v1/conversations/${encodeURIComponent(conversationId)}/members`);
       const memberIds = members.map(member => member.id).sort();
       state.cryptoMemberIds.set(conversationId, memberIds);
@@ -2266,6 +2351,10 @@
       if (!definitive) throw error;
       await invoke("crypto_discard_group_membership_update", { userId: state.user.id, conversationId, operationId: pending.operationId });
       state.cryptoMembershipPending.delete(conversationId);
+      // Built on a group state the server has moved past (another manager's
+      // commit was accepted first): nothing is wrong, the change is made
+      // again on the synced group. What this device knew is out of date.
+      if (error.code === "stale_commit_seq") { state.cryptoCommitSeq.delete(conversationId); return "stale"; }
       if (status === 410 && pending.action === "remove_deleted") return "already_removed";
       toast(`${translate("The server refused this encrypted membership change, so it was discarded.")} ${translate(error.message) || ""}`.trim(), true);
       return "refused";
@@ -2292,6 +2381,11 @@
     try {
       const result = await publishGroupMembershipUpdate(conversation, pending);
       if (result === "leave_request_pending") return true;
+      // A change the user asked for was dropped as built on an older group
+      // state; a deleted account's leaf is handled again by the next sync.
+      if (result === "stale" && pending.action !== "remove_deleted" && state.active?.id === conversation.id) {
+        toast(translate("The encrypted group changed while this update was being prepared. Try again."), true);
+      }
       return true;
     } catch (error) {
       if (state.active?.id === conversation.id) {
@@ -3127,6 +3221,7 @@
               state.cryptoPeerFingerprints.delete(data.conversation_id);
               state.cryptoMemberIds.delete(data.conversation_id);
               state.cryptoDeletedMemberIds.delete(data.conversation_id);
+              state.cryptoCommitSeq.delete(data.conversation_id);
               state.cryptoMembershipPending.delete(data.conversation_id);
               state.cryptoSyncing.delete(data.conversation_id);
               localStorage.removeItem(cryptoObservedFingerprintKey(data.conversation_id));
@@ -3618,6 +3713,7 @@
         if (!cryptoLock.setupComplete || !state.cryptoEnabled.has(conversationId)) {
           throw new Error(translate("This encrypted group can only be changed from a device that has joined its MLS group."));
         }
+        await syncedCryptoCommitSeq(conversationId);
         const pending = await invoke("crypto_get_pending_group_membership_update", { userId: state.user.id, conversationId });
         if (pending) {
           const pendingMembers = [...(pending.memberIds || [])].sort();
@@ -3625,7 +3721,7 @@
           if (pending.action !== "add" || pendingMembers.length !== selectedMembers.length || pendingMembers.some((id, index) => id !== selectedMembers[index])) {
             throw new Error(translate("Finish the pending encrypted membership update before starting another one."));
           }
-          await publishGroupMembershipUpdate(conversation, pending);
+          requireCurrentMembershipResult(await publishGroupMembershipUpdate(conversation, pending));
         } else {
           const members = await request(`/v1/conversations/${encodeURIComponent(conversationId)}/members`);
           const expectedMemberIds = members.map(member => member.id).sort();
@@ -3649,10 +3745,11 @@
             toast(translate("Encryption update cancelled. The one-time key packages were already claimed; the selected friends may need to publish fresh packages."));
             return;
           }
+          // Read again after the dialog: commits applied meanwhile count.
           const update = await invoke("crypto_prepare_group_membership_update", {
-            userId: state.user.id, conversationId, expectedMemberIds, peers: keyPackages,
+            userId: state.user.id, conversationId, expectedMemberIds, peers: keyPackages, expectedCommitSeq: knownCryptoCommitSeq(conversationId),
           });
-          await publishGroupMembershipUpdate(conversation, update);
+          requireCurrentMembershipResult(await publishGroupMembershipUpdate(conversation, update));
         }
       } else {
         await request(`/v1/conversations/${encodeURIComponent(conversationId)}/members`, {

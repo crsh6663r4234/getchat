@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 
 const source = fs.readFileSync(path.join(__dirname, '../crates/desktop/ui/main.js'), 'utf8');
 
-function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {} } = {}) {
+function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {}, selectAll = null } = {}) {
   const elements = new Map();
   const timers = [];
   const sockets = [];
@@ -73,7 +73,7 @@ function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {} } = 
   const $ = selector => { if (!elements.has(selector)) elements.set(selector, element(selector)); return elements.get(selector); };
   const docListeners = new Map();
   const document = {
-    querySelector: $, querySelectorAll: () => [],
+    querySelector: $, querySelectorAll: selector => (selectAll ? selectAll(String(selector)) || [] : []),
     createElement: tag => { const node = element(`<${tag}>`); created.push(node); return node; }, createTextNode: text => ({ textContent: text }),
     body: element('body'), documentElement: element('html'),
     addEventListener: (type, fn) => { if (!docListeners.has(type)) docListeners.set(type, []); docListeners.get(type).push(fn); },
@@ -533,6 +533,173 @@ test('an admin removes a deleted leaf after the owner\'s grace period', async ()
   const early = await deletedLeafHarness({ role: 'admin', deletedAt: new Date().toISOString() });
   assert.equal(early.removals().length, 0, 'an admin waits while the owner may still remove the leaf');
   assert.ok(early.timers.some(timer => !timer.done && timer.ms > 0), 'and checks again when its turn comes');
+});
+
+// An encrypted group whose server counts accepted commits (commitSeq). The
+// lock, the relay pages and the answers to membership requests are scripted.
+async function commitFenceHarness({ lock, pages = [], replies = [], members = null, friends = [], selectAll = null, pending = null } = {}) {
+  const base = 'https://a.example';
+  const group = { id: 'g1', kind: 'group', display_name: 'Group' };
+  const prepared = [];
+  let staged = pending;
+  let cursor = 0;
+  const app = harness({
+    storage: { 'ghostchat.server': base },
+    credentials: { [await serverKey(base)]: 'token-A' },
+    selectAll,
+    hooks: {
+      crypto_has_direct_group: () => true,
+      crypto_group_fingerprint: () => 'fp-group',
+      crypto_get_event_cursor: () => cursor,
+      crypto_advance_event_cursor: args => { cursor = Math.max(cursor, args.sequence); return cursor; },
+      crypto_inspect_event: () => ({ kind: 'application' }),
+      crypto_process_event: args => { cursor = Math.max(cursor, args.eventSequence); return { kind: 'application', content: null }; },
+      crypto_inspect_key_package: () => ({ identityFingerprint: 'fp-dave' }),
+      crypto_get_pending_group_membership_update: () => staged,
+      crypto_prepare_deleted_member_removal: args => {
+        if (staged) return staged;
+        prepared.push({ command: 'remove_deleted', expectedCommitSeq: args.expectedCommitSeq });
+        if (!replies.some(reply => reply.repeat) && prepared.filter(item => item.command === 'remove_deleted').length > replies.filter(reply => reply.for === 'remove').length) return false;
+        staged = { operationId: `op-${prepared.length}`, action: 'remove_deleted', memberIds: ['carol'], expectedMemberIds: ['bob', 'me'], commitPayload: 'commit', welcomePayload: '' };
+        if (args.expectedCommitSeq != null) staged.expectedCommitSeq = args.expectedCommitSeq;
+        return staged;
+      },
+      crypto_prepare_group_membership_update: args => {
+        prepared.push({ command: 'add', expectedCommitSeq: args.expectedCommitSeq });
+        staged = { operationId: `op-${prepared.length}`, action: 'add', memberIds: ['dave'], expectedMemberIds: ['bob', 'me'], commitPayload: 'commit', welcomePayload: 'welcome' };
+        if (args.expectedCommitSeq != null) staged.expectedCommitSeq = args.expectedCommitSeq;
+        return staged;
+      },
+      crypto_finalize_group_membership_update: () => { staged = null; return 'fp-after'; },
+      crypto_discard_group_membership_update: () => { staged = null; return null; },
+    },
+    fetchHandler: (url, options) => {
+      if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
+      if (url.endsWith('/v1/conversations')) return { body: [group] };
+      if (url.endsWith('/v1/friends')) return { body: friends };
+      if (url.endsWith('/conversations/g1/crypto-lock')) return { body: typeof lock === 'function' ? lock() : lock };
+      if (url.endsWith('/conversations/g1/members') && options.method !== 'POST') return { body: members || [{ id: 'me', role: 'owner', joined_seq: 1 }, { id: 'bob', role: 'member', joined_seq: 2 }] };
+      if (url.includes('/conversations/g1/crypto-events?after=')) {
+        const after = Number(new URL(url).searchParams.get('after'));
+        const page = pages.find(candidate => candidate.length && candidate[0].sequence > after);
+        return { body: page || [] };
+      }
+      if (url.includes('/crypto/key-package')) return { body: { device_id: 'device-dave', payload: 'package' } };
+      const membership = options.method === 'POST' && (url.includes('/crypto-membership/remove/') ? 'remove' : url.endsWith('/conversations/g1/members') ? 'add' : null);
+      if (membership) {
+        const sent = app.fetches.filter(item => item.method === 'POST' && (item.url.includes('/crypto-membership/remove/') || item.url.endsWith('/conversations/g1/members'))).length;
+        const reply = replies[Math.min(sent, replies.length) - 1] || { status: 204 };
+        reply.then?.();
+        return { status: reply.status, body: reply.status < 300 ? (membership === 'add' ? [] : {}) : { error: reply.error || 'refused', code: reply.code } };
+      }
+      return { body: [] };
+    },
+  });
+  app.prepared = prepared;
+  app.membershipPosts = () => app.fetches.filter(item => item.method === 'POST' && (item.url.includes('/crypto-membership/remove/') || item.url.endsWith('/conversations/g1/members')));
+  app.discards = () => app.invokes.filter(item => item.command === 'crypto_discard_group_membership_update');
+  await app.flush(() => app.sockets.length > 0);
+  app.voiceOptions.voice.onIncoming({ conversationId: 'g1' });
+  await app.flush(() => app.fetches.some(item => item.url.includes('/conversations/g1/crypto-events')));
+  await app.flush();
+  return app;
+}
+const relayEvent = (sequence, commitSeq) => ({ sequence, id: `e${sequence}`, sender_id: 'bob', recipient_id: 'me', payload: 'p', created_at: '', setup_generation: 0, commit_seq: commitSeq });
+const deletedCarol = commitSeq => ({ locked: true, setupComplete: true, lockedBy: 'me', deletedMemberIds: ['carol'], deletedMembers: [{ userId: 'carol', deletedAt: '2000-01-01T00:00:00.000Z', removalCommittedAt: null }], setupGeneration: 0, commitSeq });
+
+test('a staged removal names the commit sequence this device has synced to', async () => {
+  // The lock was read at 5; the relay page listed afterwards already says 6,
+  // and this device applied everything on that page.
+  const app = await commitFenceHarness({ lock: deletedCarol(5), pages: [[relayEvent(1, 6)]], replies: [{ for: 'remove', status: 204 }] });
+  await app.flush(() => app.invokes.some(item => item.command === 'crypto_finalize_group_membership_update'));
+  await app.flush();
+  assert.equal(app.prepared[0].expectedCommitSeq, 6, 'the removal is built on the last state this device applied');
+  assert.equal(JSON.parse(app.membershipPosts()[0].body).expected_commit_seq, 6, 'and says so to the server');
+  assert.equal(app.prepared[1].expectedCommitSeq, 7, 'the accepted commit moves this device one state on');
+});
+
+test('a server without a commit sequence still receives removals', async () => {
+  const lock = deletedCarol(0); delete lock.commitSeq;
+  const event = relayEvent(1, 0); delete event.commit_seq;
+  const app = await commitFenceHarness({ lock, pages: [[event]], replies: [{ for: 'remove', status: 204 }] });
+  await app.flush(() => app.membershipPosts().length > 0);
+  assert.equal(app.prepared[0].expectedCommitSeq ?? null, null);
+  assert.ok(!('expected_commit_seq' in JSON.parse(app.membershipPosts()[0].body)));
+});
+
+test('a commit refused as stale is dropped and staged again after the next sync', async () => {
+  // Another manager's commit is accepted first: the server is at 6 when this
+  // device's removal, built on 5, arrives.
+  let commitSeq = 5;
+  const stale = { status: 409, error: 'The encrypted group changed while this update was being prepared. Sync the group and try again.', code: 'stale_commit_seq' };
+  const app = await commitFenceHarness({
+    lock: () => deletedCarol(commitSeq),
+    replies: [{ for: 'remove', ...stale, then: () => { commitSeq = 6; } }, { for: 'remove', status: 204 }],
+  });
+  await app.flush(() => app.discards().length > 0);
+  assert.equal(app.prepared[0].expectedCommitSeq, 5);
+  assert.equal(app.discards()[0].args.operationId, 'op-1', 'the commit built on the older state is dropped');
+  await app.flush();
+  assert.ok(app.timers.some(timer => timer.ms === 1000), 'the removal is looked at again without waiting for another event');
+  app.runTimers();
+  await app.flush(() => app.membershipPosts().length > 1);
+  assert.equal(app.prepared[1].expectedCommitSeq, 6, 'the removal is staged again on the synced state');
+  assert.equal(JSON.parse(app.membershipPosts()[1].body).expected_commit_seq, 6);
+  await app.flush(() => app.invokes.some(item => item.command === 'crypto_finalize_group_membership_update'));
+  assert.equal(app.$('#toast').classList.contains('error'), false, 'a concurrent change by another manager is not an error to show');
+});
+
+test('a removal that keeps being refused as stale stops after a few attempts', async () => {
+  const stale = { for: 'remove', repeat: true, status: 409, error: 'stale', code: 'stale_commit_seq' };
+  const app = await commitFenceHarness({ lock: deletedCarol(5), replies: [stale] });
+  for (let round = 0; round < 8; round += 1) {
+    await app.flush();
+    app.runTimers();
+  }
+  await app.flush();
+  const attempts = app.membershipPosts().length;
+  assert.equal(attempts, 4, 'the removal is retried three times');
+  app.voiceOptions.voice.onIncoming({ conversationId: 'g1' });
+  await app.flush();
+  app.runTimers();
+  await app.flush();
+  assert.equal(app.membershipPosts().length, attempts, 'and then left until the roster or the deleted list changes');
+});
+
+test('a device that has not caught up with the relay does not stage a commit', async () => {
+  // More relay pages than one sync reads: the device is still behind.
+  const pages = Array.from({ length: 21 }, (_, page) => Array.from({ length: 100 }, (_, index) => relayEvent(page * 100 + index + 1, 30)));
+  const app = await commitFenceHarness({ lock: deletedCarol(30), pages, replies: [{ for: 'remove', status: 204 }] });
+  await app.flush(() => app.invokes.filter(item => item.command === 'crypto_process_event').length >= 2000);
+  await app.flush();
+  assert.equal(app.prepared.length, 0, 'no commit is built on a state the device knows is old');
+  assert.equal(app.membershipPosts().length, 0);
+});
+
+test('adding a member syncs first and names the synced commit sequence', async () => {
+  const friends = [{ id: 'dave', username: 'dave', display_name: 'Dave' }];
+  const lock = { locked: true, setupComplete: true, lockedBy: 'me', deletedMemberIds: [], deletedMembers: [], setupGeneration: 0, commitSeq: 3 };
+  const app = await commitFenceHarness({
+    lock, friends, pages: [[relayEvent(1, 3)]],
+    selectAll: selector => (selector === '#groupInviteList input:checked' ? [{ value: 'dave' }] : []),
+    replies: [{ for: 'add', status: 409, error: 'The encrypted group changed while this update was being prepared. Sync the group and try again.', code: 'stale_commit_seq' }],
+  });
+  await app.flush(() => app.fetches.some(item => item.url.endsWith('/v1/friends')));
+  await app.flush();
+  const syncsBefore = app.fetches.filter(item => item.url.includes('/conversations/g1/crypto-events')).length;
+  const adding = app.$('#inviteGroupFriends').onclick({ currentTarget: app.$('#inviteGroupFriends') });
+  await app.flush(() => app.$('#appDecisionTitle').textContent === 'Member security codes');
+  assert.ok(app.fetches.filter(item => item.url.includes('/conversations/g1/crypto-events')).length > syncsBefore, 'the relay is synced before the commit is built');
+  app.$('#appDecisionConfirm').onclick();
+  await adding;
+  assert.equal(app.prepared.find(item => item.command === 'add').expectedCommitSeq, 3);
+  const post = app.membershipPosts()[0];
+  assert.equal(JSON.parse(post.body).crypto_update.expected_commit_seq, 3);
+  // Another manager's commit won: the staged add is dropped and the user is
+  // told to try again, not that the friend was added.
+  assert.equal(app.discards().length, 1);
+  assert.ok(app.$('#groupManageStatus').textContent.includes('Try again'), app.$('#groupManageStatus').textContent);
+  assert.notEqual(app.$('#toast').textContent, 'Friends added to the group.');
 });
 
 async function deletedLockerHarness(role) {
