@@ -83,11 +83,30 @@
         });
     }
 
+    // Each leave() bumps the generation so a token fetch or connect that was
+    // still pending cannot attach a room after the call or share ended.
+    let generation = 0;
+    let pending = null;
+    const aborted = () => Object.assign(new Error("GhostShare was closed before it connected."), { name: "AbortError" });
+
     async function ensure(nextConversationId) {
       if (!LK?.Room) throw new Error("GhostShare could not load the media module.");
+      // A connect still in flight assigns `room` before it resolves, so the
+      // pending promise must win over the not-yet-connected room.
+      if (pending?.conversationId === nextConversationId) return pending.promise;
       if (room && conversationId === nextConversationId) return room;
-      await leave();
+      const promise = connectRoom(nextConversationId);
+      pending = { conversationId: nextConversationId, promise };
+      try { return await promise; }
+      finally { if (pending?.promise === promise) pending = null; }
+    }
+
+    async function connectRoom(nextConversationId) {
+      const leaving = leave();
+      const ticket = generation;
+      await leaving;
       const credentials = await api.getToken(nextConversationId);
+      if (ticket !== generation) throw aborted();
       const activeRoom = new LK.Room({ adaptiveStream: true, dynacast: true });
       room = activeRoom;
       conversationId = nextConversationId;
@@ -99,13 +118,19 @@
           rtcConfig: { iceTransportPolicy: "relay" },
           peerConnectionTimeout: 15_000,
         });
-        emit();
-        return activeRoom;
       } catch (error) {
-        if (room === activeRoom) { room = null; conversationId = null; }
+        const superseded = room !== activeRoom;
+        if (!superseded) { room = null; conversationId = null; }
         try { await activeRoom.disconnect(); } catch {}
+        if (superseded) throw aborted();
         throw new Error("GhostShare could not establish its required relay connection. Verify the media server and its authenticated TURN service.");
       }
+      if (room !== activeRoom) {
+        try { await activeRoom.disconnect(); } catch {}
+        throw aborted();
+      }
+      emit();
+      return activeRoom;
     }
 
     async function start(nextConversationId, options) {
@@ -128,6 +153,8 @@
     }
 
     async function leave() {
+      generation += 1;
+      pending = null;
       const activeRoom = room;
       room = null; conversationId = null; localStream = null;
       clearRemote(); api.onLocalStream?.(null);

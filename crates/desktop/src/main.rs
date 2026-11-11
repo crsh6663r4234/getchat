@@ -60,7 +60,9 @@ fn update_endpoint() -> Option<&'static str> {
     // staging, but always retain the production feed as a safe fallback.
     option_env!("GHOSTCHAT_UPDATE_ENDPOINT")
         .filter(|endpoint| !endpoint.trim().is_empty())
-        .or(Some("https://github.com/crsh6663r4234/getchat/releases/latest/download/latest.json"))
+        .or(Some(
+            "https://github.com/crsh6663r4234/getchat/releases/latest/download/latest.json",
+        ))
 }
 
 fn make_updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
@@ -266,6 +268,7 @@ async fn crypto_prepare_group_membership_update(
     conversation_id: String,
     expected_member_ids: Vec<String>,
     peers: Vec<crypto::GroupPeerKeyPackage>,
+    expected_commit_seq: Option<i64>,
 ) -> Result<crypto::GroupMembershipUpdate, String> {
     crypto::prepare_group_membership_update(
         &state.crypto_db,
@@ -273,6 +276,7 @@ async fn crypto_prepare_group_membership_update(
         &conversation_id,
         &expected_member_ids,
         &peers,
+        expected_commit_seq,
     )
     .await
 }
@@ -284,6 +288,7 @@ async fn crypto_prepare_group_removal_update(
     conversation_id: String,
     expected_member_ids: Vec<String>,
     removed_member_ids: Vec<String>,
+    expected_commit_seq: Option<i64>,
 ) -> Result<crypto::GroupMembershipUpdate, String> {
     crypto::prepare_group_removal_update(
         &state.crypto_db,
@@ -291,6 +296,27 @@ async fn crypto_prepare_group_removal_update(
         &conversation_id,
         &expected_member_ids,
         &removed_member_ids,
+        expected_commit_seq,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn crypto_prepare_deleted_member_removal(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    expected_member_ids: Vec<String>,
+    deleted_member_ids: Vec<String>,
+    expected_commit_seq: Option<i64>,
+) -> Result<Option<crypto::GroupMembershipUpdate>, String> {
+    crypto::prepare_deleted_member_removal(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &expected_member_ids,
+        &deleted_member_ids,
+        expected_commit_seq,
     )
     .await
 }
@@ -319,6 +345,7 @@ async fn crypto_prepare_group_leave_commit(
     operation_id: String,
     leaving_user_id: String,
     expected_member_ids: Vec<String>,
+    expected_commit_seq: Option<i64>,
 ) -> Result<crypto::GroupMembershipUpdate, String> {
     crypto::prepare_group_leave_commit(
         &state.crypto_db,
@@ -327,6 +354,7 @@ async fn crypto_prepare_group_leave_commit(
         &operation_id,
         &leaving_user_id,
         &expected_member_ids,
+        expected_commit_seq,
     )
     .await
 }
@@ -338,6 +366,16 @@ async fn crypto_forget_group_state(
     conversation_id: String,
 ) -> Result<(), String> {
     crypto::forget_group_state(&state.crypto_db, &user_id, &conversation_id).await
+}
+
+#[tauri::command]
+async fn crypto_apply_setup_generation(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    generation: i64,
+) -> Result<bool, String> {
+    crypto::apply_setup_generation(&state.crypto_db, &user_id, &conversation_id, generation).await
 }
 
 #[tauri::command]
@@ -395,9 +433,37 @@ async fn crypto_encrypt_text(
 #[tauri::command]
 async fn crypto_get_cached_sent_text(
     state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    sender_id: String,
     client_message_id: String,
 ) -> Result<Option<String>, String> {
-    crypto::get_cached_sent_text(&state.crypto_db, &client_message_id).await
+    crypto::get_cached_sent_text(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &sender_id,
+        &client_message_id,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn crypto_get_cached_text_state(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    sender_id: String,
+    client_message_id: String,
+) -> Result<crypto::CachedTextState, String> {
+    crypto::get_cached_text_state(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &sender_id,
+        &client_message_id,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -407,12 +473,13 @@ async fn crypto_process_event(
     conversation_id: String,
     sender_id: String,
     client_message_id: Option<String>,
-    event_sequence: i64,
+    event_sequence: Option<i64>,
     conversation_is_group: bool,
     expected_member_ids: Vec<String>,
+    deleted_member_ids: Option<Vec<String>>,
     payload: String,
 ) -> Result<crypto::CryptoEventResult, String> {
-    crypto::process_crypto_event(
+    crypto::process_crypto_event_with_deleted(
         &state.crypto_db,
         &user_id,
         &conversation_id,
@@ -421,6 +488,71 @@ async fn crypto_process_event(
         event_sequence,
         conversation_is_group,
         &expected_member_ids,
+        deleted_member_ids.as_deref().unwrap_or_default(),
+        &payload,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn crypto_discard_group_membership_update(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    operation_id: String,
+) -> Result<(), String> {
+    crypto::discard_group_membership_update(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &operation_id,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn crypto_inspect_event(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    sender_id: String,
+    event_sequence: i64,
+    conversation_is_group: bool,
+    expected_member_ids: Vec<String>,
+    deleted_member_ids: Option<Vec<String>>,
+    payload: String,
+) -> Result<crypto::CryptoEventResult, String> {
+    crypto::inspect_crypto_event(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &sender_id,
+        event_sequence,
+        conversation_is_group,
+        &expected_member_ids,
+        deleted_member_ids.as_deref().unwrap_or_default(),
+        &payload,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn crypto_decode_pending_history(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    sender_id: String,
+    client_message_id: String,
+    conversation_is_group: bool,
+    payload: String,
+) -> Result<crypto::CryptoEventResult, String> {
+    crypto::decode_history_before_pending_commits(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &sender_id,
+        &client_message_id,
+        conversation_is_group,
         &payload,
     )
     .await
@@ -738,15 +870,21 @@ fn main() {
             crypto_get_pending_group_membership_update,
             crypto_prepare_group_membership_update,
             crypto_prepare_group_removal_update,
+            crypto_prepare_deleted_member_removal,
             crypto_prepare_group_leave_proposal,
             crypto_prepare_group_leave_commit,
             crypto_forget_group_state,
+            crypto_apply_setup_generation,
             crypto_finalize_group_membership_update,
             crypto_get_pending_bootstrap,
             crypto_clear_pending_bootstrap,
             crypto_encrypt_text,
             crypto_get_cached_sent_text,
+            crypto_get_cached_text_state,
             crypto_process_event,
+            crypto_decode_pending_history,
+            crypto_inspect_event,
+            crypto_discard_group_membership_update,
             crypto_get_event_cursor,
             crypto_advance_event_cursor,
             crypto_upload_encrypted_attachment,
@@ -802,6 +940,7 @@ mod windows_credential {
     #[cfg(not(test))]
     use rand::RngCore;
     use std::{ptr, slice};
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_NOT_FOUND};
     use windows_sys::Win32::Security::Credentials::{
         CredDeleteW, CredFree, CredReadW, CredWriteW, CREDENTIALW, CRED_PERSIST_LOCAL_MACHINE,
         CRED_TYPE_GENERIC,
@@ -823,7 +962,16 @@ mod windows_credential {
         let success =
             unsafe { CredReadW(target.as_mut_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) };
         if success == 0 {
-            return Ok(None);
+            // Only a missing credential means "nothing saved". Any other read
+            // failure must not be mistaken for absence: the MLS storage key
+            // would otherwise be regenerated and overwrite the real one.
+            let error = unsafe { GetLastError() };
+            if error == ERROR_NOT_FOUND {
+                return Ok(None);
+            }
+            return Err(format!(
+                "Windows Credential Manager could not be read (error {error}); saved data was left untouched."
+            ));
         }
         let result = unsafe {
             let record = &*credential;

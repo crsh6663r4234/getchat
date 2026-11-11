@@ -66,10 +66,10 @@
     });
   }
   const askConfirm = options => askUser(options).then(value => value === true);
-  const state = { localBase: "", base: "", token: "", user: null, presence: new Map(), presenceMode: "online", pendingRecovery: "", recoveryKey: "", pendingGroupInviteCode: null, page: "messages", conversations: [], friends: [], pending: [], blockedUserIds: new Set(), attachmentObserver: null, attachmentObjectUrls: [], seenFriendRequestIds: new Set(), active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null, cryptoDevice: null, cryptoEnabled: new Set(), cryptoLocked: new Set(), cryptoSetupComplete: new Set(), cryptoCanManage: new Set(), cryptoPeerFingerprints: new Map(), cryptoSyncing: new Map(), cryptoMessageDecoding: new Map(), cryptoMemberIds: new Map(), cryptoMembershipPending: new Set(), cryptoMembershipOperations: new Map(), replyingTo: null, lastReadSequence: new Map(), typingUsers: new Map(), typingTimers: new Map(), typingActive: false, typingStopTimer: null, typingSentAt: 0, groupInviteCodes: new Map(), groupVoiceAvailable: null };
+  const state = { localBase: "", base: "", token: "", user: null, presence: new Map(), presenceMode: "online", presenceLoaded: false, pendingRecovery: "", recoveryKey: "", pendingGroupInviteCode: null, page: "messages", conversations: [], friends: [], pending: [], blockedUserIds: new Set(), attachmentObserver: null, attachmentObjectUrls: [], seenFriendRequestIds: new Set(), active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null, cryptoDevice: null, cryptoEnabled: new Set(), cryptoLocked: new Set(), cryptoSetupComplete: new Set(), cryptoCanManage: new Set(), cryptoPeerFingerprints: new Map(), cryptoSyncing: new Map(), cryptoMessageDecoding: new Map(), cryptoMemberIds: new Map(), cryptoDeletedMemberIds: new Map(), cryptoSetupGenerations: new Map(), cryptoCommitSeq: new Map(), cryptoMembershipPending: new Set(), cryptoMembershipOperations: new Map(), replyingTo: null, lastReadSequence: new Map(), typingUsers: new Map(), typingTimers: new Map(), typingActive: false, typingStopTimer: null, typingSentAt: 0, groupInviteCodes: new Map(), groupVoiceAvailable: null };
   function resetCryptoViewState() {
     state.cryptoEnabled.clear(); state.cryptoLocked.clear(); state.cryptoSetupComplete.clear(); state.cryptoCanManage.clear(); state.cryptoPeerFingerprints.clear(); state.cryptoMembershipPending.clear();
-    state.cryptoSyncing.clear(); state.cryptoMessageDecoding.clear(); state.cryptoMemberIds.clear(); state.cryptoMembershipOperations.clear();
+    state.cryptoSyncing.clear(); state.cryptoMessageDecoding.clear(); state.cryptoMemberIds.clear(); state.cryptoDeletedMemberIds.clear(); state.cryptoSetupGenerations.clear(); state.cryptoCommitSeq.clear(); state.cryptoMembershipOperations.clear();
   }
   let signupAvatarData = null;
   let profileAvatarData = null;
@@ -247,6 +247,11 @@
     "You’re up to date ({version}).": "Güncelsin ({version}).",
     "GhostChat is up to date.": "GhostChat güncel.",
     "Could not check for updates. Try again when you’re online.": "Güncellemeler kontrol edilemedi. Çevrimiçiyken tekrar dene.",
+    "Could not read your saved session": "Kayıtlı oturumun okunamadı",
+    "The server refused this encrypted membership change, so it was discarded.": "Sunucu bu şifreli üyelik değişikliğini reddetti; değişiklik iptal edildi.",
+    "The encrypted group changed while this update was being prepared. Try again.": "Bu güncelleme hazırlanırken şifreli grup değişti. Tekrar dene.",
+    "This device has not caught up with the encrypted group yet. Try again in a moment.": "Bu cihaz şifreli grubun son durumuna henüz yetişmedi. Birazdan tekrar dene.",
+    "Windows Credential Manager could not be read. Your session was not removed; try again.": "Windows Kimlik Bilgisi Yöneticisi okunamadı. Oturumun silinmedi; tekrar dene.",
     "The update could not be installed.": "Güncelleme yüklenemedi.",
     "New friend request": "Yeni arkadaşlık isteği", "{name} sent you a friend request.": "{name} sana arkadaşlık isteği gönderdi."
   });
@@ -259,7 +264,7 @@
   let updateStatusKey = "Updates are checked automatically.";
   let updateStatusValues = {};
   const tr = () => (localStorage.getItem("ghostchat.language") || "en") === "tr";
-  function translate(value) { return tr() ? (trText[value] || value) : value; }
+  function translate(value) { return tr() && Object.hasOwn(trText, value) ? trText[value] : value; }
   function renderUpdateStatus() {
     const statusNode = $("#updateStatus");
     if (!statusNode) return;
@@ -268,6 +273,7 @@
   function setUpdateStatus(key, values = {}) { updateStatusKey = key; updateStatusValues = values; renderUpdateStatus(); }
   function applyLanguage() {
     const language = tr() ? "tr" : "en";
+    state.language = language;
     document.documentElement.lang = language;
     $$("[data-en][data-tr]").forEach(node => { node.textContent = node.dataset[language]; });
     $$("[data-en-label][data-tr-label]").forEach(node => node.setAttribute("aria-label", node.getAttribute(`data-${language}-label`)));
@@ -922,10 +928,20 @@
     gate.classList.remove("hidden"); retry.classList.add("hidden");
     title.textContent = translate("Checking for updates"); status.textContent = translate("Getting the latest version ready…");
     $("#startupUpdateProgress").style.setProperty("--progress", "0.24");
+    if (!invoke) { gate.classList.add("hidden"); return true; }
+    let result;
+    try { result = await invoke("check_for_update"); }
+    catch (error) {
+      // An unreachable update host must not lock the user out of the app;
+      // only a found update is mandatory. Warn and keep booting.
+      console.warn("Startup update check failed", error);
+      gate.classList.add("hidden");
+      setUpdateStatus("Could not check for updates. Try again when you’re online.");
+      toast(translate("Could not check for updates. Try again when you’re online."), true);
+      return true;
+    }
+    if (!result?.configured || !result.available) { gate.classList.add("hidden"); return true; }
     try {
-      if (!invoke) { gate.classList.add("hidden"); return true; }
-      const result = await invoke("check_for_update");
-      if (!result.configured || !result.available) { gate.classList.add("hidden"); return true; }
       state.updateVersion = result.version;
       title.textContent = translate("Update required"); status.textContent = `${translate("This app version is out of date.")} GhostChat ${result.version} ${translate("is downloading")}…`;
       $("#startupUpdateProgress").style.setProperty("--progress", "0.42");
@@ -992,7 +1008,8 @@
         invoke("credential_get_recovery", { serverKey: oldKey }), invoke("credential_get_recovery", { serverKey: newKey })
       ]);
       if (oldSavedRecovery && !newSavedRecovery) await invoke("credential_set_recovery", { serverKey: newKey, token: oldSavedRecovery });
-    } catch (error) { console.warn("Could not migrate saved credentials to the default server", error); }
+      return true;
+    } catch (error) { console.warn("Could not migrate saved credentials to the default server", error); return false; }
   }
   async function request(path, options = {}) {
     const headers = new Headers(options.headers || {});
@@ -1006,6 +1023,7 @@
     if (!response.ok) {
       const error = new Error(body.error || `Request failed (${response.status}).`);
       error.status = response.status;
+      if (typeof body.code === "string") error.code = body.code;
       throw error;
     }
     return body;
@@ -1015,9 +1033,19 @@
     try { await invoke("credential_set", { serverKey: await serverKey(activeBase()), token }); }
     catch (error) { console.warn("Credential Manager unavailable", error); toast("Session active, but Windows could not save it. Keep your recovery key safe.", true); }
   }
+  // Returns false when the saved session could not be read (a Credential
+  // Manager error), which is not the same as having no saved session.
   async function restoreToken() {
-    try { state.token = await invoke("credential_get", { serverKey: await serverKey(activeBase()) }) || ""; }
-    catch { state.token = ""; }
+    try { state.token = await invoke("credential_get", { serverKey: await serverKey(activeBase()) }) || ""; return true; }
+    catch (error) { console.warn("Could not read the saved session", error); state.token = ""; return false; }
+  }
+  function showCredentialReadError() {
+    for (const id of ["authView", "recoveryView", "appView"]) $(`#${id}`).classList.add("hidden");
+    $("#startupUpdateGate").classList.remove("hidden");
+    $("#startupUpdateTitle").textContent = translate("Could not read your saved session");
+    $("#startupUpdateStatus").textContent = translate("Windows Credential Manager could not be read. Your session was not removed; try again.");
+    $("#startupUpdateProgress").style.setProperty("--progress", "1");
+    $("#retryStartupUpdate").classList.remove("hidden");
   }
   async function clearToken() {
     clearAttachmentUrls();
@@ -1078,6 +1106,9 @@
     return holder.firstChild;
   }
   function create(tag, className, text) { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = translate(text); return node; }
+  // User-provided text (names, messages, file names) is shown as is: a name
+  // that happens to equal a UI string such as "Owner" must not be translated.
+  function createText(tag, className, text) { const node = create(tag, className); if (text !== undefined) node.textContent = String(text); return node; }
   async function compressAvatar(file) {
     if (!file || !file.type.startsWith("image/")) throw new Error(translate("Choose an image file."));
     const bitmap = await createImageBitmap(file);
@@ -1205,7 +1236,8 @@
     $("#profileTagLabel").textContent = `@${state.user.username}`;
   }
   async function enterApp() {
-    try { state.user = await request("/v1/me"); }
+    // Another account's saved mode says nothing about this one.
+    try { state.presenceLoaded = false; state.user = await request("/v1/me"); }
     catch { await clearToken(); state.user = null; show("authView"); return; }
     resetCryptoViewState();
     show("appView"); updateIdentity(); setTheme(); seasonalIdentity(); setPage("messages");
@@ -1241,7 +1273,7 @@
     profile.type = "button"; profile.title = translate("Edit profile"); profile.setAttribute("aria-label", profile.title);
     const avatar = create("span", "welcome-profile-avatar"); setAvatar(avatar, state.user?.display_name, state.user?.avatar_data);
     const profileCopy = create("span", "welcome-profile-copy");
-    profileCopy.append(create("strong", "", state.user?.display_name || "Ghost"), create("span", "", `@${state.user?.username || "ghost"}`), create("small", "", "Online on this device"));
+    profileCopy.append(createText("strong", "", state.user?.display_name || "Ghost"), createText("span", "", `@${state.user?.username || "ghost"}`), create("small", "", "Online on this device"));
     const edit = create("span", "welcome-profile-edit", "Edit profile");
     profile.append(avatar, profileCopy, edit); profile.onclick = openSettings;
     const orb = create("div", "welcome-orb"); orb.setAttribute("aria-hidden", "true"); orb.append(uiIcon("messages"));
@@ -1327,7 +1359,7 @@
           : convo.last_message?.startsWith("file:")
           ? translate("File shared")
           : convo.last_message || (convo.kind === "group" ? `${convo.member_count} ${translate("members")}` : `@${convo.username}`);
-        const copy = create("div", "list-copy"); copy.append(create("strong", "", convo.display_name), create("span", "", preview)); row.append(copy);
+        const copy = create("div", "list-copy"); copy.append(createText("strong", "", convo.display_name), createText("span", "", preview)); row.append(copy);
         if (convo.unread_count > 0) { const unread = create("span", "unread-badge", convo.unread_count > 99 ? "99+" : String(convo.unread_count)); unread.title = `${convo.unread_count} ${translate("Unread messages")}`; unread.setAttribute("aria-label", unread.title); row.append(unread); }
         root.append(row);
       }
@@ -1335,10 +1367,10 @@
     }
     if (state.page === "friends") {
       const requestsLabel = create("div", "section-label", "Requests"); root.append(requestsLabel);
-      for (const request of state.pending || []) { const row = create("button", "list-row"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, request.display_name, request.avatar_data); addPresenceDot(avatar, request.user_id); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", request.display_name), create("span", "", `@${request.username}`)); row.append(copy); root.append(row); }
+      for (const request of state.pending || []) { const row = create("button", "list-row"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, request.display_name, request.avatar_data); addPresenceDot(avatar, request.user_id); row.append(avatar); const copy = create("div", "list-copy"); copy.append(createText("strong", "", request.display_name), createText("span", "", `@${request.username}`)); row.append(copy); root.append(row); }
       if (!(state.pending || []).length) root.append(create("div", "empty-list", "No pending requests."));
       root.append(create("div", "section-label", "Your friends"));
-      for (const friend of state.friends) { const row = create("button", "list-row"); row.onclick = () => startConversation(friend.id); row.oncontextmenu = event => openAppContextMenu(event, [{ label: state.language === "tr" ? "Profili görüntüle" : "View profile", run: () => showProfilePreview(friend) }, { label: state.language === "tr" ? "Mesaj gönder" : "Message", run: () => startConversation(friend.id) }, { label: state.language === "tr" ? "Arkadaşlıktan çıkar" : "Remove friend", danger: true, run: () => removeFriend(friend) }]); const avatar = create("div", "mini-avatar"); setAvatar(avatar, friend.display_name, friend.avatar_data); addPresenceDot(avatar, friend.id); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", friend.display_name), create("span", "", `@${friend.username} · ${presenceLabel(friend.id)}`)); row.append(copy); root.append(row); }
+      for (const friend of state.friends) { const row = create("button", "list-row"); row.onclick = () => startConversation(friend.id); row.oncontextmenu = event => openAppContextMenu(event, [{ label: state.language === "tr" ? "Profili görüntüle" : "View profile", run: () => showProfilePreview(friend) }, { label: state.language === "tr" ? "Mesaj gönder" : "Message", run: () => startConversation(friend.id) }, { label: state.language === "tr" ? "Arkadaşlıktan çıkar" : "Remove friend", danger: true, run: () => removeFriend(friend) }]); const avatar = create("div", "mini-avatar"); setAvatar(avatar, friend.display_name, friend.avatar_data); addPresenceDot(avatar, friend.id); row.append(avatar); const copy = create("div", "list-copy"); copy.append(createText("strong", "", friend.display_name), createText("span", "", `@${friend.username} · ${presenceLabel(friend.id)}`)); row.append(copy); root.append(row); }
       if (!state.friends.length) root.append(create("div", "empty-list", "Friends you add will show up here."));
       return;
     }
@@ -1353,7 +1385,7 @@
       const form = create("form", "search-form"); const input = create("input"); input.placeholder = translate("Search @username or user ID"); input.setAttribute("aria-label", translate("Search people")); input.minLength = 2;
       const submit = create("button", "button primary", "Search"); submit.type = "submit"; form.append(input, submit); page.append(form);
       const results = create("div", "search-results"); page.append(results);
-      form.onsubmit = async event => { event.preventDefault(); if (input.value.trim().length < 2) return; results.replaceChildren(create("div", "empty-list", "Searching…")); try { const users = await request(`/v1/users/search?q=${encodeURIComponent(input.value.trim())}`); results.replaceChildren(); if (!users.length) results.append(create("div", "empty-list", "No users found. Check the spelling and try again.")); for (const user of users) { const card = create("div", "result-card"); card.oncontextmenu = event => openAppContextMenu(event, [{ label: state.language === "tr" ? "Profili görüntüle" : "View profile", run: () => showProfilePreview(user) }]); const avatar = create("button", "mini-avatar profile-avatar-button"); avatar.type = "button"; avatar.title = state.language === "tr" ? "Profili görüntüle" : "View profile"; avatar.onclick = () => showProfilePreview(user); setAvatar(avatar, user.display_name, user.avatar_data); card.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", user.display_name), create("span", "", `@${user.username} · ${user.id.slice(0, 8)}`)); card.append(copy); const add = create("button", "button secondary", "Add friend"); add.onclick = async () => { try { await request("/v1/friends", { method: "POST", body: JSON.stringify({ user_id: user.id }) }); add.textContent = translate("Request sent"); add.disabled = true; toast(translate("Friend request sent.")); } catch (error) { toast(error.message, true); } }; card.append(add); results.append(card); } } catch (error) { results.replaceChildren(create("div", "empty-list", error.message)); } };
+      form.onsubmit = async event => { event.preventDefault(); if (input.value.trim().length < 2) return; results.replaceChildren(create("div", "empty-list", "Searching…")); try { const users = await request(`/v1/users/search?q=${encodeURIComponent(input.value.trim())}`); results.replaceChildren(); if (!users.length) results.append(create("div", "empty-list", "No users found. Check the spelling and try again.")); for (const user of users) { const card = create("div", "result-card"); card.oncontextmenu = event => openAppContextMenu(event, [{ label: state.language === "tr" ? "Profili görüntüle" : "View profile", run: () => showProfilePreview(user) }]); const avatar = create("button", "mini-avatar profile-avatar-button"); avatar.type = "button"; avatar.title = state.language === "tr" ? "Profili görüntüle" : "View profile"; avatar.onclick = () => showProfilePreview(user); setAvatar(avatar, user.display_name, user.avatar_data); card.append(avatar); const copy = create("div", "list-copy"); copy.append(createText("strong", "", user.display_name), createText("span", "", `@${user.username} · ${user.id.slice(0, 8)}`)); card.append(copy); const add = create("button", "button secondary", "Add friend"); add.onclick = async () => { try { await request("/v1/friends", { method: "POST", body: JSON.stringify({ user_id: user.id }) }); add.textContent = translate("Request sent"); add.disabled = true; toast(translate("Friend request sent.")); } catch (error) { toast(error.message, true); } }; card.append(add); results.append(card); } } catch (error) { results.replaceChildren(create("div", "empty-list", error.message)); } };
       setTimeout(() => input.focus(), 20);
     } else if (state.page === "friends") {
       page.append(create("h2", "", "Friends"), create("p", "muted", "Manage requests and start a private conversation."));
@@ -1363,10 +1395,10 @@
       const list = create("div", "friend-results"); page.append(list);
       if (state.searchTab === "pending") {
         if (!(state.pending || []).length) list.append(create("div", "empty-list", "No friend requests right now."));
-        for (const item of state.pending || []) { const row = create("div", "request-card"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, item.display_name, item.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", item.display_name), create("span", "", `@${item.username}`)); row.append(copy); const actions = create("div", "request-actions"); const accept = create("button", "button primary", "Accept"); accept.onclick = () => respondFriend(item.id, "accept"); const reject = create("button", "button secondary", "Ignore"); reject.onclick = () => respondFriend(item.id, "reject"); actions.append(accept, reject); row.append(actions); list.append(row); }
+        for (const item of state.pending || []) { const row = create("div", "request-card"); const avatar = create("div", "mini-avatar"); setAvatar(avatar, item.display_name, item.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(createText("strong", "", item.display_name), createText("span", "", `@${item.username}`)); row.append(copy); const actions = create("div", "request-actions"); const accept = create("button", "button primary", "Accept"); accept.onclick = () => respondFriend(item.id, "accept"); const reject = create("button", "button secondary", "Ignore"); reject.onclick = () => respondFriend(item.id, "reject"); actions.append(accept, reject); row.append(actions); list.append(row); }
       } else {
         if (!state.friends.length) list.append(create("div", "empty-list", "No friends yet. Use Find people to add someone."));
-        for (const friend of state.friends) { const row = create("div", "result-card"); const avatar = create("button", "mini-avatar profile-avatar-button"); avatar.type = "button"; avatar.title = state.language === "tr" ? "Profili görüntüle" : "View profile"; avatar.onclick = () => showProfilePreview(friend); setAvatar(avatar, friend.display_name, friend.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(create("strong", "", friend.display_name), create("span", "", `@${friend.username} · ${presenceLabel(friend.id)}`)); row.append(copy); const actions = create("div", "friend-actions"); const message = create("button", "button primary", "Message"); message.onclick = () => startConversation(friend.id); const remove = create("button", "button secondary", state.language === "tr" ? "Arkadaşlıktan çıkar" : "Remove friend"); remove.onclick = () => removeFriend(friend); actions.append(message, remove); row.append(actions); row.addEventListener("contextmenu", event => openAppContextMenu(event, [{ label: state.language === "tr" ? "Profili görüntüle" : "View profile", run: () => showProfilePreview(friend) }, { label: state.language === "tr" ? "Mesaj gönder" : "Message", run: () => startConversation(friend.id) }, { label: state.language === "tr" ? "Arkadaşlıktan çıkar" : "Remove friend", danger: true, run: () => removeFriend(friend) }])); list.append(row); }
+        for (const friend of state.friends) { const row = create("div", "result-card"); const avatar = create("button", "mini-avatar profile-avatar-button"); avatar.type = "button"; avatar.title = state.language === "tr" ? "Profili görüntüle" : "View profile"; avatar.onclick = () => showProfilePreview(friend); setAvatar(avatar, friend.display_name, friend.avatar_data); row.append(avatar); const copy = create("div", "list-copy"); copy.append(createText("strong", "", friend.display_name), createText("span", "", `@${friend.username} · ${presenceLabel(friend.id)}`)); row.append(copy); const actions = create("div", "friend-actions"); const message = create("button", "button primary", "Message"); message.onclick = () => startConversation(friend.id); const remove = create("button", "button secondary", state.language === "tr" ? "Arkadaşlıktan çıkar" : "Remove friend"); remove.onclick = () => removeFriend(friend); actions.append(message, remove); row.append(actions); row.addEventListener("contextmenu", event => openAppContextMenu(event, [{ label: state.language === "tr" ? "Profili görüntüle" : "View profile", run: () => showProfilePreview(friend) }, { label: state.language === "tr" ? "Mesaj gönder" : "Message", run: () => startConversation(friend.id) }, { label: state.language === "tr" ? "Arkadaşlıktan çıkar" : "Remove friend", danger: true, run: () => removeFriend(friend) }])); list.append(row); }
       }
     } else if (state.page === "searchMessages") {
       page.append(create("h2", "", "Search messages"), create("p", "muted", "Searches the 50 latest messages in each conversation on this device; your search phrase stays local."));
@@ -1396,7 +1428,7 @@
           if (!matches.length) results.append(create("div", "empty-list", failed === state.conversations.length && failed > 0 ? translate("Search could not load your messages.") : translate("No matching messages.")));
           for (const row of matches) {
             const card = create("button", "result-card"); card.style.textAlign = "left"; const copy = create("div", "list-copy");
-            copy.append(create("strong", "", `${row.sender_name} · ${row.conversation_name}`), create("span", "", row.content)); card.append(copy);
+            copy.append(createText("strong", "", `${row.sender_name} · ${row.conversation_name}`), createText("span", "", row.content)); card.append(copy);
             card.onclick = () => { setPage("messages"); openConversation(row.conversation_id); }; results.append(card);
           }
         } catch (error) { toast(error.message, true); }
@@ -1422,7 +1454,7 @@
             const conversation = state.conversations.find(item => item.id === message.conversation_id);
             const card = create("div", "result-card");
             const copy = create("button", "list-copy"); copy.type = "button"; copy.style.textAlign = "left";
-            copy.append(create("strong", "", `${message.sender_name} · ${conversation?.display_name || translate("Messages")}`), create("span", "", message.content || ""));
+            copy.append(createText("strong", "", `${message.sender_name} · ${conversation?.display_name || translate("Messages")}`), createText("span", "", message.content || ""));
             copy.onclick = () => { setPage("messages"); openConversation(message.conversation_id); };
             const remove = create("button", "button secondary", translate("Remove from saved"));
             remove.onclick = async () => { remove.disabled = true; try { await request(`/v1/messages/${encodeURIComponent(message.id)}/save`, { method: "POST" }); toast(translate("Removed from saved messages.")); renderPage(); } catch (error) { toast(error.message, true); remove.disabled = false; } };
@@ -1460,7 +1492,7 @@
     try {
       const rows = await request("/v1/me/presence");
       state.presence = new Map(rows.map(row => [row.user_id, row.mode]));
-      state.presenceMode = state.presence.get(state.user?.id) || "online";
+      state.presenceMode = state.presence.get(state.user?.id) || "online"; state.presenceLoaded = true;
       updateIdentity();
     } catch (error) { console.warn("Could not refresh presence", error); }
   }
@@ -1468,7 +1500,7 @@
     const previous = state.presenceMode;
     try {
       const result = await request("/v1/me/presence", { method: "PUT", body: JSON.stringify({ mode }) });
-      state.presenceMode = result.mode; state.presence.set(result.user_id, result.mode);
+      state.presenceMode = result.mode; state.presenceLoaded = true; state.presence.set(result.user_id, result.mode);
       updateIdentity(); renderSidebar();
       if (state.active?.kind === "direct") await openConversation(state.active.id, false);
       toast(translate(({ online: "You are online.", invisible: "You are invisible.", dnd: "Do not disturb is on." })[result.mode]));
@@ -1478,7 +1510,7 @@
     }
   }
   async function refreshConversations() {
-    try { state.conversations = await request("/v1/conversations"); state.cryptoMemberIds.clear(); } catch (error) { console.warn(error); }
+    try { state.conversations = await request("/v1/conversations"); state.cryptoMemberIds.clear(); state.cryptoDeletedMemberIds.clear(); } catch (error) { console.warn(error); }
     renderSidebar();
   }
   async function refreshBlockedUsers() {
@@ -1529,7 +1561,7 @@
       const label = create("label", "group-friend-option");
       const checkbox = create("input"); checkbox.type = "checkbox"; checkbox.value = friend.id;
       const avatar = create("div", "mini-avatar"); setAvatar(avatar, friend.display_name, friend.avatar_data);
-      const copy = create("span", "list-copy"); copy.append(create("strong", "", friend.display_name), create("span", "", `@${friend.username}`));
+      const copy = create("span", "list-copy"); copy.append(createText("strong", "", friend.display_name), createText("span", "", `@${friend.username}`));
       label.append(checkbox, avatar, copy); list.append(label);
       checkbox.addEventListener("change", updateGroupSubmitState);
     }
@@ -1578,8 +1610,8 @@
         const row = create("div", "group-member-row");
         const avatar = create("div", "mini-avatar"); setAvatar(avatar, member.display_name, member.avatar_data); row.append(avatar);
         const copy = create("div", "list-copy");
-        copy.append(create("strong", "", member.id === state.user.id ? `${member.display_name} · ${translate("You")}` : member.display_name));
-        copy.append(create("span", "", `@${member.username} · ${translate(member.role === "owner" ? "Owner" : member.role === "admin" ? "Admin" : "Member")}`));
+        copy.append(createText("strong", "", member.id === state.user.id ? `${member.display_name} · ${translate("You")}` : member.display_name));
+        copy.append(createText("span", "", `@${member.username} · ${translate(member.role === "owner" ? "Owner" : member.role === "admin" ? "Admin" : "Member")}`));
         row.append(copy);
         const canEditRole = member.id !== state.user.id && (isOwner || (me.role === "admin" && member.role === "member"));
         if (canEditRole) {
@@ -1625,19 +1657,20 @@
                 toast(translate("Leave request sent. You will remain in the group until its owner approves the encrypted update."));
               } else if (encryptedLocked) {
                 if (!await askConfirm({ title: translate("Remove from group"), message: translate("Remove this member from the encrypted group? GhostChat will send a signed MLS Commit to remaining members and they will need to verify the changed group security code."), confirmText: state.language === "tr" ? "Üyeyi çıkar" : "Remove member", dangerous: true })) return;
+                const expectedCommitSeq = await syncedCryptoCommitSeq(conversation.id);
                 const pending = await invoke("crypto_get_pending_group_membership_update", { userId: state.user.id, conversationId: conversation.id });
                 if (pending) {
                   if (pending.action !== "remove" || pending.memberIds?.length !== 1 || pending.memberIds[0] !== member.id) {
                     throw new Error(translate("Finish the pending encrypted membership update before starting another one."));
                   }
-                  await publishGroupMembershipUpdate(conversation, pending);
+                  requireCurrentMembershipResult(await publishGroupMembershipUpdate(conversation, pending));
                 } else {
                   const expectedMemberIds = members.map(item => item.id).sort();
                   const update = await invoke("crypto_prepare_group_removal_update", {
                     userId: state.user.id, conversationId: conversation.id,
-                    expectedMemberIds, removedMemberIds: [member.id],
+                    expectedMemberIds, removedMemberIds: [member.id], expectedCommitSeq,
                   });
-                  await publishGroupMembershipUpdate(conversation, update);
+                  requireCurrentMembershipResult(await publishGroupMembershipUpdate(conversation, update));
                 }
               } else {
                 await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/members/${encodeURIComponent(member.id)}`, { method: "DELETE" });
@@ -1667,7 +1700,7 @@
           }
         });
         const avatar = create("div", "mini-avatar"); setAvatar(avatar, friend.display_name, friend.avatar_data);
-        const name = create("span", "list-copy"); name.append(create("strong", "", friend.display_name), create("span", "", `@${friend.username}`));
+        const name = create("span", "list-copy"); name.append(createText("strong", "", friend.display_name), createText("span", "", `@${friend.username}`));
         label.append(checkbox, avatar, name); inviteList.append(label);
       }
       if (!inviteable.length) inviteList.append(create("div", "empty-list", translate("No friends available to invite.")));
@@ -1717,14 +1750,14 @@
       pollList.replaceChildren(); eventList.replaceChildren();
       if (!polls.length) pollList.append(create("div", "empty-list", translate("No polls yet.")));
       for (const poll of polls) {
-        const card = create("div", "group-member-row"); const copy = create("div", "list-copy"); copy.append(create("strong", "", poll.question));
-        for (const option of poll.options || []) { const vote = create("button", "button secondary", `${option.label} · ${option.votes}`); vote.disabled = poll.closed_at || poll.my_option_id === option.id; vote.onclick = async () => { try { await request(`/v1/group-polls/${encodeURIComponent(poll.id)}/vote`, { method: "POST", body: JSON.stringify({ option_id: option.id }) }); await openGroupPlanner(); } catch (error) { toast(error.message, true); } }; copy.append(vote); }
+        const card = create("div", "group-member-row"); const copy = create("div", "list-copy"); copy.append(createText("strong", "", poll.question));
+        for (const option of poll.options || []) { const vote = createText("button", "button secondary", `${option.label} · ${option.votes}`); vote.disabled = poll.closed_at || poll.my_option_id === option.id; vote.onclick = async () => { try { await request(`/v1/group-polls/${encodeURIComponent(poll.id)}/vote`, { method: "POST", body: JSON.stringify({ option_id: option.id }) }); await openGroupPlanner(); } catch (error) { toast(error.message, true); } }; copy.append(vote); }
         card.append(copy); pollList.append(card);
       }
       if (!events.length) eventList.append(create("div", "empty-list", translate("No upcoming events.")));
       for (const item of events) {
         const card = create("div", "group-member-row"); const copy = create("div", "list-copy"); const when = new Date(item.scheduled_at);
-        copy.append(create("strong", "", item.title), create("span", "", Number.isNaN(when.getTime()) ? item.scheduled_at : when.toLocaleString()), create("span", "", `${translate("Going")}: ${item.going} · ${translate("Maybe")}: ${item.maybe}`));
+        copy.append(createText("strong", "", item.title), create("span", "", Number.isNaN(when.getTime()) ? item.scheduled_at : when.toLocaleString()), create("span", "", `${translate("Going")}: ${item.going} · ${translate("Maybe")}: ${item.maybe}`));
         const actions = create("div", "request-actions"); for (const [status, label] of [["going", "Going"], ["maybe", "Maybe"], ["declined", "Declined"]]) { const button = create("button", "button secondary", translate(label)); button.disabled = item.my_status === status; button.onclick = async () => { try { await request(`/v1/group-events/${encodeURIComponent(item.id)}/rsvp`, { method: "POST", body: JSON.stringify({ status }) }); await openGroupPlanner(); } catch (error) { toast(error.message, true); } }; actions.append(button); }
         card.append(copy, actions); eventList.append(card);
       }
@@ -1748,6 +1781,139 @@
     ids = [...new Set(ids)].sort();
     state.cryptoMemberIds.set(conversationId, ids);
     return ids;
+  }
+  function rememberDeletedCryptoMembers(conversationId, cryptoLock) {
+    const ids = Array.isArray(cryptoLock?.deletedMemberIds) ? [...new Set(cryptoLock.deletedMemberIds.filter(id => typeof id === "string"))].sort() : [];
+    state.cryptoDeletedMemberIds.set(conversationId, ids);
+    return ids;
+  }
+  // Accounts the server recorded as deleted from this MLS-locked group. Their
+  // leaves may remain in the MLS roster until the owner commits their removal.
+  async function deletedCryptoMemberIds(conversationId) {
+    const cached = state.cryptoDeletedMemberIds.get(conversationId);
+    if (cached) return cached;
+    const conversation = state.active?.id === conversationId ? state.active : state.conversations.find(item => item.id === conversationId);
+    if (conversation?.kind !== "group") return [];
+    return rememberDeletedCryptoMembers(conversationId, await request(`/v1/conversations/${encodeURIComponent(conversationId)}/crypto-lock`));
+  }
+  // Leaves of deleted accounts are removed one staged commit at a time
+  // through the ordinary membership outbox. The owner does it at once; each
+  // admin, in join order, only after a further grace period, so an offline
+  // owner does not leave the leaf in place while two online managers rarely
+  // race. The server accepts one removal per leaf and answers a later one
+  // with 410, which counts as done.
+  const DELETED_LEAF_ADMIN_GRACE_MS = 2 * 60 * 1000;
+  const deletedLeafChecks = new Map();
+  const deletedLeafRefusals = new Map();
+  const deletedLeafStaleRetries = new Map();
+  // The server counts the membership commits it accepted for a conversation
+  // (commitSeq) and takes a commit only if it names the current count, so
+  // two commits built on the same group state are never both relayed.
+  // state.cryptoCommitSeq holds, per group, a count this device is known to
+  // have applied: it is set when a sync has read the relay to its end (the
+  // lock status is read before the events, and every listed page says the
+  // count at its listing), and moved on by this device's own accepted
+  // commit. No entry: not known, so no commit may be built. null: a server
+  // without the count.
+  function knownCryptoCommitSeq(conversationId) {
+    const commitSeq = state.cryptoCommitSeq.get(conversationId);
+    if (commitSeq === undefined) throw new Error(translate("This device has not caught up with the encrypted group yet. Try again in a moment."));
+    return commitSeq;
+  }
+  async function syncedCryptoCommitSeq(conversationId) {
+    await syncCryptoEvents(conversationId);
+    return knownCryptoCommitSeq(conversationId);
+  }
+  // A staged commit the server refused was dropped, so the change the user
+  // asked for did not happen: the action ends as a failure, not as done.
+  // One refused as built on an older group state is repeated on the synced
+  // group.
+  function requireCurrentMembershipResult(result) {
+    if (result === "stale") throw new Error(translate("The encrypted group changed while this update was being prepared. Try again."));
+    if (result === "refused") throw new Error(translate("The server refused this encrypted membership change, so it was discarded."));
+    return result;
+  }
+  function scheduleDeletedLeafCheck(conversationId, delay) {
+    if (deletedLeafChecks.has(conversationId)) return;
+    deletedLeafChecks.set(conversationId, setTimeout(() => {
+      deletedLeafChecks.delete(conversationId);
+      if (state.user) void syncCryptoEvents(conversationId);
+    }, Math.max(1000, delay)));
+  }
+  async function removeDeletedCryptoMembers(conversation) {
+    const conversationId = conversation.id;
+    const deletedMemberIds = await deletedCryptoMemberIds(conversationId);
+    if (!deletedMemberIds.length || state.cryptoMembershipPending.has(conversationId)) return;
+    const members = await request(`/v1/conversations/${encodeURIComponent(conversationId)}/members`);
+    const me = members.find(member => member.id === state.user?.id);
+    if (!me || !["owner", "admin"].includes(me.role)) return;
+    if (me.role !== "owner") {
+      const admins = members.filter(member => member.role === "admin")
+        .sort((left, right) => (Number(left.joined_seq) || 0) - (Number(right.joined_seq) || 0) || String(left.id).localeCompare(String(right.id)));
+      const rank = admins.findIndex(member => member.id === me.id) + 1;
+      const lock = await request(`/v1/conversations/${encodeURIComponent(conversationId)}/crypto-lock`);
+      const pendingSince = (Array.isArray(lock?.deletedMembers) ? lock.deletedMembers : [])
+        .filter(member => !member.removalCommittedAt).map(member => Date.parse(member.deletedAt)).filter(Number.isFinite);
+      if (!pendingSince.length) return;
+      // How long the leaf has waited is the difference of two server
+      // timestamps (deletedAt and the server's own now), so a wrong clock on
+      // this device neither brings its turn forward nor delays it. Only a
+      // server without serverNow is compared with the local clock.
+      const serverNow = Date.parse(lock?.serverNow);
+      const waited = (Number.isFinite(serverNow) ? serverNow : Date.now()) - Math.min(...pendingSince);
+      const remaining = rank * DELETED_LEAF_ADMIN_GRACE_MS - waited;
+      if (remaining > 0) { scheduleDeletedLeafCheck(conversationId, remaining); return; }
+    }
+    const expectedMemberIds = members.map(member => member.id).sort();
+    // After a refusal (or a 410) the same removal is not staged again until
+    // the roster or the deleted list changes, so the error shows only once.
+    const attemptKey = `${expectedMemberIds.join(",")}|${deletedMemberIds.join(",")}`;
+    if (deletedLeafRefusals.get(conversationId) === attemptKey) return;
+    for (let attempt = 0; attempt < 16; attempt++) {
+      // A commit is only built on a state this device knows it has applied:
+      // without a sync that reached the end of the relay, the next one decides.
+      const expectedCommitSeq = state.cryptoCommitSeq.get(conversationId);
+      if (expectedCommitSeq === undefined) return;
+      const update = await invoke("crypto_prepare_deleted_member_removal", {
+        userId: state.user.id, conversationId, expectedMemberIds, deletedMemberIds, expectedCommitSeq,
+      });
+      if (!update) { deletedLeafStaleRetries.delete(conversationId); return; }
+      const result = await publishGroupMembershipUpdate(conversation, update);
+      if (result === "stale") {
+        // Another manager's commit was accepted first. It reaches this device
+        // on the relay; the removal is looked at again on the new state (a
+        // few times, then left to the next roster or deleted-list change).
+        const retries = (deletedLeafStaleRetries.get(conversationId) || 0) + 1;
+        deletedLeafStaleRetries.set(conversationId, retries);
+        if (retries <= 3) scheduleDeletedLeafCheck(conversationId, 1000 * retries);
+        else deletedLeafRefusals.set(conversationId, attemptKey);
+        return;
+      }
+      if (result === "already_removed" || result === "refused") { deletedLeafRefusals.set(conversationId, attemptKey); return; }
+      deletedLeafStaleRetries.delete(conversationId);
+      if (update.action !== "remove_deleted") return;
+    }
+  }
+  // A takeover of a setup whose starter deleted their account is a reset: the
+  // server starts a new setup generation. The local group of an older
+  // generation is dropped (in the encryption database, together with the new
+  // generation) before anything of the new setup is processed; an equal or
+  // older value changes nothing there. The map only saves repeated calls.
+  async function applyCryptoSetupGeneration(conversationId, value) {
+    const generation = Number(value);
+    if (value == null || !Number.isSafeInteger(generation) || generation < 0) return false;
+    if ((state.cryptoSetupGenerations.get(conversationId) ?? -1) >= generation) return false;
+    const reset = await invoke("crypto_apply_setup_generation", { userId: state.user.id, conversationId, generation });
+    state.cryptoSetupGenerations.set(conversationId, generation);
+    if (!reset) return false;
+    // Nothing verified or staged for the old group applies to the new one.
+    localStorage.removeItem(cryptoBootstrapKey(conversationId));
+    localStorage.removeItem(cryptoObservedFingerprintKey(conversationId));
+    localStorage.removeItem(cryptoTrustedFingerprintKey(conversationId));
+    state.cryptoEnabled.delete(conversationId); state.cryptoPeerFingerprints.delete(conversationId);
+    state.cryptoDeletedMemberIds.delete(conversationId); state.cryptoMembershipPending.delete(conversationId);
+    deletedLeafRefusals.delete(conversationId); deletedLeafStaleRetries.delete(conversationId);
+    return true;
   }
   function currentCryptoFingerprint(conversationId) {
     return state.cryptoPeerFingerprints.get(conversationId) || localStorage.getItem(cryptoObservedFingerprintKey(conversationId)) || "";
@@ -1805,6 +1971,37 @@
     localStorage.setItem(cryptoTrustedFingerprintKey(conversationId), fingerprint);
     return true;
   }
+  // OpenMLS keeps no past-epoch secrets, so encrypted rows that arrived while
+  // this chat was not open must be decrypted (and cached) before a relay
+  // commit moves the group to the next epoch. Rows are decoded oldest first;
+  // paging stops at the first already cached row.
+  async function decodePendingEncryptedRows(conversationId) {
+    if (!await invoke("crypto_has_direct_group", { userId: state.user.id, conversationId })) return;
+    const pages = [];
+    let before = null;
+    for (let page = 0; page < 10; page++) {
+      let path = `/v1/conversations/${encodeURIComponent(conversationId)}/messages?limit=50`;
+      if (before != null) path += `&before=${encodeURIComponent(before)}`;
+      const rows = await request(path);
+      if (!Array.isArray(rows) || !rows.length) break;
+      const pending = [];
+      let reachedCached = false;
+      for (const row of rows) {
+        if (typeof row.content !== "string" || !row.content.startsWith("e2e1:") || !row.client_message_id || row.sender_id === state.user.id) continue;
+        // A cached row, or one already found undecryptable, is done.
+        const cache = await invoke("crypto_get_cached_text_state", { userId: state.user.id, conversationId, senderId: row.sender_id, clientMessageId: row.client_message_id });
+        if (cache?.content != null || cache?.undecryptable) reachedCached = true;
+        else pending.push(row);
+      }
+      pages.unshift(pending);
+      if (reachedCached || rows.length < 50) break;
+      before = rows[0].sequence;
+    }
+    for (const row of pages.flat()) {
+      try { await decodeMessageRow({ ...row, conversation_id: row.conversation_id || conversationId }, { beforePendingCommits: true }); }
+      catch (error) { console.warn("An encrypted message could not be decoded before a membership update.", error); }
+    }
+  }
   async function syncCryptoEvents(conversationId) {
     if (!state.user || !invoke) return;
     if (!state.cryptoEnabled.has(conversationId) && !state.cryptoLocked.has(conversationId)) return;
@@ -1813,7 +2010,26 @@
     const task = (async () => {
       const conversation = state.active?.id === conversationId ? state.active : state.conversations.find(item => item.id === conversationId);
       const conversationIsGroup = conversation?.kind === "group";
+      // A group's lock status is read before its relay events: every commit
+      // counted in its commitSeq was relayed before this read, so once the
+      // events below are applied to the end of the relay this device has
+      // applied at least that many commits. The same read brings the setup
+      // generation and the current deleted-member record.
+      let commitSeq = null;
+      let drained = false;
+      if (conversationIsGroup) {
+        const lock = await request(`/v1/conversations/${encodeURIComponent(conversationId)}/crypto-lock`);
+        rememberDeletedCryptoMembers(conversationId, lock);
+        await applyCryptoSetupGeneration(conversationId, lock?.setupGeneration);
+        if (Number.isSafeInteger(lock?.commitSeq)) {
+          commitSeq = lock.commitSeq;
+          // The server's count never goes back; if it did (a restored
+          // backup), what this device knew no longer means anything.
+          if (state.cryptoCommitSeq.get(conversationId) > commitSeq) state.cryptoCommitSeq.delete(conversationId);
+        } else state.cryptoCommitSeq.set(conversationId, null);
+      }
       const expectedMemberIds = await expectedCryptoMemberIds(conversationId);
+      let deletedMemberIds = conversationIsGroup ? await deletedCryptoMemberIds(conversationId) : [];
       const savedCursor = await invoke("crypto_get_event_cursor", { userId: state.user.id, conversationId });
       const localCursor = Number(localStorage.getItem(cryptoEventCursorKey(conversationId)) || 0);
       let cursor;
@@ -1826,22 +2042,44 @@
       }
       localStorage.setItem(cryptoEventCursorKey(conversationId), String(cursor));
       let holdForVerification = false;
+      // Rows of the current epoch are decoded right before each relay commit
+      // that would leave it, and only once that commit has passed every
+      // check (authenticated sender, roster) in a dry run.
+      let pendingRowsDecoded = false;
       for (let page = 0; page < 20; page++) {
         const events = await request(`/v1/conversations/${encodeURIComponent(conversationId)}/crypto-events?after=${cursor}&limit=100`);
-        if (!Array.isArray(events) || !events.length) break;
+        if (!Array.isArray(events) || !events.length) { drained = true; break; }
         for (const event of events) {
           const sequence = Number(event.sequence);
           if (!Number.isSafeInteger(sequence) || sequence <= cursor) continue;
+          // Every listed event carries the setup generation it belongs to.
+          if (conversationIsGroup && await applyCryptoSetupGeneration(conversationId, event.setup_generation)) {
+            deletedMemberIds = await deletedCryptoMemberIds(conversationId);
+            pendingRowsDecoded = false;
+          }
           if (state.cryptoEnabled.has(conversationId) && !cryptoIdentityTrusted(conversationId)) {
             holdForVerification = true;
             break;
           }
           if (event.sender_id !== state.user.id) {
+            if (!pendingRowsDecoded) {
+              let inspected = null;
+              try {
+                inspected = await invoke("crypto_inspect_event", {
+                  userId: state.user.id, conversationId, senderId: event.sender_id,
+                  eventSequence: sequence, conversationIsGroup, expectedMemberIds, deletedMemberIds, payload: event.payload,
+                });
+              } catch {}
+              if (inspected?.kind === "commit") {
+                await decodePendingEncryptedRows(conversationId);
+                pendingRowsDecoded = true;
+              }
+            }
             let result;
             try {
               result = await invoke("crypto_process_event", {
                 userId: state.user.id, conversationId, senderId: event.sender_id,
-                clientMessageId: event.id, eventSequence: sequence, conversationIsGroup, expectedMemberIds, payload: event.payload,
+                clientMessageId: event.id, eventSequence: sequence, conversationIsGroup, expectedMemberIds, deletedMemberIds, payload: event.payload,
               });
             } catch (error) {
               if (conversationIsGroup && event.recipient_id == null) {
@@ -1858,6 +2096,7 @@
               updateCryptoStatus(state.active?.id === conversationId ? state.active : { id: conversationId, kind: conversationIsGroup ? "group" : "direct" });
               if (!cryptoIdentityTrusted(conversationId)) holdForVerification = true;
             } else if (result.kind === "commit") {
+              pendingRowsDecoded = false;
               const latestFingerprint = conversationIsGroup
                 ? await invoke("crypto_group_fingerprint", { userId: state.user.id, conversationId })
                 : conversation?.peer_id
@@ -1874,9 +2113,13 @@
               const currentMemberIds = members.map(member => member.id).sort();
               const me = members.find(member => member.id === state.user?.id);
               if (me?.role === "owner") {
+                // While a leave request waits the server takes no other
+                // commit, and everything relayed before it is applied here,
+                // so the count this event was listed with is this device's.
                 const update = await invoke("crypto_prepare_group_leave_commit", {
                   userId: state.user.id, conversationId, operationId: result.content,
                   leavingUserId: event.sender_id, expectedMemberIds: currentMemberIds,
+                  expectedCommitSeq: Number.isSafeInteger(event.commit_seq) ? event.commit_seq : null,
                 });
                 await publishGroupMembershipUpdate(conversation || { id: conversationId, kind: "group" }, update);
               }
@@ -1894,7 +2137,20 @@
           if (holdForVerification) break;
         }
         if (holdForVerification) break;
-        if (events.length < 100) break;
+        // The page says the server's commit count when it was listed, and
+        // everything relayed to this device up to then is applied now (once
+        // the relay is read to its end).
+        const listedCommitSeq = events[events.length - 1]?.commit_seq;
+        if (commitSeq != null && Number.isSafeInteger(listedCommitSeq)) commitSeq = Math.max(commitSeq, listedCommitSeq);
+        if (events.length < 100) { drained = true; break; }
+      }
+      if (conversationIsGroup && commitSeq != null && drained && !holdForVerification) {
+        // An own commit that is staged but not merged is not applied here yet.
+        const staged = await invoke("crypto_get_pending_group_membership_update", { userId: state.user.id, conversationId });
+        if (!staged || staged.action === "leave_request") state.cryptoCommitSeq.set(conversationId, Math.max(state.cryptoCommitSeq.get(conversationId) ?? 0, commitSeq));
+      }
+      if (conversationIsGroup && !holdForVerification && await invoke("crypto_has_direct_group", { userId: state.user.id, conversationId })) {
+        await removeDeletedCryptoMembers(conversation || { id: conversationId, kind: "group" });
       }
       if (conversationIsGroup && await invoke("crypto_has_direct_group", { userId: state.user.id, conversationId })) {
         const fingerprint = await invoke("crypto_group_fingerprint", { userId: state.user.id, conversationId });
@@ -1921,12 +2177,28 @@
         const cryptoLock = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/crypto-lock`);
         if (cryptoLock.locked) state.cryptoLocked.add(conversation.id); else state.cryptoLocked.delete(conversation.id);
         if (cryptoLock.setupComplete) state.cryptoSetupComplete.add(conversation.id); else state.cryptoSetupComplete.delete(conversation.id);
+        rememberDeletedCryptoMembers(conversation.id, cryptoLock);
+        await applyCryptoSetupGeneration(conversation.id, cryptoLock.setupGeneration);
         const members = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/members`);
         const memberIds = members.map(member => member.id).sort();
         state.cryptoMemberIds.set(conversation.id, memberIds);
         const canStart = !cryptoLock.locked && members.some(member => member.id === state.user.id && ["owner", "admin"].includes(member.role));
         const canResume = cryptoLock.locked && !cryptoLock.setupComplete && cryptoLock.lockedBy === state.user.id;
-        if (canStart || canResume) state.cryptoCanManage.add(conversation.id); else state.cryptoCanManage.delete(conversation.id);
+        // A setup left unfinished by a deleted account is taken over by the
+        // owner, or by the oldest admin when the group has no owner.
+        const successor = members.filter(member => ["owner", "admin"].includes(member.role))
+          .sort((left, right) => (left.role === "owner" ? 0 : 1) - (right.role === "owner" ? 0 : 1) || (Number(left.joined_seq) || 0) - (Number(right.joined_seq) || 0))[0];
+        const canTakeOver = cryptoLock.locked && !cryptoLock.setupComplete && cryptoLock.lockedByDeletedAccount === true && successor?.id === state.user.id;
+        if (canStart || canResume || canTakeOver) state.cryptoCanManage.add(conversation.id); else state.cryptoCanManage.delete(conversation.id);
+        // The takeover is always a reset, never an adoption: nobody can know
+        // which members received the deleted starter's Welcome. The server
+        // starts a new setup generation; this device drops the old group
+        // (if it joined it) and then sets the group up again like any other.
+        if (canTakeOver) {
+          const taken = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/crypto-lock`, { method: "POST", body: JSON.stringify({ member_ids: memberIds }) });
+          rememberDeletedCryptoMembers(conversation.id, taken);
+          await applyCryptoSetupGeneration(conversation.id, taken?.setupGeneration);
+        }
       } else {
         const cryptoLock = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/crypto-lock`);
         if (cryptoLock.locked) state.cryptoLocked.add(conversation.id); else state.cryptoLocked.delete(conversation.id);
@@ -1971,6 +2243,9 @@
         state.cryptoEnabled.delete(conversation.id); updateCryptoStatus(conversation);
       }
     } catch (error) {
+      // The header button and status are shared; a late failure for a
+      // conversation the user already left must not overwrite the current one.
+      if (state.active?.id !== conversation.id) return;
       const locked = state.cryptoLocked.has(conversation.id);
       const canManage = state.cryptoCanManage.has(conversation.id);
       const complete = state.cryptoSetupComplete.has(conversation.id);
@@ -2021,14 +2296,19 @@
     const inFlight = state.cryptoMembershipOperations.get(conversationId);
     if (inFlight) return inFlight;
     state.cryptoMembershipPending.add(conversationId);
-    const task = (async () => {
-      if (pending.action === "remove") {
+    let accepted = false;
+    // The commit count the staged commit was built on (saved with it).
+    const expectedCommitSeq = Number.isSafeInteger(pending.expectedCommitSeq) ? pending.expectedCommitSeq : undefined;
+    const task = (async () => { try {
+      if (pending.action === "remove" || pending.action === "remove_deleted") {
         if (!Array.isArray(pending.memberIds) || pending.memberIds.length !== 1) throw new Error(translate("The saved encrypted removal is invalid."));
         await request(`/v1/conversations/${encodeURIComponent(conversationId)}/crypto-membership/remove/${encodeURIComponent(pending.memberIds[0])}`, {
           method: "POST",
           body: JSON.stringify({
             operation_id: pending.operationId,
             expected_member_ids: pending.expectedMemberIds,
+            expected_commit_seq: expectedCommitSeq,
+            member_ids: pending.memberIds,
             commit_payload: pending.commitPayload,
             welcome_payload: "",
           }),
@@ -2054,6 +2334,7 @@
           body: JSON.stringify({
             operation_id: pending.operationId,
             expected_member_ids: pending.expectedMemberIds,
+            expected_commit_seq: expectedCommitSeq,
             commit_payload: pending.commitPayload,
             welcome_payload: "",
           }),
@@ -2066,6 +2347,7 @@
             crypto_update: {
               operation_id: pending.operationId,
               expected_member_ids: pending.expectedMemberIds,
+              expected_commit_seq: expectedCommitSeq,
               commit_payload: pending.commitPayload,
               welcome_payload: pending.welcomePayload,
             },
@@ -2074,10 +2356,15 @@
       } else {
         throw new Error(translate("The saved encrypted membership action is not supported."));
       }
+      accepted = true;
       const fingerprint = await invoke("crypto_finalize_group_membership_update", {
         userId: state.user.id, conversationId, operationId: pending.operationId,
       });
       state.cryptoMembershipPending.delete(conversationId);
+      // The accepted commit is merged: this device is one commit further.
+      if (expectedCommitSeq !== undefined && state.cryptoCommitSeq.get(conversationId) !== null) {
+        state.cryptoCommitSeq.set(conversationId, Math.max(state.cryptoCommitSeq.get(conversationId) ?? 0, expectedCommitSeq + 1));
+      }
       const members = await request(`/v1/conversations/${encodeURIComponent(conversationId)}/members`);
       const memberIds = members.map(member => member.id).sort();
       state.cryptoMemberIds.set(conversationId, memberIds);
@@ -2086,7 +2373,25 @@
       localStorage.setItem(cryptoObservedFingerprintKey(conversationId), fingerprint);
       updateCryptoStatus(conversation);
       return fingerprint;
-    })();
+    } catch (error) {
+      // A definitive refusal (a 4xx other than an expired session or a rate
+      // limit) never succeeds on retry: drop the staged commit once instead
+      // of retrying it forever. A deleted leaf already removed by another
+      // owner/admin (410) counts as done; its commit arrives on the relay.
+      const status = error?.status;
+      const definitive = !accepted && Number.isInteger(status) && status >= 400 && status < 500 && status !== 401 && status !== 429
+        && ["add", "remove", "remove_deleted", "leave"].includes(pending.action);
+      if (!definitive) throw error;
+      await invoke("crypto_discard_group_membership_update", { userId: state.user.id, conversationId, operationId: pending.operationId });
+      state.cryptoMembershipPending.delete(conversationId);
+      // Built on a group state the server has moved past (another manager's
+      // commit was accepted first): nothing is wrong, the change is made
+      // again on the synced group. What this device knew is out of date.
+      if (error.code === "stale_commit_seq") { state.cryptoCommitSeq.delete(conversationId); return "stale"; }
+      if (status === 410 && pending.action === "remove_deleted") return "already_removed";
+      toast(`${translate("The server refused this encrypted membership change, so it was discarded.")} ${translate(error.message) || ""}`.trim(), true);
+      return "refused";
+    } })();
     state.cryptoMembershipOperations.set(conversationId, task);
     try {
       return await task;
@@ -2109,6 +2414,11 @@
     try {
       const result = await publishGroupMembershipUpdate(conversation, pending);
       if (result === "leave_request_pending") return true;
+      // A change the user asked for was dropped as built on an older group
+      // state; a deleted account's leaf is handled again by the next sync.
+      if (result === "stale" && pending.action !== "remove_deleted" && state.active?.id === conversation.id) {
+        toast(translate("The encrypted group changed while this update was being prepared. Try again."), true);
+      }
       return true;
     } catch (error) {
       if (state.active?.id === conversation.id) {
@@ -2173,9 +2483,12 @@
         const approved = await askConfirm({ title: state.language === "tr" ? "Grup güvenlik kodları" : "Group security codes", message: `${translate("Verify the full group security code with every member through another trusted channel before continuing. The list below shows each member's device code.")}\n\n${deviceCodes.join("\n\n")}`, confirmText: state.language === "tr" ? "Doğruladım" : "I verified them" });
         if (!approved) { toast(translate("Encryption setup was cancelled. The one-time key packages were already claimed; members may need to publish fresh packages.")); return; }
         const roster = members.map(member => member.id).sort();
-        await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/crypto-lock`, {
+        const locked = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/crypto-lock`, {
           method: "POST", body: JSON.stringify({ member_ids: roster }),
         });
+        // A lock taken over from a deleted account starts a new generation:
+        // an old group on this device must be gone before the new one is made.
+        await applyCryptoSetupGeneration(conversation.id, locked?.setupGeneration);
         state.cryptoMemberIds.set(conversation.id, roster);
         state.cryptoLocked.add(conversation.id);
         state.cryptoSetupComplete.delete(conversation.id);
@@ -2219,28 +2532,46 @@
     }
   }
   $("#enableEncryptionButton").onclick = () => void enableEncryption();
-  async function decodeMessageRow(message) {
+  // beforePendingCommits decodes a row against this device's current MLS
+  // epoch, right before pending relay commits move the group to a new epoch.
+  async function decodeMessageRow(message, { beforePendingCommits = false } = {}) {
     if (typeof message.content !== "string" || !message.content.startsWith("e2e1:")) return message;
     const messageKey = message.client_message_id || message.id;
-    if (state.cryptoMessageDecoding.has(messageKey)) return state.cryptoMessageDecoding.get(messageKey);
+    const inFlight = state.cryptoMessageDecoding.get(messageKey);
+    if (inFlight && !beforePendingCommits) return inFlight;
+    // An ordinary decode already in flight may fail on the changed server
+    // roster; the pending-commit pass then decodes the row in its own mode.
+    if (inFlight) { try { return await inFlight; } catch {} }
     const task = (async () => {
-      let content = await invoke("crypto_get_cached_sent_text", { clientMessageId: message.client_message_id });
-      if (content == null) {
+      const cacheKey = { userId: state.user.id, conversationId: message.conversation_id, senderId: message.sender_id, clientMessageId: message.client_message_id };
+      const cache = await invoke("crypto_get_cached_text_state", cacheKey);
+      if (cache?.undecryptable) throw new Error(translate("This message could not be decrypted on this device."));
+      let content = cache?.content ?? null;
+      if (content == null && beforePendingCommits) {
+        const result = await invoke("crypto_decode_pending_history", {
+          userId: state.user.id, conversationId: message.conversation_id, senderId: message.sender_id,
+          clientMessageId: message.client_message_id,
+          conversationIsGroup: (state.active?.id === message.conversation_id ? state.active : state.conversations.find(item => item.id === message.conversation_id))?.kind === "group",
+          payload: message.content.slice(5),
+        });
+        if (result.kind === "application") content = result.content;
+      } else if (content == null) {
         const result = await invoke("crypto_process_event", {
           userId: state.user.id, conversationId: message.conversation_id, senderId: message.sender_id,
           clientMessageId: message.client_message_id,
           conversationIsGroup: (state.active?.id === message.conversation_id ? state.active : state.conversations.find(item => item.id === message.conversation_id))?.kind === "group",
-          expectedMemberIds: await expectedCryptoMemberIds(message.conversation_id), payload: message.content.slice(5),
+          expectedMemberIds: await expectedCryptoMemberIds(message.conversation_id),
+          deletedMemberIds: await deletedCryptoMemberIds(message.conversation_id), payload: message.content.slice(5),
         });
         if (result.kind === "application") content = result.content;
-        else if (result.kind === "own_message") content = await invoke("crypto_get_cached_sent_text", { clientMessageId: message.client_message_id });
+        else if (result.kind === "own_message") content = await invoke("crypto_get_cached_sent_text", cacheKey);
       }
       if (typeof content !== "string") throw new Error(translate("This message could not be decrypted on this device."));
       return { ...message, content, encrypted: true };
     })();
     state.cryptoMessageDecoding.set(messageKey, task);
     try { return await task; }
-    finally { state.cryptoMessageDecoding.delete(messageKey); }
+    finally { if (state.cryptoMessageDecoding.get(messageKey) === task) state.cryptoMessageDecoding.delete(messageKey); }
   }
   async function showIncomingMessage(message) {
     if (state.active?.id !== message.conversation_id || state.page !== "messages") return;
@@ -2367,7 +2698,7 @@
       try {
         const parsed = new URL(candidate);
         if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new Error("Unsupported link protocol");
-        const link = create("button", "message-link", candidate);
+        const link = createText("button", "message-link", candidate);
         link.type = "button";
         link.title = candidate;
         link.setAttribute("aria-label", `${translate("Open link")}: ${candidate}`);
@@ -2416,13 +2747,13 @@
     const ownMessage = message.sender_id === state.user.id;
     const row = create("article", `message ${ownMessage ? "own-message" : "peer-message"}`); row.dataset.messageId = message.id; row.dataset.sequence = String(message.sequence);
     const avatar = create("div", "mini-avatar message-avatar"); setAvatar(avatar, message.sender_name, message.sender_avatar); avatar.title = message.sender_name; avatar.setAttribute("aria-label", message.sender_name); row.append(avatar);
-    const main = create("div", "message-main"); const meta = create("div", "message-meta"); meta.append(create("strong", "", message.sender_name)); if (ownMessage) meta.append(create("span", "message-owner-label", translate("You"))); if (message.encrypted) { const lock = create("span", "message-encrypted-badge"); lock.setAttribute("role", "img"); lock.setAttribute("aria-label", translate("Encrypted message")); lock.title = lock.getAttribute("aria-label"); lock.append(uiIcon("lock")); meta.append(lock); } if (message.pinned_at) { const pinned = create("span", "message-pinned-badge", "Pinned"); pinned.prepend(uiIcon("pin")); meta.append(pinned); } const time = create("time", "", timeLabel(message.created_at)); time.dateTime = message.created_at; meta.append(time); if (message.edited_at) meta.append(create("span", "optional", "edited"));
+    const main = create("div", "message-main"); const meta = create("div", "message-meta"); meta.append(createText("strong", "", message.sender_name)); if (ownMessage) meta.append(create("span", "message-owner-label", translate("You"))); if (message.encrypted) { const lock = create("span", "message-encrypted-badge"); lock.setAttribute("role", "img"); lock.setAttribute("aria-label", translate("Encrypted message")); lock.title = lock.getAttribute("aria-label"); lock.append(uiIcon("lock")); meta.append(lock); } if (message.pinned_at) { const pinned = create("span", "message-pinned-badge", "Pinned"); pinned.prepend(uiIcon("pin")); meta.append(pinned); } const time = create("time", "", timeLabel(message.created_at)); time.dateTime = message.created_at; meta.append(time); if (message.edited_at) meta.append(create("span", "optional", "edited"));
     main.append(meta);
     if (message.reply_to_id) {
       const quote = create("button", "reply-reference"); quote.type = "button";
       const quoteName = message.reply_to_sender || translate("Reply");
       const quoteContent = (message.reply_to_content || "").startsWith("file:") ? translate("File shared") : (message.reply_to_content || "").startsWith("e2e1:") ? translate("Encrypted message") : (message.reply_to_content || "");
-      quote.append(create("strong", "", quoteName), create("span", "", quoteContent.slice(0, 160)));
+      quote.append(createText("strong", "", quoteName), createText("span", "", quoteContent.slice(0, 160)));
       quote.onclick = () => { const target = $(`[data-message-id="${CSS.escape(message.reply_to_id)}"]`, container); if (target) { target.scrollIntoView({ behavior: "smooth", block: "center" }); target.classList.add("message-highlight"); setTimeout(() => target.classList.remove("message-highlight"), 1000); } };
       main.append(quote);
     }
@@ -2538,8 +2869,10 @@
       if (!older && state.cryptoEnabled.has(conversationId) && !state.cryptoMembershipPending.has(conversationId)) await syncCryptoEvents(conversationId);
       const rows = await request(path); if (state.active?.id !== conversationId) return; if (!older) { clearAttachmentUrls(); container.replaceChildren(); }
       for (const row of rows) {
-        try { appendMessage(await decodeMessageRow(row), older); }
-        catch (error) { if (row.content?.startsWith("e2e1:")) toast(error.message || translate("This message could not be decrypted on this device."), true); else appendMessage(row, older); }
+        // Decoding awaits; stop if the user opened another chat meanwhile so
+        // this chat's rows are never appended into the other chat's timeline.
+        try { const decoded = await decodeMessageRow(row); if (state.active?.id !== conversationId) return; appendMessage(decoded, older); }
+        catch (error) { if (state.active?.id !== conversationId) return; if (row.content?.startsWith("e2e1:")) toast(error.message || translate("This message could not be decrypted on this device."), true); else appendMessage(row, older); }
       }
       await refreshMessageReactions();
       state.older = rows.length === 50; $("#loadOlderRow").classList.toggle("hidden", !state.older || !rows.length);
@@ -2567,14 +2900,16 @@
     if (!raw) return true;
     const pending = JSON.parse(raw);
     const sent = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/messages`, {
-      method: "POST", body: JSON.stringify({ client_message_id: pending.clientMessageId, content: `e2e1:${pending.payload}`, reply_to_id: null }),
+      method: "POST", body: JSON.stringify({ client_message_id: pending.clientMessageId, content: `e2e1:${pending.payload}`, reply_to_id: null, attachment_ids: Array.isArray(pending.attachmentIds) ? pending.attachmentIds : [] }),
     });
     localStorage.removeItem(key);
-    const plaintext = await invoke("crypto_get_cached_sent_text", { clientMessageId: pending.clientMessageId });
+    const plaintext = await invoke("crypto_get_cached_sent_text", { userId: state.user.id, conversationId: conversation.id, senderId: state.user.id, clientMessageId: pending.clientMessageId });
     if (state.active?.id === conversation.id && plaintext) appendMessage({ ...sent, content: plaintext, encrypted: true });
     return true;
   }
-  async function sendMessage(content, clientId = crypto.randomUUID(), replyToId = null, targetConversation = state.active) {
+  // attachmentIds: encrypted uploads whose keys this encrypted message carries;
+  // the server links them so deleting the message deletes them too.
+  async function sendMessage(content, clientId = crypto.randomUUID(), replyToId = null, targetConversation = state.active, attachmentIds = []) {
     if (!targetConversation || !content.trim()) return;
     if (state.cryptoMembershipPending.has(targetConversation.id)) {
       toast(translate("Pending encrypted membership update is being retried…"), true);
@@ -2598,9 +2933,9 @@
         const encrypted = await invoke("crypto_encrypt_text", {
           userId: state.user.id, conversationId: conversation.id, clientMessageId: clientId, content,
         });
-        localStorage.setItem(encryptedMessagePendingKey(conversation.id), JSON.stringify({ clientMessageId: clientId, payload: encrypted.payload }));
+        localStorage.setItem(encryptedMessagePendingKey(conversation.id), JSON.stringify({ clientMessageId: clientId, payload: encrypted.payload, attachmentIds }));
         const message = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/messages`, {
-          method: "POST", body: JSON.stringify({ client_message_id: clientId, content: `e2e1:${encrypted.payload}`, reply_to_id: null }),
+          method: "POST", body: JSON.stringify({ client_message_id: clientId, content: `e2e1:${encrypted.payload}`, reply_to_id: null, attachment_ids: attachmentIds }),
         });
         localStorage.removeItem(encryptedMessagePendingKey(conversation.id));
         if (state.active?.id === conversation.id) {
@@ -2692,13 +3027,13 @@
         image.onload = () => loading.remove();
         image.onerror = () => {
           loading.remove(); image.remove();
-          const fallback = create("a", "attachment-download", filename); fallback.prepend(uiIcon("download")); fallback.href = url; fallback.download = filename; container.prepend(fallback);
+          const fallback = createText("a", "attachment-download", filename); fallback.prepend(uiIcon("download")); fallback.href = url; fallback.download = filename; container.prepend(fallback);
         };
         image.src = previewUrl;
         image.onclick = () => openMediaPreview({ url: previewUrl, filename, type: "image" });
         image.onkeydown = event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openMediaPreview({ url: previewUrl, filename, type: "image" }); } };
         container.append(image);
-        container.append(create("span", "attachment-filename", filename));
+        container.append(createText("span", "attachment-filename", filename));
       } else if (attachment.content_type?.startsWith("video/")) {
         const loading = create("span", "attachment-loading", state.language === "tr" ? "Video hazırlanıyor…" : "Preparing video…"); container.append(loading);
         let previewUrl = url;
@@ -2713,13 +3048,13 @@
         if (!container.isConnected || !messageRow?.isConnected) return;
         const video = create("video", "message-video"); video.src = previewUrl; video.controls = true; video.preload = "metadata"; video.playsInline = true; video.title = translate("Open preview");
         video.onloadeddata = () => loading.remove();
-        video.onerror = () => { loading.remove(); video.remove(); const fallback = create("a", "attachment-download", filename); fallback.prepend(uiIcon("download")); fallback.href = url; fallback.download = filename; container.prepend(fallback); };
+        video.onerror = () => { loading.remove(); video.remove(); const fallback = createText("a", "attachment-download", filename); fallback.prepend(uiIcon("download")); fallback.href = url; fallback.download = filename; container.prepend(fallback); };
         video.onclick = event => { if (event.detail >= 2) openMediaPreview({ url: previewUrl, filename, type: "video" }); };
         const openPlayer = create("button", "attachment-preview", state.language === "tr" ? "Tam oynatıcıyı aç" : "Open full player"); openPlayer.type = "button"; openPlayer.onclick = () => openMediaPreview({ url: previewUrl, filename, type: "video" });
         container.append(video, openPlayer);
-        container.append(create("span", "attachment-filename", filename));
+        container.append(createText("span", "attachment-filename", filename));
       } else {
-        const link = create("a", "attachment-download", filename); link.prepend(uiIcon("download")); link.href = url; link.download = filename; container.append(link);
+        const link = createText("a", "attachment-download", filename); link.prepend(uiIcon("download")); link.href = url; link.download = filename; container.append(link);
       }
     } catch { container.append(create("span", "attachment-download unavailable", translate("Could not load this file."))); }
   }
@@ -2737,7 +3072,7 @@
   function renderEncryptedAttachment(main, manifest) {
     const card = create("div", "message-attachment encrypted-attachment");
     card.dataset.attachmentId = manifest.attachmentId;
-    { const fileLabel = create("span", "attachment-filename", manifest.fileName); fileLabel.prepend(uiIcon("lock")); card.append(fileLabel); }
+    { const fileLabel = createText("span", "attachment-filename", manifest.fileName); fileLabel.prepend(uiIcon("lock")); card.append(fileLabel); }
     card.append(create("span", "attachment-size", formatFileSize(manifest.sizeBytes)));
     const actions = create("div", "encrypted-attachment-actions");
     const save = create("button", "attachment-download", translate("Save decrypted file")); save.type = "button";
@@ -2844,7 +3179,7 @@
       });
       if (!manifest) return;
       const content = ENCRYPTED_ATTACHMENT_MARKER + JSON.stringify(manifest);
-      if (await sendMessage(content, crypto.randomUUID(), null, conversation)) toast(translate("Secure file sent."));
+      if (await sendMessage(content, crypto.randomUUID(), null, conversation, [manifest.attachmentId])) toast(translate("Secure file sent."));
     } catch (error) {
       toast(translate(error.message) || error.message || translate("Could not load this file."), true);
     } finally {
@@ -2918,6 +3253,8 @@
               state.cryptoCanManage.delete(data.conversation_id);
               state.cryptoPeerFingerprints.delete(data.conversation_id);
               state.cryptoMemberIds.delete(data.conversation_id);
+              state.cryptoDeletedMemberIds.delete(data.conversation_id);
+              state.cryptoCommitSeq.delete(data.conversation_id);
               state.cryptoMembershipPending.delete(data.conversation_id);
               state.cryptoSyncing.delete(data.conversation_id);
               localStorage.removeItem(cryptoObservedFingerprintKey(data.conversation_id));
@@ -2937,7 +3274,7 @@
       }
       else if (data.type === "presence_updated" && data.user_id) {
         state.presence.set(data.user_id, data.mode || "online");
-        if (data.user_id === state.user?.id) state.presenceMode = data.mode || "online";
+        if (data.user_id === state.user?.id) { state.presenceMode = data.mode || "online"; state.presenceLoaded = true; }
         updateIdentity(); renderSidebar();
         if (state.active?.kind === "direct" && state.active.peer_id === data.user_id) void openConversation(state.active.id, false);
       }
@@ -3213,6 +3550,9 @@
     voiceClient = window.GhostChatVoice.create({
       getSettings: voiceSettings,
       getUserId: () => state.user?.id || "",
+      // Until this account's saved mode is known (the presence request
+      // failed or has not answered) it may be invisible, so stay silent.
+      isInvisible: () => state.presenceMode === "invisible" || (!!state.user && !state.presenceLoaded),
       getIceConfiguration: async () => {
         try { return await request("/v1/voice/ice"); }
         catch (error) {
@@ -3390,6 +3730,7 @@
         if (!cryptoLock.setupComplete || !state.cryptoEnabled.has(conversationId)) {
           throw new Error(translate("This encrypted group can only be changed from a device that has joined its MLS group."));
         }
+        await syncedCryptoCommitSeq(conversationId);
         const pending = await invoke("crypto_get_pending_group_membership_update", { userId: state.user.id, conversationId });
         if (pending) {
           const pendingMembers = [...(pending.memberIds || [])].sort();
@@ -3397,7 +3738,7 @@
           if (pending.action !== "add" || pendingMembers.length !== selectedMembers.length || pendingMembers.some((id, index) => id !== selectedMembers[index])) {
             throw new Error(translate("Finish the pending encrypted membership update before starting another one."));
           }
-          await publishGroupMembershipUpdate(conversation, pending);
+          requireCurrentMembershipResult(await publishGroupMembershipUpdate(conversation, pending));
         } else {
           const members = await request(`/v1/conversations/${encodeURIComponent(conversationId)}/members`);
           const expectedMemberIds = members.map(member => member.id).sort();
@@ -3421,10 +3762,11 @@
             toast(translate("Encryption update cancelled. The one-time key packages were already claimed; the selected friends may need to publish fresh packages."));
             return;
           }
+          // Read again after the dialog: commits applied meanwhile count.
           const update = await invoke("crypto_prepare_group_membership_update", {
-            userId: state.user.id, conversationId, expectedMemberIds, peers: keyPackages,
+            userId: state.user.id, conversationId, expectedMemberIds, peers: keyPackages, expectedCommitSeq: knownCryptoCommitSeq(conversationId),
           });
-          await publishGroupMembershipUpdate(conversation, update);
+          requireCurrentMembershipResult(await publishGroupMembershipUpdate(conversation, update));
         }
       } else {
         await request(`/v1/conversations/${encodeURIComponent(conversationId)}/members`, {
@@ -3504,7 +3846,27 @@
     } catch (error) { toast(error.message, true); }
     finally { submit.disabled = false; }
   });
-  $("#composer").addEventListener("submit", async event => { event.preventDefault(); const input = $("#messageInput"); const content = input.value; if (!content.trim()) return; const reply = state.replyingTo; input.value = ""; input.style.height = "auto"; if (await sendMessage(content, crypto.randomUUID(), reply?.id || null) && state.replyingTo?.id === reply?.id) setReplyTarget(null); });
+  // A failed send whose text was given back keeps its client message id, so
+  // resending it unchanged lets the server deduplicate it if the failed
+  // request had in fact arrived. Changed text or a changed reply target is a
+  // new message (the server would return the old row for a reused id).
+  let restoredDraft = null;
+  function fitComposer(input) { input.style.height = "auto"; input.style.height = `${Math.min(input.scrollHeight, 180)}px`; }
+  $("#composer").addEventListener("submit", async event => {
+    event.preventDefault(); const input = $("#messageInput"); const content = input.value; if (!content.trim()) return; const reply = state.replyingTo; input.value = ""; input.style.height = "auto";
+    const conversation = state.active;
+    const replyToId = reply?.id || null;
+    const clientId = restoredDraft && conversation && restoredDraft.conversationId === conversation.id && restoredDraft.content === content && restoredDraft.replyToId === replyToId ? restoredDraft.clientId : crypto.randomUUID();
+    restoredDraft = null;
+    if (await sendMessage(content, clientId, replyToId, conversation)) { if (state.replyingTo?.id === reply?.id) setReplyTarget(null); return; }
+    // Give a failed message back, unless the user moved on or typed again, or
+    // its ciphertext is already queued for automatic retry (restoring it would
+    // let the same message be sent twice).
+    if (!conversation || state.active?.id !== conversation.id || input.value) return;
+    let queued = false;
+    try { queued = JSON.parse(localStorage.getItem(encryptedMessagePendingKey(conversation.id)) || "null")?.clientMessageId === clientId; } catch {}
+    if (!queued) { input.value = content; fitComposer(input); restoredDraft = { conversationId: conversation.id, content, replyToId, clientId }; }
+  });
   $("#cancelReply").onclick = () => setReplyTarget(null);
   $("#attachFileButton").onclick = () => {
     if (state.active && state.cryptoEnabled.has(state.active.id)) void uploadEncryptedAttachment();
@@ -3512,7 +3874,7 @@
   };
   $("#attachmentInput").addEventListener("change", event => { const files = event.target.files; if (files?.length) void uploadFiles(files); });
   $("#messageInput").addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); $("#composer").requestSubmit(); } });
-  $("#messageInput").addEventListener("input", event => { event.target.style.height = "auto"; event.target.style.height = `${Math.min(event.target.scrollHeight, 180)}px`; sendTyping(!!event.target.value.trim()); });
+  $("#messageInput").addEventListener("input", event => { fitComposer(event.target); sendTyping(!!event.target.value.trim()); });
   const mediaDropTargets = [$("#composer"), $("#messages")];
   for (const target of mediaDropTargets) {
     target.addEventListener("dragover", event => { if (event.dataTransfer?.types.includes("Files")) { event.preventDefault(); target.classList.add("is-dragging-media"); } });
@@ -3701,7 +4063,7 @@
         const revoked = !!device.revoked_at;
         const row = create("div", "crypto-device-row");
         const copy = create("div", "list-copy");
-        copy.append(create("strong", "", device.label || translate("Encryption device")));
+        copy.append(createText("strong", "", device.label || translate("Encryption device")));
         const status = revoked ? translate("Revoked") : translate("Active");
         copy.append(create("span", "", `${status}${isCurrent ? ` · ${translate("Current device")}` : ""}`));
         copy.append(create("span", "", `${translate("Registered")}: ${formatDeviceDate(device.created_at)}`));
@@ -4077,9 +4439,14 @@
       const oldSocket = state.socket; state.socket = null; oldSocket?.close();
       state.user = null; state.recoveryKey = ""; state.active = null; state.friends = []; state.conversations = []; state.pending = [];
       state.cryptoDevice = null;
+      // Nothing from the previous server may linger: its presence (including
+      // our own saved mode), reply target and attachment views.
+      state.presence = new Map(); state.presenceMode = "online"; state.presenceLoaded = false;
+      setReplyTarget(null);
+      clearAttachmentUrls();
       resetCryptoViewState();
       updateServerLabels(); $("#settingsDialog").close();
-      await restoreToken();
+      if (!await restoreToken()) { showCredentialReadError(); return; }
       try { state.pendingRecovery = await invoke("credential_get_pending_recovery", { serverKey: await serverKey(activeBase()) }) || ""; } catch { state.pendingRecovery = ""; }
       if (state.pendingRecovery) {
         try { await saveRecoveryKey(state.pendingRecovery); } catch (error) { console.warn("Could not promote the pending recovery key", error); }
@@ -4201,13 +4568,15 @@
     } else if (!savedServer || isLocalServer(savedServer) || isLegacyDefaultServer(savedServer)) {
       const migrateLegacyCredentials = isLegacyDefaultServer(savedServer);
       state.base = DEFAULT_REMOTE_SERVER;
-      localStorage.setItem("ghostchat.server", state.base);
-      if (migrateLegacyCredentials) await migrateServerCredentials(LEGACY_DEFAULT_REMOTE_SERVER, DEFAULT_REMOTE_SERVER);
+      // Save the new address only once the legacy credentials have moved, so
+      // a failed or interrupted migration is retried on the next launch.
+      const migrated = !migrateLegacyCredentials || await migrateServerCredentials(LEGACY_DEFAULT_REMOTE_SERVER, DEFAULT_REMOTE_SERVER);
+      if (migrated) localStorage.setItem("ghostchat.server", state.base);
     } else {
       state.base = normalizedBase(savedServer);
     }
     updateServerLabels();
-    await restoreToken();
+    if (!await restoreToken()) { showCredentialReadError(); return; }
     await processPendingGroupInvites();
     try { state.pendingRecovery = await invoke("credential_get_pending_recovery", { serverKey: await serverKey(activeBase()) }) || ""; } catch {}
     if (state.pendingRecovery) {

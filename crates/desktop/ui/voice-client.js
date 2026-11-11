@@ -379,12 +379,20 @@
       try {
         if (activeCall.screenStream) {
           await share.stop();
-          await share.leave();
-          activeCall.ghostShare = null;
+          // Both callers can share at once over the same SFU room. Leaving it
+          // here would also tear down the peer's share we are still watching,
+          // or one announced whose subscription has not arrived yet.
+          if (!share.getState?.().remoteStream && !activeCall.peerGhostShareAnnounced) {
+            await share.leave();
+            activeCall.ghostShare = null;
+          }
+          // onLocalStream(null) already told the peer when the share module
+          // reported the stop; only tell it here if that did not happen.
+          const peerNotTold = !!activeCall.screenStream;
           activeCall.screenStream = null;
           activeCall.screenQuality = null;
           activeCall.screenTransport = null;
-          send(activeCall.conversationId, activeCall.peerId, "screen_stopped", null);
+          if (peerNotTold) send(activeCall.conversationId, activeCall.peerId, "screen_stopped", null);
         } else {
           await share.start(activeCall.conversationId, ghostShareOptions(api.getSettings()));
           send(activeCall.conversationId, activeCall.peerId, "ghostshare_started", null);
@@ -446,10 +454,26 @@
       return task;
     }
 
+    // A call whose ICE never reaches "connected" would otherwise sit in
+    // "connecting" forever with no audio and no way out except hanging up.
+    const CONNECT_TIMEOUT_MS = 30_000;
+    let connectTimer = null;
+    function startConnectTimer(activeCall) {
+      clearTimeout(connectTimer);
+      connectTimer = setTimeout(() => {
+        connectTimer = null;
+        if (call === activeCall && !activeCall.everConnected && activeCall.pc?.connectionState !== "connected") {
+          closeCall({ notifyPeer: true, message: "The call could not connect. Check your connection and call again." });
+        }
+      }, CONNECT_TIMEOUT_MS);
+    }
+
     function closeCall({ notifyPeer = false, message = "" } = {}) {
       callGeneration++; starting = false;
       clearTimeout(ringTimer);
       ringTimer = null;
+      clearTimeout(connectTimer);
+      connectTimer = null;
       if (call && notifyPeer) {
         try { send(call.conversationId, call.peerId, "hangup", null); } catch {}
       }
@@ -530,7 +554,9 @@
         if (!call || call !== activeCall) return;
         if (pc.connectionState === "connected") {
           activeCall.status = "connected";
+          activeCall.everConnected = true;
           clearTimeout(ringTimer); ringTimer = null;
+          clearTimeout(connectTimer); connectTimer = null;
           startConnectionMonitor(activeCall);
         }
         else if (pc.connectionState === "disconnected") activeCall.status = "reconnecting";
@@ -620,15 +646,22 @@
     }
 
     async function accept() {
-      if (!incoming || call || starting) return;
-      const request = incoming;
+      if (!incoming || call || starting || incoming.accepting) return;
+      let request = incoming;
       const settings = api.getSettings();
       const generation = ++callGeneration;
       starting = true;
+      request.accepting = true;
       let configuration;
       try { configuration = await loadIceConfiguration(settings); }
+      catch (error) { if (incoming) incoming.accepting = false; throw error; }
       finally { if (generation === callGeneration) starting = false; }
-      if (generation !== callGeneration || incoming !== request) return;
+      if (generation !== callGeneration || !incoming || call) return;
+      if (incoming !== request) {
+        if (incoming.conversationId !== request.conversationId || incoming.peerId !== request.peerId) return;
+        request = incoming;
+        request.accepting = true;
+      }
       const activeCall = {
         conversationId: request.conversationId,
         peerId: request.peerId,
@@ -675,6 +708,7 @@
         });
         activeCall.initialNegotiation = false;
         flushLocalIce(activeCall);
+        startConnectTimer(activeCall);
       } catch (error) {
         if (call === activeCall) closeCall({ notifyPeer: true });
         throw new Error(explainMediaError(error));
@@ -688,15 +722,17 @@
       activeCall.ignoreOffer = !activeCall.polite && offerCollision;
       if (activeCall.ignoreOffer) return;
       if (offerCollision && activeCall.polite) await pc.setLocalDescription({ type: "rollback" });
+      const firstAnswer = description.type === "answer" && activeCall.initialNegotiation;
       activeCall.settingRemoteAnswer = description.type === "answer";
       await pc.setRemoteDescription(description);
       activeCall.settingRemoteAnswer = false;
       for (const candidate of activeCall.pendingRemoteIce.splice(0)) await pc.addIceCandidate(candidate);
       if (description.type === "answer") {
         activeCall.initialNegotiation = false;
-        activeCall.status = "connecting";
+        if (!activeCall.everConnected) activeCall.status = "connecting";
         clearTimeout(ringTimer);
         ringTimer = null;
+        if (firstAnswer && !activeCall.everConnected) startConnectTimer(activeCall);
         notify();
       } else if (description.type === "offer") {
         const answer = await pc.createAnswer();
@@ -710,6 +746,14 @@
         activeCall.initialNegotiation = false;
         flushLocalIce(activeCall);
       }
+    }
+
+    // A busy device tells a second caller with an automatic hangup. In
+    // invisible mode it stays silent, so that caller sees exactly what an
+    // offline callee gives (ringing until its own timeout).
+    function rejectBusy(conversationId, peerId) {
+      if (api.isInvisible?.()) return;
+      try { send(conversationId, peerId, "hangup", null); } catch {}
     }
 
     async function handleSignal(event) {
@@ -727,7 +771,7 @@
       }
       if (event.kind === "offer" && !call) {
         if (incoming && (incoming.conversationId !== conversationId || incoming.peerId !== peerId)) {
-          try { send(conversationId, peerId, "hangup", null); } catch {}
+          rejectBusy(conversationId, peerId);
           return;
         }
         incoming = {
@@ -741,16 +785,18 @@
         return;
       }
       if (event.kind === "offer" && call && (call.conversationId !== conversationId || call.peerId !== peerId)) {
-        try { send(conversationId, peerId, "hangup", null); } catch {}
+        rejectBusy(conversationId, peerId);
         return;
       }
       if (!call || call.conversationId !== conversationId || call.peerId !== peerId) return;
       try {
         if (event.kind === "screen_stopped") {
+          call.peerGhostShareAnnounced = false;
           clearRemoteScreen(call);
           // The shared SFU room may still carry our own publication. A peer
           // stopping their screen must not disconnect our active publisher.
         } else if (event.kind === "ghostshare_started") {
+          call.peerGhostShareAnnounced = true;
           await watchGhostShare(call);
         } else if (event.kind === "call_note" && typeof event.payload?.text === "string") {
           call.callNote = event.payload.text.slice(0, 1200);
@@ -764,7 +810,7 @@
           else call.pendingRemoteIce.push(event.payload);
         }
       } catch (error) {
-        if (!call.ignoreOffer) closeCall({ notifyPeer: true, message: explainMediaError(error) });
+        if (call && !call.ignoreOffer) closeCall({ notifyPeer: true, message: explainMediaError(error) });
       }
     }
 
@@ -842,7 +888,6 @@
       }
       const activeCall = call;
       const previousStream = call.screenStream;
-      stopShareMonitor(call);
       const settings = api.getSettings();
       if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("Screen capture is unavailable in this WebView. Update the Microsoft Edge WebView2 Runtime.");
       call.screenStarting = true;
@@ -850,6 +895,9 @@
       try {
         const nextStream = await captureScreen(settings);
         if (!call || call !== activeCall) { nextStream.getTracks().forEach(track => track.stop()); return; }
+        // Only a new capture replaces the share: a cancelled picker keeps the
+        // current share and its quality monitor.
+        stopShareMonitor(call);
         const nextTracks = [...nextStream.getTracks()];
         const usedTracks = new Set();
         for (const oldTrack of previousStream.getTracks()) {
@@ -933,7 +981,10 @@
 
     function hangup() { closeCall({ notifyPeer: true }); }
     function decline() {
-      if (incoming) {
+      // A decline tells the caller this device is online. In invisible
+      // mode the caller must see what an offline callee gives: nothing,
+      // until its own ring timeout.
+      if (incoming && !api.isInvisible?.()) {
         try { send(incoming.conversationId, incoming.peerId, "hangup", null); } catch {}
       }
       incoming = null;

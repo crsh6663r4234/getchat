@@ -27,6 +27,91 @@ const MLS_CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_
 static STORAGE_KEY: OnceLock<Zeroizing<[u8; 32]>> = OnceLock::new();
 static CRYPTO_OPERATION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+// MLS group state is stored under the wire GroupId, which every member of a
+// group shares, so two GhostChat accounts on one desktop profile that are in
+// the same conversation would collide in the shared storage. The storage
+// lookup key of a GroupId is therefore bound to the account the current
+// crypto operation runs for. Operations hold CRYPTO_OPERATION_LOCK for their
+// whole duration, so one account scope is active at a time.
+static STORAGE_ACCOUNT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+#[cfg(test)]
+static LEGACY_LAYOUT_ACCOUNTS: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
+    std::sync::Mutex::new(None);
+
+/// Test hook: store this account's groups like builds before account-bound
+/// group storage did.
+#[cfg(test)]
+fn use_legacy_storage_layout(user_id: &str, legacy: bool) {
+    let mut accounts = LEGACY_LAYOUT_ACCOUNTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let accounts = accounts.get_or_insert_with(Default::default);
+    if legacy {
+        accounts.insert(user_id.to_owned());
+    } else {
+        accounts.remove(user_id);
+    }
+}
+
+struct StorageAccountScope(Option<String>);
+
+impl StorageAccountScope {
+    fn set(account: Option<String>) -> Self {
+        let mut current = STORAGE_ACCOUNT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self(std::mem::replace(&mut *current, account))
+    }
+
+    fn enter(user_id: &str) -> Self {
+        #[cfg(test)]
+        if LEGACY_LAYOUT_ACCOUNTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .is_some_and(|accounts| accounts.contains(user_id))
+        {
+            return Self::set(None);
+        }
+        Self::set(Some(user_id.to_owned()))
+    }
+
+    /// The account-less layout of earlier builds, for adopting their groups.
+    fn legacy() -> Self {
+        Self::set(None)
+    }
+}
+
+impl Drop for StorageAccountScope {
+    fn drop(&mut self) {
+        *STORAGE_ACCOUNT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = self.0.take();
+    }
+}
+
+fn current_storage_account() -> Option<String> {
+    STORAGE_ACCOUNT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone()
+}
+/// Database files whose HashReference migration completed cleanly in this
+/// process. Legacy rows are only written by older builds, so one clean pass
+/// per file per process is enough; a failed pass is not recorded.
+static MIGRATED_DATABASES: std::sync::Mutex<Option<std::collections::HashSet<std::path::PathBuf>>> =
+    std::sync::Mutex::new(None);
+
+/// The file a pool's migration result is remembered under; `None` for an
+/// in-memory database, which is always scanned.
+fn migration_marker(db: &SqlitePool) -> Option<std::path::PathBuf> {
+    let options = db.connect_options();
+    let path = options.get_filename();
+    let text = path.to_string_lossy();
+    (!text.is_empty() && !text.starts_with(":memory:")).then(|| path.to_path_buf())
+}
+
 fn install_storage_key(key: Zeroizing<[u8; 32]>) -> Result<(), String> {
     match STORAGE_KEY.set(key) {
         Ok(()) => Ok(()),
@@ -90,6 +175,20 @@ pub struct GroupMembershipUpdate {
     pub expected_member_ids: Vec<String>,
     pub commit_payload: String,
     pub welcome_payload: String,
+    /// The server's commit sequence this commit was built on (the client's
+    /// synced value when it was staged). It is saved with the staged commit
+    /// and sent with every attempt, so the server can refuse a commit built
+    /// on a group state it has already moved past. `None` for a server
+    /// without the sequence and for updates staged by an earlier version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_commit_seq: Option<i64>,
+}
+
+fn checked_commit_seq(expected_commit_seq: Option<i64>) -> Result<Option<i64>, String> {
+    match expected_commit_seq {
+        Some(value) if value < 0 => Err("The encrypted group commit sequence is invalid.".into()),
+        other => Ok(other),
+    }
 }
 
 fn default_membership_action() -> String {
@@ -124,17 +223,7 @@ async fn prepare_crypto_storage(db: &SqlitePool) -> Result<(), String> {
     .execute(db)
     .await
     .map_err(|_| "GhostChat could not prepare its local encryption database.".to_string())?;
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS ghostchat_crypto_text_cache (\
-            client_message_id TEXT PRIMARY KEY NOT NULL,\
-            conversation_id TEXT NOT NULL,\
-            encrypted_content BLOB NOT NULL,\
-            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))\
-        )",
-    )
-    .execute(db)
-    .await
-    .map_err(|_| "GhostChat could not prepare its encrypted message cache.".to_string())?;
+    prepare_text_cache(db).await?;
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS ghostchat_crypto_application_outbox (\
             client_message_id TEXT PRIMARY KEY NOT NULL,\
@@ -169,6 +258,32 @@ async fn prepare_crypto_storage(db: &SqlitePool) -> Result<(), String> {
     .execute(db)
     .await
     .map_err(|_| "GhostChat could not prepare its encrypted event cursor storage.".to_string())?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS ghostchat_crypto_bootstrap (\
+            user_id TEXT NOT NULL,\
+            conversation_id TEXT NOT NULL,\
+            payload BLOB NOT NULL,\
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),\
+            PRIMARY KEY(user_id,conversation_id)\
+        )",
+    )
+    .execute(db)
+    .await
+    .map_err(|_| "GhostChat could not prepare its pending encrypted setup storage.".to_string())?;
+
+    // The server's setup generation this account's local group state of a
+    // conversation belongs to (no row: generation 0).
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS ghostchat_crypto_setup_generations (\
+            user_id TEXT NOT NULL,\
+            conversation_id TEXT NOT NULL,\
+            generation INTEGER NOT NULL CHECK(generation >= 0),\
+            PRIMARY KEY(user_id,conversation_id)\
+        )",
+    )
+    .execute(db)
+    .await
+    .map_err(|_| "GhostChat could not prepare its encrypted setup storage.".to_string())?;
 
     let mut connection = db
         .acquire()
@@ -176,7 +291,105 @@ async fn prepare_crypto_storage(db: &SqlitePool) -> Result<(), String> {
         .map_err(|_| "GhostChat could not open its local encryption database.".to_string())?;
     SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *connection)
         .run_migrations()
-        .map_err(|_| "GhostChat could not initialize its encrypted MLS storage.".to_string())
+        .map_err(|_| "GhostChat could not initialize its encrypted MLS storage.".to_string())?;
+    drop(connection);
+    migrate_hash_reference_keys(db).await
+}
+
+/// The local plaintext cache is keyed like the server's message uniqueness:
+/// (account, conversation, sender, client message id). A sender-chosen id can
+/// therefore never answer for another sender's, conversation's or account's
+/// message. Rows from the old table, keyed by client message id only, are
+/// kept as legacy rows (empty account and sender) so earlier history stays
+/// readable; they are only read for their own conversation and never written.
+async fn prepare_text_cache(db: &SqlitePool) -> Result<(), String> {
+    let error = || "GhostChat could not prepare its encrypted message cache.".to_string();
+    let mut transaction = db.begin().await.map_err(|_| error())?;
+    let legacy_columns = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM pragma_table_info('ghostchat_crypto_text_cache')",
+    )
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|_| error())?;
+    let needs_rebuild =
+        !legacy_columns.is_empty() && !legacy_columns.iter().any(|name| name == "sender_id");
+    if needs_rebuild {
+        sqlx::query(
+            "ALTER TABLE ghostchat_crypto_text_cache RENAME TO ghostchat_crypto_text_cache_legacy",
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| error())?;
+    }
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS ghostchat_crypto_text_cache (\
+            user_id TEXT NOT NULL,\
+            conversation_id TEXT NOT NULL,\
+            sender_id TEXT NOT NULL,\
+            client_message_id TEXT NOT NULL,\
+            encrypted_content BLOB NOT NULL,\
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),\
+            PRIMARY KEY(user_id,conversation_id,sender_id,client_message_id)\
+        )",
+    )
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| error())?;
+    // History rows this device can never decrypt (their epoch is behind the
+    // group's), so the client stops retrying them on every sync.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS ghostchat_crypto_undecryptable_rows (\
+            user_id TEXT NOT NULL,\
+            conversation_id TEXT NOT NULL,\
+            sender_id TEXT NOT NULL,\
+            client_message_id TEXT NOT NULL,\
+            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),\
+            PRIMARY KEY(user_id,conversation_id,sender_id,client_message_id)\
+        )",
+    )
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| error())?;
+    if needs_rebuild {
+        sqlx::query(
+            "INSERT OR IGNORE INTO ghostchat_crypto_text_cache(user_id,conversation_id,sender_id,client_message_id,encrypted_content,created_at) \
+             SELECT '',conversation_id,'',client_message_id,encrypted_content,created_at FROM ghostchat_crypto_text_cache_legacy",
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| error())?;
+        sqlx::query("DROP TABLE ghostchat_crypto_text_cache_legacy")
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| error())?;
+    }
+    transaction.commit().await.map_err(|_| error())
+}
+
+/// Reads a cached plaintext for exactly this account, conversation and
+/// sender, falling back to a legacy row of the same conversation.
+async fn cached_text_row<'e, E>(
+    executor: E,
+    user_id: &str,
+    conversation_id: &str,
+    sender_id: &str,
+    client_message_id: &str,
+) -> Result<Option<Vec<u8>>, String>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT encrypted_content FROM ghostchat_crypto_text_cache \
+         WHERE conversation_id=? AND client_message_id=? AND ((user_id=? AND sender_id=?) OR (user_id='' AND sender_id='')) \
+         ORDER BY user_id='' LIMIT 1",
+    )
+    .bind(conversation_id)
+    .bind(client_message_id)
+    .bind(user_id)
+    .bind(sender_id)
+    .fetch_optional(executor)
+    .await
+    .map_err(|_| "GhostChat could not load the encrypted message cache.".to_string())
 }
 
 fn normalized_uuid(value: &str, label: &str) -> Result<String, String> {
@@ -217,6 +430,8 @@ pub async fn advance_crypto_event_cursor(
         return Err("The encrypted event sequence is invalid.".into());
     }
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let mut transaction = db
         .begin()
         .await
@@ -285,21 +500,47 @@ fn group_account_identities(
     Some(identities)
 }
 
+/// The MLS roster must contain every server member, and any extra leaf must
+/// belong to an account the server recorded as deleted from this group.
+fn roster_matches_allowing_deleted(
+    actual_member_ids: &std::collections::HashSet<String>,
+    expected_member_ids: &std::collections::HashSet<String>,
+    deleted_member_ids: &std::collections::HashSet<String>,
+) -> bool {
+    expected_member_ids
+        .iter()
+        .all(|user_id| actual_member_ids.contains(user_id))
+        && actual_member_ids.iter().all(|user_id| {
+            expected_member_ids.contains(user_id) || deleted_member_ids.contains(user_id)
+        })
+}
+
 fn group_roster_matches(
     group: &MlsGroup,
     expected_member_ids: &std::collections::HashSet<String>,
+    deleted_member_ids: &std::collections::HashSet<String>,
     own_identity: &str,
 ) -> bool {
     let Some(identities) = group_account_identities(group) else {
         return false;
     };
-    identities.len() == expected_member_ids.len()
-        && identities
-            .keys()
-            .all(|user_id| expected_member_ids.contains(user_id))
+    let actual_member_ids = identities.keys().cloned().collect();
+    roster_matches_allowing_deleted(&actual_member_ids, expected_member_ids, deleted_member_ids)
         && identities
             .values()
             .any(|(credential, _)| credential == own_identity.as_bytes())
+}
+
+fn normalized_deleted_member_ids(
+    deleted_member_ids: &[String],
+) -> Result<std::collections::HashSet<String>, String> {
+    if deleted_member_ids.len() > 64 {
+        return Err("The deleted group member list is invalid.".into());
+    }
+    deleted_member_ids
+        .iter()
+        .map(|member_id| normalized_uuid(member_id, "deleted group member"))
+        .collect()
 }
 
 fn existing_group_identities_unchanged(
@@ -309,9 +550,14 @@ fn existing_group_identities_unchanged(
     let Some(updated) = group_account_identities(group) else {
         return false;
     };
-    existing
-        .iter()
-        .all(|(user_id, identity)| updated.get(user_id) == Some(identity))
+    // A member that left or was removed is absent from the new roster; that is
+    // checked against the server roster separately. A member that is still
+    // present must keep exactly the credential and signature key it had.
+    existing.iter().all(|(user_id, identity)| {
+        updated
+            .get(user_id)
+            .is_none_or(|updated_identity| updated_identity == identity)
+    })
 }
 
 fn group_id_for_conversation(conversation_id: &str) -> GroupId {
@@ -332,10 +578,307 @@ fn is_mls_storage_lookup_key(type_name: &str) -> bool {
     matches!(
         type_name,
         "openmls_basic_credential::StorageId"
-            | "openmls::ciphersuite::hash_ref::HashReference"
             | "openmls::group::GroupId"
             | "openmls::group::GroupEpoch"
     )
+}
+
+fn is_decodable_mls_storage_lookup_key(type_name: &str) -> bool {
+    // HashReference is both a lookup key (KeyPackage refs, proposal deletion)
+    // and a value the storage crate decodes again (openmls_proposal.proposal_ref
+    // is read back when a group with queued proposals is loaded). A one-way
+    // digest made every such group unloadable, so it uses deterministic AEAD.
+    type_name == "openmls::ciphersuite::hash_ref::HashReference"
+}
+
+const LOOKUP_KEY_V1_PREFIX: &[u8; 4] = b"GCK\x01";
+const DECODABLE_LOOKUP_KEY_PREFIX: &[u8; 4] = b"GCK\x02";
+
+fn lookup_key_v1(key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, CryptoCodecError> {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key)
+        .map_err(|_| CryptoCodecError("Local storage key is invalid".into()))?;
+    mac.update(b"GhostChat MLS storage lookup key v1\0");
+    mac.update(plaintext);
+    let digest = mac.finalize().into_bytes();
+    let mut encoded = Vec::with_capacity(LOOKUP_KEY_V1_PREFIX.len() + digest.len());
+    encoded.extend_from_slice(LOOKUP_KEY_V1_PREFIX);
+    encoded.extend_from_slice(&digest);
+    Ok(encoded)
+}
+
+/// The storage lookup key of a GroupId for one account (see STORAGE_ACCOUNT).
+fn account_group_lookup_key(
+    key: &[u8; 32],
+    account: &str,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, CryptoCodecError> {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key)
+        .map_err(|_| CryptoCodecError("Local storage key is invalid".into()))?;
+    mac.update(b"GhostChat MLS account group lookup key v1\0");
+    mac.update(account.as_bytes());
+    mac.update(b"\0");
+    mac.update(plaintext);
+    let digest = mac.finalize().into_bytes();
+    let mut encoded = Vec::with_capacity(LOOKUP_KEY_V1_PREFIX.len() + digest.len());
+    encoded.extend_from_slice(LOOKUP_KEY_V1_PREFIX);
+    encoded.extend_from_slice(&digest);
+    Ok(encoded)
+}
+
+/// Moves a group an earlier build stored without an account binding to this
+/// account's storage key, if this account owns it (its own leaf is this
+/// account's device). A legacy group of another account on the profile is
+/// left alone. Runs inside the caller's CRYPTO_OPERATION_LOCK.
+async fn adopt_legacy_group(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+) -> Result<(), String> {
+    let error = || "GhostChat could not load the local MLS group state.".to_string();
+    let key = get_storage_key()?;
+    let group_id = group_id_for_conversation(conversation_id);
+    let plaintext = Zeroizing::new(serde_json::to_vec(&group_id).map_err(|_| error())?);
+    let legacy = lookup_key_v1(&key, &plaintext).map_err(|_| error())?;
+    let scoped = account_group_lookup_key(&key, user_id, &plaintext).map_err(|_| error())?;
+    let mut transaction = db.begin().await.map_err(|_| error())?;
+    let (legacy_exists, scoped_exists) = sqlx::query_as::<_, (bool, bool)>(
+        "SELECT EXISTS(SELECT 1 FROM openmls_group_data WHERE group_id=?),EXISTS(SELECT 1 FROM openmls_group_data WHERE group_id=?)",
+    )
+    .bind(&legacy)
+    .bind(&scoped)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|_| error())?;
+    if !legacy_exists || scoped_exists {
+        return Ok(());
+    }
+    let Some(device_id) = sqlx::query_scalar::<_, String>(
+        "SELECT device_id FROM ghostchat_crypto_identities WHERE user_id=?",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| error())?
+    else {
+        return Ok(());
+    };
+    let own_identity = format!("ghostchat:v1:{user_id}:{device_id}");
+    let owned = {
+        let _legacy = StorageAccountScope::legacy();
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        MlsGroup::load(&storage, &group_id)
+            .ok()
+            .flatten()
+            .and_then(|group| {
+                group
+                    .own_leaf_node()
+                    .map(|leaf| leaf.credential().serialized_content() == own_identity.as_bytes())
+            })
+            .unwrap_or(false)
+    };
+    if !owned {
+        return Ok(());
+    }
+    for table in [
+        "openmls_group_data",
+        "openmls_proposal",
+        "openmls_own_leaf_node",
+        "openmls_epoch_key_pairs",
+    ] {
+        sqlx::query(&format!("UPDATE {table} SET group_id=? WHERE group_id=?"))
+            .bind(&scoped)
+            .bind(&legacy)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| error())?;
+    }
+    transaction.commit().await.map_err(|_| error())
+}
+
+fn deterministic_subkey(
+    key: &[u8; 32],
+    label: &[u8],
+) -> Result<Zeroizing<[u8; 32]>, CryptoCodecError> {
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(key)
+        .map_err(|_| CryptoCodecError("Local storage key is invalid".into()))?;
+    mac.update(label);
+    let mut subkey = Zeroizing::new([0u8; 32]);
+    subkey.copy_from_slice(&mac.finalize().into_bytes());
+    Ok(subkey)
+}
+
+/// Deterministic, authenticated encryption (synthetic nonce) for lookup keys
+/// that must also be decodable. Equal plaintexts give equal bytes, which only
+/// reveals equality of these public references.
+fn encrypt_decodable_lookup_key(
+    key: &[u8; 32],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, CryptoCodecError> {
+    // Deterministic, SIV-like AEAD: the nonce is a keyed MAC of the
+    // plaintext under a separate subkey, so equal references encrypt to
+    // equal bytes (SQL equality lookups work) and different references get
+    // different nonces. Reusing a nonce therefore only ever happens for the
+    // identical plaintext, which reveals equality (intended for a lookup
+    // key) but never the AES-GCM keystream of two different messages.
+    // decrypt_decodable_lookup_key does not recompute the MAC: it relies on
+    // the AEAD tag (prefix as AAD) for integrity of what it decodes.
+    let nonce_key = deterministic_subkey(key, b"GhostChat MLS storage lookup nonce v2\0")?;
+    let encryption_key = deterministic_subkey(key, b"GhostChat MLS storage lookup key v2\0")?;
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&*nonce_key)
+        .map_err(|_| CryptoCodecError("Local storage key is invalid".into()))?;
+    mac.update(plaintext);
+    let nonce_bytes = mac.finalize().into_bytes();
+    let nonce = Nonce::from_slice(&nonce_bytes[..12]);
+    let ciphertext = Aes256Gcm::new_from_slice(&*encryption_key)
+        .map_err(|_| CryptoCodecError("Local storage key is invalid".into()))?
+        .encrypt(
+            nonce,
+            Payload {
+                msg: plaintext,
+                aad: DECODABLE_LOOKUP_KEY_PREFIX,
+            },
+        )
+        .map_err(|_| CryptoCodecError("Could not encrypt local MLS data".into()))?;
+    let mut encoded = Vec::with_capacity(DECODABLE_LOOKUP_KEY_PREFIX.len() + 12 + ciphertext.len());
+    encoded.extend_from_slice(DECODABLE_LOOKUP_KEY_PREFIX);
+    encoded.extend_from_slice(nonce);
+    encoded.extend_from_slice(&ciphertext);
+    Ok(encoded)
+}
+
+fn decrypt_decodable_lookup_key(
+    key: &[u8; 32],
+    slice: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, CryptoCodecError> {
+    let prefix = DECODABLE_LOOKUP_KEY_PREFIX.len();
+    if slice.len() < prefix + 12 + 16 {
+        return Err(CryptoCodecError(
+            "Encrypted MLS data has an invalid format".into(),
+        ));
+    }
+    let encryption_key = deterministic_subkey(key, b"GhostChat MLS storage lookup key v2\0")?;
+    Aes256Gcm::new_from_slice(&*encryption_key)
+        .map_err(|_| CryptoCodecError("Local storage key is invalid".into()))?
+        .decrypt(
+            Nonce::from_slice(&slice[prefix..prefix + 12]),
+            Payload {
+                msg: &slice[prefix + 12..],
+                aad: DECODABLE_LOOKUP_KEY_PREFIX,
+            },
+        )
+        .map(Zeroizing::new)
+        .map_err(|_| CryptoCodecError("Could not decrypt local MLS data".into()))
+}
+
+/// Older builds stored HashReference values as one-way `GCK\x01` digests.
+/// Rewrite KeyPackage and queued-proposal rows to the decodable encoding,
+/// recomputing each reference from its decrypted entity. A row whose
+/// recomputed digest does not match its stored key is left untouched.
+async fn migrate_hash_reference_keys(db: &SqlitePool) -> Result<(), String> {
+    let marker = migration_marker(db);
+    if let Some(path) = &marker {
+        let done = MIGRATED_DATABASES.lock().unwrap_or_else(|e| e.into_inner());
+        if done.as_ref().is_some_and(|set| set.contains(path)) {
+            return Ok(());
+        }
+    }
+    migrate_hash_reference_keys_pass(db).await?;
+    if let Some(path) = marker {
+        MIGRATED_DATABASES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_or_insert_with(Default::default)
+            .insert(path);
+    }
+    Ok(())
+}
+
+async fn migrate_hash_reference_keys_pass(db: &SqlitePool) -> Result<(), String> {
+    let error = || "GhostChat could not upgrade its encrypted MLS storage.".to_string();
+    let key = STORAGE_KEY.get().ok_or_else(error)?;
+    let crypto = RustCrypto::default();
+    let mut transaction = db.begin().await.map_err(|_| error())?;
+    let key_packages = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
+        "SELECT key_package_ref,key_package FROM openmls_key_package WHERE substr(key_package_ref,1,4)=?",
+    )
+    .bind(LOOKUP_KEY_V1_PREFIX.as_slice())
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|_| error())?;
+    for (old_ref, bundle) in key_packages {
+        let Ok(bundle) =
+            EncryptedJsonCodec::from_slice::<openmls::prelude::KeyPackageBundle>(&bundle)
+        else {
+            continue;
+        };
+        let Ok(hash_ref) = bundle.key_package().hash_ref(&crypto) else {
+            continue;
+        };
+        let plaintext = Zeroizing::new(serde_json::to_vec(&hash_ref).map_err(|_| error())?);
+        if lookup_key_v1(key, &plaintext).map_err(|_| error())? != old_ref {
+            continue;
+        }
+        let new_ref = encrypt_decodable_lookup_key(key, &plaintext).map_err(|_| error())?;
+        // If a decodable row for the same reference already exists, the
+        // update is ignored and the duplicate legacy row is dropped below, so
+        // a conflict cannot fail every later crypto call. Dropping it loses
+        // nothing: the legacy key was just checked to be the digest of this
+        // row's own reference, and a KeyPackage reference is the hash of the
+        // KeyPackage itself, so both rows hold the same KeyPackage.
+        sqlx::query(
+            "UPDATE OR IGNORE openmls_key_package SET key_package_ref=? WHERE key_package_ref=?",
+        )
+        .bind(new_ref)
+        .bind(&old_ref)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| error())?;
+        sqlx::query("DELETE FROM openmls_key_package WHERE key_package_ref=?")
+            .bind(&old_ref)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| error())?;
+    }
+    let proposals = sqlx::query_as::<_, (Vec<u8>, Vec<u8>, Vec<u8>)>(
+        "SELECT group_id,proposal_ref,proposal FROM openmls_proposal WHERE substr(proposal_ref,1,4)=?",
+    )
+    .bind(LOOKUP_KEY_V1_PREFIX.as_slice())
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(|_| error())?;
+    for (group_id, old_ref, proposal) in proposals {
+        let Ok(proposal) =
+            EncryptedJsonCodec::from_slice::<openmls::prelude::QueuedProposal>(&proposal)
+        else {
+            continue;
+        };
+        let plaintext = Zeroizing::new(
+            serde_json::to_vec(proposal.proposal_reference_ref()).map_err(|_| error())?,
+        );
+        if lookup_key_v1(key, &plaintext).map_err(|_| error())? != old_ref {
+            continue;
+        }
+        let new_ref = encrypt_decodable_lookup_key(key, &plaintext).map_err(|_| error())?;
+        // As for KeyPackages: a proposal reference is the hash of the
+        // proposal, so a decodable row with the same group and reference
+        // holds the same proposal and the legacy duplicate can be dropped.
+        sqlx::query(
+            "UPDATE OR IGNORE openmls_proposal SET proposal_ref=? WHERE group_id=? AND proposal_ref=?",
+        )
+        .bind(new_ref)
+        .bind(&group_id)
+        .bind(&old_ref)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| error())?;
+        sqlx::query("DELETE FROM openmls_proposal WHERE group_id=? AND proposal_ref=?")
+            .bind(&group_id)
+            .bind(&old_ref)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| error())?;
+    }
+    transaction.commit().await.map_err(|_| error())
 }
 
 fn key_fingerprint(key: &[u8]) -> String {
@@ -428,18 +971,6 @@ pub async fn prepare_device(db: &SqlitePool, user_id: &str) -> Result<DevicePrep
     .execute(db)
     .await
     .map_err(|_| "GhostChat could not prepare its local encryption database.".to_string())?;
-    sqlx::query(
-        "CREATE TABLE IF NOT EXISTS ghostchat_crypto_bootstrap (\
-            user_id TEXT NOT NULL,\
-            conversation_id TEXT NOT NULL,\
-            payload BLOB NOT NULL,\
-            created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),\
-            PRIMARY KEY(user_id,conversation_id)\
-        )",
-    )
-    .execute(db)
-    .await
-    .map_err(|_| "GhostChat could not prepare its local encryption database.".to_string())?;
 
     {
         let mut connection = db
@@ -451,6 +982,7 @@ pub async fn prepare_device(db: &SqlitePool, user_id: &str) -> Result<DevicePrep
             .run_migrations()
             .map_err(|_| "GhostChat could not initialize its encrypted MLS storage.".to_string())?;
     }
+    migrate_hash_reference_keys(db).await?;
 
     let mut transaction = db
         .begin()
@@ -602,6 +1134,8 @@ pub async fn create_direct_group(
         return Err("An encrypted direct conversation needs two different accounts.".into());
     }
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
 
     let mut transaction = db
         .begin()
@@ -724,6 +1258,8 @@ pub async fn create_group(
         })
         .collect::<Result<Vec<_>, String>>()?;
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
 
     let mut transaction = db
         .begin()
@@ -858,12 +1394,75 @@ pub async fn get_pending_group_membership_update(
         .transpose()
 }
 
+/// Drops a staged membership commit that the server definitively refused
+/// (or that another owner/admin's accepted commit made moot): the pending
+/// MLS commit is cleared, so the group stays in its current epoch and can
+/// apply the commit that was accepted instead, and the outbox row is
+/// removed so it is not retried. Only the operation in the outbox matches.
+pub async fn discard_group_membership_update(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    operation_id: &str,
+) -> Result<(), String> {
+    let _operation = CRYPTO_OPERATION_LOCK.lock().await;
+    let user_id = normalized_uuid(user_id, "account")?;
+    let conversation_id = normalized_uuid(conversation_id, "conversation")?;
+    let operation_id = normalized_uuid(operation_id, "membership operation")?;
+    prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
+    let error = || "GhostChat could not drop the refused membership update.".to_string();
+    let mut transaction = db.begin().await.map_err(|_| error())?;
+    let Some(payload) = sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT payload FROM ghostchat_crypto_membership_outbox WHERE user_id=? AND conversation_id=?",
+    )
+    .bind(&user_id)
+    .bind(&conversation_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| error())?
+    else {
+        return Ok(());
+    };
+    let pending: GroupMembershipUpdate =
+        EncryptedJsonCodec::from_slice(&payload).map_err(|_| error())?;
+    if pending.operation_id != operation_id {
+        return Err("The pending MLS membership operation does not match.".into());
+    }
+    if !matches!(
+        pending.action.as_str(),
+        "add" | "remove" | "remove_deleted" | "leave"
+    ) {
+        return Err("Only a staged membership commit can be dropped.".into());
+    }
+    {
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        if let Some(mut group) =
+            MlsGroup::load(&storage, &group_id_for_conversation(&conversation_id))
+                .map_err(|_| error())?
+        {
+            group.clear_pending_commit(&storage).map_err(|_| error())?;
+        }
+    }
+    sqlx::query(
+        "DELETE FROM ghostchat_crypto_membership_outbox WHERE user_id=? AND conversation_id=?",
+    )
+    .bind(&user_id)
+    .bind(&conversation_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| error())?;
+    transaction.commit().await.map_err(|_| error())
+}
+
 pub async fn prepare_group_membership_update(
     db: &SqlitePool,
     user_id: &str,
     conversation_id: &str,
     expected_member_ids: &[String],
     peers: &[GroupPeerKeyPackage],
+    expected_commit_seq: Option<i64>,
 ) -> Result<GroupMembershipUpdate, String> {
     prepare_group_membership_change(
         db,
@@ -872,9 +1471,12 @@ pub async fn prepare_group_membership_update(
         expected_member_ids,
         "add",
         &[],
+        &[],
         peers,
+        expected_commit_seq,
     )
-    .await
+    .await?
+    .ok_or_else(|| "There is no encrypted membership update to prepare.".to_string())
 }
 
 pub async fn prepare_group_removal_update(
@@ -883,6 +1485,7 @@ pub async fn prepare_group_removal_update(
     conversation_id: &str,
     expected_member_ids: &[String],
     removed_member_ids: &[String],
+    expected_commit_seq: Option<i64>,
 ) -> Result<GroupMembershipUpdate, String> {
     prepare_group_membership_change(
         db,
@@ -892,10 +1495,41 @@ pub async fn prepare_group_removal_update(
         "remove",
         removed_member_ids,
         &[],
+        &[],
+        expected_commit_seq,
+    )
+    .await?
+    .ok_or_else(|| "There is no encrypted membership update to prepare.".to_string())
+}
+
+/// Stages an MLS Commit removing one leaf of an account the server recorded
+/// as deleted from this group (`deleted_member_ids`), or returns `None` when
+/// no such leaf is left. A pending membership update is returned as is.
+/// The local MLS roster must equal the server roster plus only recorded
+/// deleted accounts.
+pub async fn prepare_deleted_member_removal(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    expected_member_ids: &[String],
+    deleted_member_ids: &[String],
+    expected_commit_seq: Option<i64>,
+) -> Result<Option<GroupMembershipUpdate>, String> {
+    prepare_group_membership_change(
+        db,
+        user_id,
+        conversation_id,
+        expected_member_ids,
+        "remove_deleted",
+        &[],
+        deleted_member_ids,
+        &[],
+        expected_commit_seq,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn prepare_group_membership_change(
     db: &SqlitePool,
     user_id: &str,
@@ -903,11 +1537,14 @@ async fn prepare_group_membership_change(
     expected_member_ids: &[String],
     action: &str,
     selected_member_ids: &[String],
+    deleted_member_ids: &[String],
     peers: &[GroupPeerKeyPackage],
-) -> Result<GroupMembershipUpdate, String> {
+    expected_commit_seq: Option<i64>,
+) -> Result<Option<GroupMembershipUpdate>, String> {
     let _operation = CRYPTO_OPERATION_LOCK.lock().await;
     let user_id = normalized_uuid(user_id, "account")?;
     let conversation_id = normalized_uuid(conversation_id, "conversation")?;
+    let expected_commit_seq = checked_commit_seq(expected_commit_seq)?;
     if action == "add" && (peers.is_empty() || peers.len() > 15 || !selected_member_ids.is_empty())
     {
         return Err("Choose 1 to 15 friends to add to the encrypted group.".into());
@@ -915,9 +1552,13 @@ async fn prepare_group_membership_change(
     if action == "remove" && (selected_member_ids.len() != 1 || !peers.is_empty()) {
         return Err("Choose exactly one encrypted group member to remove.".into());
     }
-    if !matches!(action, "add" | "remove") {
+    if action == "remove_deleted" && (!selected_member_ids.is_empty() || !peers.is_empty()) {
         return Err("Unsupported encrypted membership operation.".into());
     }
+    if !matches!(action, "add" | "remove" | "remove_deleted") {
+        return Err("Unsupported encrypted membership operation.".into());
+    }
+    let deleted_member_ids = normalized_deleted_member_ids(deleted_member_ids)?;
 
     let mut expected_member_ids = expected_member_ids
         .iter()
@@ -978,6 +1619,8 @@ async fn prepare_group_membership_change(
     }
 
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let mut transaction = db
         .begin()
         .await
@@ -998,7 +1641,7 @@ async fn prepare_group_membership_change(
             .rollback()
             .await
             .map_err(|_| "GhostChat could not close the local encryption transaction.".to_string())?;
-        return Ok(pending);
+        return Ok(Some(pending));
     }
 
     let (device_id, public_key) = sqlx::query_as::<_, (String, Vec<u8>)>(
@@ -1038,14 +1681,34 @@ async fn prepare_group_membership_change(
             .filter_map(|member| account_id_from_credential(member.credential.serialized_content()))
             .collect::<std::collections::HashSet<_>>();
         let own_identity = format!("ghostchat:v1:{user_id}:{device_id}");
-        if members.len() != expected_member_ids.len()
-            || actual_member_ids.len() != expected_member_ids.len()
-            || actual_member_ids != current_set.into_iter().cloned().collect()
+        let current_set = current_set
+            .into_iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        // Only a deleted-account removal tolerates extra, recorded leaves.
+        let tolerated = if action == "remove_deleted" {
+            deleted_member_ids
+        } else {
+            std::collections::HashSet::new()
+        };
+        if actual_member_ids.len() != members.len()
+            || !roster_matches_allowing_deleted(&actual_member_ids, &current_set, &tolerated)
             || !members
                 .iter()
                 .any(|member| member.credential.serialized_content() == own_identity.as_bytes())
         {
             return Err("The local MLS group does not match the current server roster.".into());
+        }
+        if action == "remove_deleted" {
+            let mut leftover = actual_member_ids
+                .difference(&current_set)
+                .cloned()
+                .collect::<Vec<_>>();
+            leftover.sort();
+            let Some(target) = leftover.into_iter().next() else {
+                return Ok(None);
+            };
+            member_ids = vec![target];
         }
 
         let (commit, welcome) = if action == "add" {
@@ -1107,6 +1770,7 @@ async fn prepare_group_membership_change(
         expected_member_ids,
         commit_payload,
         welcome_payload,
+        expected_commit_seq,
     };
     let encrypted_update = EncryptedJsonCodec::to_vec(&update).map_err(|_| {
         "GhostChat could not protect the pending MLS membership update.".to_string()
@@ -1123,7 +1787,7 @@ async fn prepare_group_membership_change(
     transaction.commit().await.map_err(|_| {
         "GhostChat could not persist the pending MLS membership update.".to_string()
     })?;
-    Ok(update)
+    Ok(Some(update))
 }
 
 pub async fn prepare_group_leave_proposal(
@@ -1150,6 +1814,8 @@ pub async fn prepare_group_leave_proposal(
     }
 
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let mut transaction = db
         .begin()
         .await
@@ -1277,6 +1943,8 @@ pub async fn prepare_group_leave_proposal(
         expected_member_ids,
         commit_payload: proposal_payload,
         welcome_payload: String::new(),
+        // A proposal is not a commit; the owner's commit of it is stamped.
+        expected_commit_seq: None,
     };
     let encrypted_update = EncryptedJsonCodec::to_vec(&update)
         .map_err(|_| "GhostChat could not protect the pending leave request.".to_string())?;
@@ -1303,8 +1971,10 @@ pub async fn prepare_group_leave_commit(
     operation_id: &str,
     leaving_user_id: &str,
     expected_member_ids: &[String],
+    expected_commit_seq: Option<i64>,
 ) -> Result<GroupMembershipUpdate, String> {
     let _operation = CRYPTO_OPERATION_LOCK.lock().await;
+    let expected_commit_seq = checked_commit_seq(expected_commit_seq)?;
     let user_id = normalized_uuid(user_id, "account")?;
     let conversation_id = normalized_uuid(conversation_id, "conversation")?;
     let operation_id = normalized_uuid(operation_id, "leave operation")?;
@@ -1326,6 +1996,8 @@ pub async fn prepare_group_leave_commit(
     }
 
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let mut transaction = db
         .begin()
         .await
@@ -1440,6 +2112,7 @@ pub async fn prepare_group_leave_commit(
         expected_member_ids,
         commit_payload,
         welcome_payload: String::new(),
+        expected_commit_seq,
     };
     let encrypted_update = EncryptedJsonCodec::to_vec(&update)
         .map_err(|_| "GhostChat could not protect the pending MLS leave commit.".to_string())?;
@@ -1468,6 +2141,8 @@ pub async fn forget_group_state(
     let user_id = normalized_uuid(user_id, "account")?;
     let conversation_id = normalized_uuid(conversation_id, "conversation")?;
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let mut transaction = db
         .begin()
         .await
@@ -1501,6 +2176,83 @@ pub async fn forget_group_state(
         .map_err(|_| "GhostChat could not save local group cleanup.".to_string())
 }
 
+/// Brings this account's local state of a group conversation to the server's
+/// setup generation. A takeover of an unfinished setup starts a new
+/// generation and is always a reset, so when `generation` is newer than the
+/// stored one the local MLS group, the staged membership update and the
+/// pending bootstrap of the older setup are dropped, in one transaction with
+/// the new generation. Returns whether that happened. An equal or older
+/// value (a stale read) changes nothing, so a group joined in the current
+/// generation is never dropped. The decrypted text cache is kept.
+pub async fn apply_setup_generation(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    generation: i64,
+) -> Result<bool, String> {
+    let _operation = CRYPTO_OPERATION_LOCK.lock().await;
+    let user_id = normalized_uuid(user_id, "account")?;
+    let conversation_id = normalized_uuid(conversation_id, "conversation")?;
+    if generation < 0 {
+        return Err("The encrypted setup generation is invalid.".into());
+    }
+    let error = || "GhostChat could not reset the superseded encrypted setup.".to_string();
+    prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
+    let mut transaction = db.begin().await.map_err(|_| error())?;
+    let stored = sqlx::query_scalar::<_, i64>(
+        "SELECT generation FROM ghostchat_crypto_setup_generations WHERE user_id=? AND conversation_id=?",
+    )
+    .bind(&user_id)
+    .bind(&conversation_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| error())?
+    .unwrap_or(0);
+    if generation <= stored {
+        return Ok(false);
+    }
+    let group_id = group_id_for_conversation(&conversation_id);
+    {
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        let provider = DesktopMlsProvider {
+            crypto: RustCrypto::default(),
+            storage,
+        };
+        if let Some(mut group) =
+            MlsGroup::load(provider.storage(), &group_id).map_err(|_| error())?
+        {
+            group.delete(provider.storage()).map_err(|_| error())?;
+        }
+    }
+    for table in [
+        "ghostchat_crypto_membership_outbox",
+        "ghostchat_crypto_bootstrap",
+    ] {
+        sqlx::query(&format!(
+            "DELETE FROM {table} WHERE user_id=? AND conversation_id=?"
+        ))
+        .bind(&user_id)
+        .bind(&conversation_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| error())?;
+    }
+    sqlx::query(
+        "INSERT INTO ghostchat_crypto_setup_generations(user_id,conversation_id,generation) VALUES(?,?,?) \
+         ON CONFLICT(user_id,conversation_id) DO UPDATE SET generation=excluded.generation",
+    )
+    .bind(&user_id)
+    .bind(&conversation_id)
+    .bind(generation)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| error())?;
+    transaction.commit().await.map_err(|_| error())?;
+    Ok(true)
+}
+
 pub async fn finalize_group_membership_update(
     db: &SqlitePool,
     user_id: &str,
@@ -1512,6 +2264,8 @@ pub async fn finalize_group_membership_update(
     let conversation_id = normalized_uuid(conversation_id, "conversation")?;
     let operation_id = normalized_uuid(operation_id, "membership operation")?;
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let mut transaction = db
         .begin()
         .await
@@ -1559,6 +2313,18 @@ pub async fn finalize_group_membership_update(
         )
         .map_err(|_| "GhostChat could not load the encrypted MLS group.".to_string())?
         .ok_or_else(|| "The encrypted MLS group is missing on this device.".to_string())?;
+        // A deleted-account removal leaves any other recorded deleted leaves
+        // in place, so its result is the roster before the commit minus the
+        // removed leaf, which must still contain every server member.
+        let roster_before = group_account_identities(&group)
+            .map(|identities| {
+                identities
+                    .into_keys()
+                    .collect::<std::collections::HashSet<_>>()
+            })
+            .ok_or_else(|| {
+                "The local MLS group contains invalid or duplicate identities.".to_string()
+            })?;
         group.merge_pending_commit(&provider).map_err(|_| {
             "GhostChat could not confirm the local MLS membership update.".to_string()
         })?;
@@ -1576,6 +2342,18 @@ pub async fn finalize_group_membership_update(
                         return Err("The removal does not match the saved MLS roster.".into());
                     }
                 }
+            }
+            "remove_deleted" => {
+                let mut result = roster_before.clone();
+                for member_id in &pending.member_ids {
+                    if expected.contains(member_id) || !result.remove(member_id) {
+                        return Err("The removal does not match the saved MLS roster.".into());
+                    }
+                }
+                if !expected.is_subset(&result) {
+                    return Err("The removal does not match the saved MLS roster.".into());
+                }
+                expected = result;
             }
             _ => return Err("The saved MLS membership action is not supported.".into()),
         }
@@ -1676,6 +2454,8 @@ pub async fn encrypt_text(
     let cached_content = EncryptedJsonCodec::to_vec(&content.to_string())
         .map_err(|_| "GhostChat could not encrypt the local message cache.".to_string())?;
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let mut transaction = db
         .begin()
         .await
@@ -1689,17 +2469,15 @@ pub async fn encrypt_text(
     .map_err(|_| "GhostChat could not load this device's encryption identity.".to_string())?
     .ok_or_else(|| "Prepare this device for encryption in Settings first.".to_string())?;
 
-    let existing = sqlx::query_as::<_, (String, Vec<u8>)>(
-        "SELECT conversation_id,encrypted_content FROM ghostchat_crypto_text_cache WHERE client_message_id=?",
+    let existing = cached_text_row(
+        &mut *transaction,
+        &user_id,
+        &conversation_id,
+        &user_id,
+        &client_message_id,
     )
-    .bind(&client_message_id)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(|_| "GhostChat could not load the encrypted message cache.".to_string())?;
-    if let Some((cached_conversation, existing)) = existing {
-        if cached_conversation != conversation_id {
-            return Err("This message ID belongs to another conversation.".into());
-        }
+    .await?;
+    if let Some(existing) = existing {
         let existing: String = EncryptedJsonCodec::from_slice(&existing)
             .map_err(|_| "The local encrypted message cache could not be decrypted.".to_string())?;
         if existing != content {
@@ -1734,9 +2512,11 @@ pub async fn encrypt_text(
         if orphaned_outbox != 0 {
             return Err("This message's encrypted retry record is incomplete.".into());
         }
-        sqlx::query("INSERT INTO ghostchat_crypto_text_cache(client_message_id,conversation_id,encrypted_content) VALUES(?,?,?)")
-            .bind(&client_message_id)
+        sqlx::query("INSERT INTO ghostchat_crypto_text_cache(user_id,conversation_id,sender_id,client_message_id,encrypted_content) VALUES(?,?,?,?,?)")
+            .bind(&user_id)
             .bind(&conversation_id)
+            .bind(&user_id)
+            .bind(&client_message_id)
             .bind(cached_content)
             .execute(&mut *transaction)
             .await
@@ -1789,18 +2569,25 @@ pub async fn encrypt_text(
 
 pub async fn get_cached_sent_text(
     db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    sender_id: &str,
     client_message_id: &str,
 ) -> Result<Option<String>, String> {
     let _operation = CRYPTO_OPERATION_LOCK.lock().await;
+    let user_id = normalized_uuid(user_id, "account")?;
+    let conversation_id = normalized_uuid(conversation_id, "conversation")?;
+    let sender_id = normalized_uuid(sender_id, "sender account")?;
     let client_message_id = normalized_uuid(client_message_id, "message")?;
     prepare_crypto_storage(db).await?;
-    let encrypted_content = sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT encrypted_content FROM ghostchat_crypto_text_cache WHERE client_message_id=?",
+    let encrypted_content = cached_text_row(
+        db,
+        &user_id,
+        &conversation_id,
+        &sender_id,
+        &client_message_id,
     )
-    .bind(&client_message_id)
-    .fetch_optional(db)
-    .await
-    .map_err(|_| "GhostChat could not load the encrypted message cache.".to_string())?;
+    .await?;
     encrypted_content
         .map(|bytes| {
             EncryptedJsonCodec::from_slice(&bytes).map_err(|_| {
@@ -1810,35 +2597,220 @@ pub async fn get_cached_sent_text(
         .transpose()
 }
 
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedTextState {
+    pub content: Option<String>,
+    pub undecryptable: bool,
+}
+
+/// The cached plaintext of a row, or whether the row was found to be
+/// permanently undecryptable on this device.
+pub async fn get_cached_text_state(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    sender_id: &str,
+    client_message_id: &str,
+) -> Result<CachedTextState, String> {
+    let content =
+        get_cached_sent_text(db, user_id, conversation_id, sender_id, client_message_id).await?;
+    if content.is_some() {
+        return Ok(CachedTextState {
+            content,
+            undecryptable: false,
+        });
+    }
+    let _operation = CRYPTO_OPERATION_LOCK.lock().await;
+    let marked = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM ghostchat_crypto_undecryptable_rows WHERE user_id=? AND conversation_id=? AND sender_id=? AND client_message_id=?)",
+    )
+    .bind(normalized_uuid(user_id, "account")?)
+    .bind(normalized_uuid(conversation_id, "conversation")?)
+    .bind(normalized_uuid(sender_id, "sender account")?)
+    .bind(normalized_uuid(client_message_id, "message")?)
+    .fetch_one(db)
+    .await
+    .map_err(|_| "GhostChat could not load the encrypted message cache.".to_string())?;
+    Ok(CachedTextState {
+        content: None,
+        undecryptable: marked != 0,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn process_crypto_event(
     db: &SqlitePool,
     user_id: &str,
     conversation_id: &str,
     sender_id: &str,
     client_message_id: Option<&str>,
-    event_sequence: i64,
+    event_sequence: Option<i64>,
     conversation_is_group: bool,
     expected_member_ids: &[String],
     payload: &str,
+) -> Result<CryptoEventResult, String> {
+    process_crypto_event_with_deleted(
+        db,
+        user_id,
+        conversation_id,
+        sender_id,
+        client_message_id,
+        event_sequence,
+        conversation_is_group,
+        expected_member_ids,
+        &[],
+        payload,
+    )
+    .await
+}
+
+/// `deleted_member_ids` are accounts the server recorded as deleted while
+/// members of this MLS-locked group. Their leaves may remain in the MLS
+/// roster on top of `expected_member_ids` until an owner commits their
+/// removal; any other roster mismatch is still rejected.
+#[allow(clippy::too_many_arguments)]
+pub async fn process_crypto_event_with_deleted(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    sender_id: &str,
+    client_message_id: Option<&str>,
+    event_sequence: Option<i64>,
+    conversation_is_group: bool,
+    expected_member_ids: &[String],
+    deleted_member_ids: &[String],
+    payload: &str,
+) -> Result<CryptoEventResult, String> {
+    process_crypto_event_core(
+        db,
+        user_id,
+        conversation_id,
+        sender_id,
+        client_message_id,
+        event_sequence,
+        conversation_is_group,
+        Some(expected_member_ids),
+        deleted_member_ids,
+        payload,
+        false,
+    )
+    .await
+}
+
+/// Decrypts an encrypted history row before the client applies pending
+/// relay commits, so text sent in the current local epoch is cached before
+/// that epoch is left (OpenMLS keeps no past-epoch secrets). The server
+/// roster may already reflect the pending membership change, so the row is
+/// checked against the roster this device accepted for its current epoch
+/// (validated against the server roster when that epoch was entered)
+/// instead. Only application messages from history are accepted, and the
+/// relay cursor is never moved.
+pub async fn decode_history_before_pending_commits(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    sender_id: &str,
+    client_message_id: &str,
+    conversation_is_group: bool,
+    payload: &str,
+) -> Result<CryptoEventResult, String> {
+    process_crypto_event_core(
+        db,
+        user_id,
+        conversation_id,
+        sender_id,
+        Some(client_message_id),
+        None,
+        conversation_is_group,
+        None,
+        &[],
+        payload,
+        false,
+    )
+    .await
+}
+
+/// Runs every check `process_crypto_event_with_deleted` runs on a relay event
+/// (decryption, sender authentication, roster checks after the merge) inside
+/// a transaction that is always rolled back: nothing is applied, cached or
+/// moved. The client uses it to learn that the next relay event is a valid
+/// commit from a current member before it decodes pending history rows.
+#[allow(clippy::too_many_arguments)]
+pub async fn inspect_crypto_event(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    sender_id: &str,
+    event_sequence: i64,
+    conversation_is_group: bool,
+    expected_member_ids: &[String],
+    deleted_member_ids: &[String],
+    payload: &str,
+) -> Result<CryptoEventResult, String> {
+    process_crypto_event_core(
+        db,
+        user_id,
+        conversation_id,
+        sender_id,
+        None,
+        Some(event_sequence),
+        conversation_is_group,
+        Some(expected_member_ids),
+        deleted_member_ids,
+        payload,
+        true,
+    )
+    .await
+}
+
+/// `expected_member_ids` is `None` only for
+/// [`decode_history_before_pending_commits`].
+#[allow(clippy::too_many_arguments)]
+async fn process_crypto_event_core(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    sender_id: &str,
+    client_message_id: Option<&str>,
+    event_sequence: Option<i64>,
+    conversation_is_group: bool,
+    expected_member_ids: Option<&[String]>,
+    deleted_member_ids: &[String],
+    payload: &str,
+    dry_run: bool,
 ) -> Result<CryptoEventResult, String> {
     let _operation = CRYPTO_OPERATION_LOCK.lock().await;
     let user_id = normalized_uuid(user_id, "account")?;
     let conversation_id = normalized_uuid(conversation_id, "conversation")?;
     let sender_id = normalized_uuid(sender_id, "sender account")?;
-    if event_sequence <= 0 {
+    // Crypto-relay events carry their relay sequence, which drives the local
+    // cursor. Encrypted text from ordinary message history has no relay
+    // sequence: it may only be an application message, and it never moves the
+    // cursor (MLS itself rejects a replayed application ciphertext).
+    if event_sequence.is_some_and(|sequence| sequence <= 0) {
         return Err("The encrypted event sequence is invalid.".into());
     }
+    let from_history = event_sequence.is_none();
+    let local_epoch_roster = expected_member_ids.is_none();
+    if local_epoch_roster && !from_history {
+        return Err("Only message history may be decoded before pending commits.".into());
+    }
     let expected_member_ids = expected_member_ids
+        .unwrap_or_default()
         .iter()
         .map(|member_id| normalized_uuid(member_id, "conversation member"))
         .collect::<Result<std::collections::HashSet<_>, _>>()?;
-    if expected_member_ids.len() < 2 || expected_member_ids.len() > 16 {
+    if !local_epoch_roster && (expected_member_ids.len() < 2 || expected_member_ids.len() > 16) {
         return Err("The expected MLS conversation roster is invalid.".into());
     }
+    let deleted_member_ids = normalized_deleted_member_ids(deleted_member_ids)?;
     let client_message_id = client_message_id
         .map(|message_id| normalized_uuid(message_id, "message"))
         .transpose()?;
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let bytes = URL_SAFE_NO_PAD
         .decode(payload.as_bytes())
         .map_err(|_| "The encrypted event has invalid encoding.".to_string())?;
@@ -1848,6 +2820,9 @@ pub async fn process_crypto_event(
     let message = MlsMessageIn::tls_deserialize_exact(bytes.as_slice())
         .map_err(|_| "The encrypted event could not be decoded as MLS data.".to_string())?;
     let is_welcome = matches!(message.clone().extract(), MlsMessageBodyIn::Welcome(_));
+    if from_history && is_welcome {
+        return Err("An MLS invitation must arrive through the encrypted event stream.".into());
+    }
     let group_id = group_id_for_conversation(&conversation_id);
     let mut transaction = db
         .begin()
@@ -1861,7 +2836,7 @@ pub async fn process_crypto_event(
     .fetch_optional(&mut *transaction)
     .await
     .map_err(|_| "GhostChat could not check the local encrypted event cursor.".to_string())?;
-    if last_sequence.is_some_and(|last| event_sequence <= last) {
+    if last_sequence.is_some_and(|last| event_sequence.is_some_and(|sequence| sequence <= last)) {
         transaction.rollback().await.map_err(|_| {
             "GhostChat could not close the duplicate event transaction.".to_string()
         })?;
@@ -1892,6 +2867,16 @@ pub async fn process_crypto_event(
                 .map_err(|_| "GhostChat could not load the local MLS group state.".to_string())?
                 .is_some()
         };
+        if !group_exists && from_history {
+            return Err("Encryption has not been set up for this conversation.".into());
+        }
+        if !group_exists && dry_run {
+            return Ok(CryptoEventResult {
+                kind: "pending_group".into(),
+                content: None,
+                peer_identity_fingerprint: None,
+            });
+        }
         if !group_exists {
             sqlx::query(
                 "INSERT INTO ghostchat_crypto_event_cursors(user_id,conversation_id,sequence) VALUES(?,?,?) \
@@ -2008,7 +2993,7 @@ pub async fn process_crypto_event(
                     }
                 }
             }
-            _ => {
+            _ => 'event: {
                 let Some(mut group) =
                     MlsGroup::load(provider.storage(), &group_id).map_err(|_| {
                         "GhostChat could not load the encrypted conversation.".to_string()
@@ -2022,11 +3007,28 @@ pub async fn process_crypto_event(
                     group_account_identities(&group).ok_or_else(|| {
                         "The local MLS group contains invalid or duplicate identities.".to_string()
                     })?;
+                // A deleted account's leaf may stay in the group or be removed
+                // by a commit, but never be added: only leaves already present
+                // before this event are tolerated.
+                let deleted_present_before = deleted_member_ids
+                    .iter()
+                    .filter(|user_id| existing_group_identities.contains_key(*user_id))
+                    .cloned()
+                    .collect::<std::collections::HashSet<_>>();
                 let protocol_message = message.try_into_protocol_message().map_err(|_| {
                     "This MLS event is not a processable group message.".to_string()
                 })?;
                 if protocol_message.group_id().as_slice() != group_id.as_slice() {
                     return Err("The MLS event belongs to a different conversation.".into());
+                }
+                // OpenMLS keeps no past-epoch secrets: a history row from an
+                // epoch this group has left can never be decrypted here.
+                if from_history && protocol_message.epoch() < group.epoch() {
+                    break 'event CryptoEventResult {
+                        kind: "past_epoch".into(),
+                        content: None,
+                        peer_identity_fingerprint: None,
+                    };
                 }
                 let processed =
                     group
@@ -2040,9 +3042,33 @@ pub async fn process_crypto_event(
                 {
                     return Err("The MLS sender identity does not match the relay account.".into());
                 }
+                if from_history
+                    && !matches!(
+                        processed.content(),
+                        ProcessedMessageContent::ApplicationMessage(_)
+                    )
+                {
+                    return Err(
+                        "Only encrypted text may arrive through the message history.".into(),
+                    );
+                }
                 match processed.into_content() {
                     ProcessedMessageContent::ApplicationMessage(application) => {
-                        if !group_roster_matches(&group, &expected_member_ids, &own_identity)
+                        let roster_ok = if local_epoch_roster {
+                            group_account_identities(&group).is_some_and(|identities| {
+                                identities
+                                    .values()
+                                    .any(|(credential, _)| credential == own_identity.as_bytes())
+                            })
+                        } else {
+                            group_roster_matches(
+                                &group,
+                                &expected_member_ids,
+                                &deleted_member_ids,
+                                &own_identity,
+                            )
+                        };
+                        if !roster_ok
                             || !existing_group_identities_unchanged(
                                 &group,
                                 &existing_group_identities,
@@ -2069,12 +3095,15 @@ pub async fn process_crypto_event(
                             "GhostChat could not apply the authenticated MLS membership update."
                                 .to_string()
                         })?;
-                        if !group_roster_matches(&group, &expected_member_ids, &own_identity)
-                            || !existing_group_identities_unchanged(
-                                &group,
-                                &existing_group_identities,
-                            )
-                        {
+                        if !group_roster_matches(
+                            &group,
+                            &expected_member_ids,
+                            &deleted_present_before,
+                            &own_identity,
+                        ) || !existing_group_identities_unchanged(
+                            &group,
+                            &existing_group_identities,
+                        ) {
                             return Err(
                                 "The MLS commit does not match the current server roster.".into()
                             );
@@ -2090,7 +3119,12 @@ pub async fn process_crypto_event(
                             "GhostChat could not confirm the local MLS membership update."
                                 .to_string()
                         })?;
-                        if !group_roster_matches(&group, &expected_member_ids, &own_identity) {
+                        if !group_roster_matches(
+                            &group,
+                            &expected_member_ids,
+                            &deleted_present_before,
+                            &own_identity,
+                        ) {
                             return Err(
                                 "The MLS commit does not match the current server roster.".into()
                             );
@@ -2169,29 +3203,57 @@ pub async fn process_crypto_event(
             }
         }
     };
+    if result.kind == "past_epoch" {
+        if let (false, Some(client_message_id)) = (dry_run, client_message_id.as_deref()) {
+            sqlx::query("INSERT OR IGNORE INTO ghostchat_crypto_undecryptable_rows(user_id,conversation_id,sender_id,client_message_id) VALUES(?,?,?,?)")
+                .bind(&user_id)
+                .bind(&conversation_id)
+                .bind(&sender_id)
+                .bind(client_message_id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|_| "GhostChat could not save the encrypted message cache.".to_string())?;
+            transaction
+                .commit()
+                .await
+                .map_err(|_| "GhostChat could not save the encrypted message cache.".to_string())?;
+        }
+        return Err("This message is from an earlier encryption epoch and can no longer be decrypted on this device.".into());
+    }
+    if dry_run {
+        transaction
+            .rollback()
+            .await
+            .map_err(|_| "GhostChat could not close the inspection transaction.".to_string())?;
+        return Ok(result);
+    }
     if let (Some(client_message_id), Some(content)) =
         (client_message_id.as_deref(), cache_content.as_deref())
     {
         let encrypted_content = EncryptedJsonCodec::to_vec(content)
             .map_err(|_| "GhostChat could not encrypt the local message cache.".to_string())?;
-        sqlx::query("INSERT OR IGNORE INTO ghostchat_crypto_text_cache(client_message_id,conversation_id,encrypted_content) VALUES(?,?,?)")
-            .bind(client_message_id)
+        sqlx::query("INSERT OR IGNORE INTO ghostchat_crypto_text_cache(user_id,conversation_id,sender_id,client_message_id,encrypted_content) VALUES(?,?,?,?,?)")
+            .bind(&user_id)
             .bind(&conversation_id)
+            .bind(&sender_id)
+            .bind(client_message_id)
             .bind(encrypted_content)
             .execute(&mut *transaction)
             .await
             .map_err(|_| "GhostChat could not save the encrypted local message cache.".to_string())?;
     }
-    sqlx::query(
-        "INSERT INTO ghostchat_crypto_event_cursors(user_id,conversation_id,sequence) VALUES(?,?,?) \
-         ON CONFLICT(user_id,conversation_id) DO UPDATE SET sequence=MAX(sequence,excluded.sequence)",
-    )
-    .bind(&user_id)
-    .bind(&conversation_id)
-    .bind(event_sequence)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|_| "GhostChat could not save the local encrypted event cursor.".to_string())?;
+    if let Some(event_sequence) = event_sequence {
+        sqlx::query(
+            "INSERT INTO ghostchat_crypto_event_cursors(user_id,conversation_id,sequence) VALUES(?,?,?) \
+             ON CONFLICT(user_id,conversation_id) DO UPDATE SET sequence=MAX(sequence,excluded.sequence)",
+        )
+        .bind(&user_id)
+        .bind(&conversation_id)
+        .bind(event_sequence)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| "GhostChat could not save the local encrypted event cursor.".to_string())?;
+    }
     transaction
         .commit()
         .await
@@ -2208,6 +3270,8 @@ pub async fn has_direct_group(
     let user_id = normalized_uuid(user_id, "account")?;
     let conversation_id = normalized_uuid(conversation_id, "conversation")?;
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let local_identity_exists = sqlx::query_scalar::<_, i64>(
         "SELECT count(*) FROM ghostchat_crypto_identities WHERE user_id=?",
     )
@@ -2249,6 +3313,8 @@ pub async fn direct_peer_fingerprint(
         return Err("An encrypted direct conversation needs two different accounts.".into());
     }
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let device_id = sqlx::query_scalar::<_, String>(
         "SELECT device_id FROM ghostchat_crypto_identities WHERE user_id=?",
     )
@@ -2307,6 +3373,8 @@ pub async fn group_fingerprint(
     let user_id = normalized_uuid(user_id, "account")?;
     let conversation_id = normalized_uuid(conversation_id, "conversation")?;
     prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
     let device_id = sqlx::query_scalar::<_, String>(
         "SELECT device_id FROM ghostchat_crypto_identities WHERE user_id=?",
     )
@@ -2404,17 +3472,22 @@ impl Codec for EncryptedJsonCodec {
         // SQLite equality lookups miss every time. Store those public lookup
         // references as a keyed, deterministic digest instead; they are never
         // decoded from the database and this does not expose their raw values.
+        if std::any::type_name::<T>() == "openmls::group::GroupId" {
+            if let Some(account) = current_storage_account() {
+                let encoded = account_group_lookup_key(key, &account, &plaintext);
+                plaintext.zeroize();
+                return encoded;
+            }
+        }
         if is_mls_storage_lookup_key(std::any::type_name::<T>()) {
-            let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&**key)
-                .map_err(|_| CryptoCodecError("Local storage key is invalid".into()))?;
-            mac.update(b"GhostChat MLS storage lookup key v1\0");
-            mac.update(&plaintext);
+            let encoded = lookup_key_v1(key, &plaintext);
             plaintext.zeroize();
-            let digest = mac.finalize().into_bytes();
-            let mut encoded = Vec::with_capacity(4 + digest.len());
-            encoded.extend_from_slice(b"GCK\x01");
-            encoded.extend_from_slice(&digest);
-            return Ok(encoded);
+            return encoded;
+        }
+        if is_decodable_mls_storage_lookup_key(std::any::type_name::<T>()) {
+            let encoded = encrypt_decodable_lookup_key(key, &plaintext);
+            plaintext.zeroize();
+            return encoded;
         }
         let cipher = Aes256Gcm::new_from_slice(&**key)
             .map_err(|_| CryptoCodecError("Local storage key is invalid".into()))?;
@@ -2442,6 +3515,14 @@ impl Codec for EncryptedJsonCodec {
     }
 
     fn from_slice<T: DeserializeOwned>(slice: &[u8]) -> Result<T, Self::Error> {
+        if slice.starts_with(DECODABLE_LOOKUP_KEY_PREFIX) {
+            let key = STORAGE_KEY
+                .get()
+                .ok_or_else(|| CryptoCodecError("Local storage key is unavailable".into()))?;
+            let plaintext = decrypt_decodable_lookup_key(key, slice)?;
+            return serde_json::from_slice(&plaintext)
+                .map_err(|error| CryptoCodecError(format!("Could not decode MLS data: {error}")));
+        }
         if slice.len() < 3 + 12 + 16 || &slice[..3] != b"GC\x01" {
             return Err(CryptoCodecError(
                 "Encrypted MLS data has an invalid format".into(),
@@ -2569,7 +3650,7 @@ mod tests {
             &conversation_id,
             &alice_id,
             None,
-            1,
+            Some(1),
             false,
             &expected_members,
             &welcome.welcome_payload,
@@ -2625,7 +3706,7 @@ mod tests {
         .await
         .is_err());
         assert_eq!(
-            get_cached_sent_text(&alice_db, &first_id)
+            get_cached_sent_text(&alice_db, &alice_id, &conversation_id, &alice_id, &first_id)
                 .await
                 .expect("Alice's encrypted cache should reopen")
                 .as_deref(),
@@ -2637,7 +3718,7 @@ mod tests {
             &conversation_id,
             &alice_id,
             Some(&first_id),
-            2,
+            Some(2),
             false,
             &expected_members,
             &first.payload,
@@ -2661,7 +3742,7 @@ mod tests {
             &conversation_id,
             &alice_id,
             Some(&first_id),
-            2,
+            Some(2),
             false,
             &expected_members,
             &first.payload,
@@ -2690,7 +3771,7 @@ mod tests {
             &conversation_id,
             &alice_id,
             Some(&second_id),
-            3,
+            Some(3),
             false,
             &expected_members,
             &second.payload,
@@ -2713,10 +3794,12 @@ mod tests {
         )
         .await
         .is_err());
-        assert!(get_cached_sent_text(&alice_db, &third_id)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            get_cached_sent_text(&alice_db, &alice_id, &conversation_id, &alice_id, &third_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
         sqlx::query("DROP TRIGGER fail_application_outbox")
             .execute(&alice_db)
             .await
@@ -2736,7 +3819,7 @@ mod tests {
             &conversation_id,
             &alice_id,
             Some(&third_id),
-            4,
+            Some(4),
             false,
             &expected_members,
             &third.payload,
@@ -2746,8 +3829,10 @@ mod tests {
         assert_eq!(third_received.content.as_deref(), Some("atomic retry"));
 
         let legacy_id = Uuid::new_v4().to_string();
-        sqlx::query("INSERT INTO ghostchat_crypto_text_cache(client_message_id,conversation_id,encrypted_content) VALUES(?,?,?)")
-            .bind(&legacy_id).bind(&conversation_id)
+        // A legacy row (from before the cache was keyed by account and
+        // sender) has an empty account and sender.
+        sqlx::query("INSERT INTO ghostchat_crypto_text_cache(user_id,conversation_id,sender_id,client_message_id,encrypted_content) VALUES('',?,'',?,?)")
+            .bind(&conversation_id).bind(&legacy_id)
             .bind(EncryptedJsonCodec::to_vec(&"legacy message".to_string()).unwrap())
             .execute(&alice_db).await.unwrap();
         let legacy_error = encrypt_text(
@@ -2770,6 +3855,2226 @@ mod tests {
             &conversation_id,
             &third_id,
             "atomic retry"
+        )
+        .await
+        .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn two_accounts_on_one_profile_both_join_a_group_and_legacy_groups_still_load() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-profile-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        // Bob and Carol use the same desktop profile (one local database).
+        let shared_db = open_database(&root.join("shared.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+
+        // A group joined by Bob with the storage layout of earlier builds.
+        let legacy_conversation = Uuid::new_v4().to_string();
+        let mut pair = vec![alice_id.clone(), bob_id.clone()];
+        pair.sort();
+        use_legacy_storage_layout(&bob_id, true);
+        let bob_device = prepare_device(&shared_db, &bob_id).await.unwrap();
+        let legacy_start = create_direct_group(
+            &alice_db,
+            &alice_id,
+            &legacy_conversation,
+            &bob_id,
+            &bob_device.device_id,
+            &bob_device.payload,
+        )
+        .await
+        .unwrap();
+        process_crypto_event(
+            &shared_db,
+            &bob_id,
+            &legacy_conversation,
+            &alice_id,
+            None,
+            Some(1),
+            false,
+            &pair,
+            &legacy_start.welcome_payload,
+        )
+        .await
+        .unwrap();
+        use_legacy_storage_layout(&bob_id, false);
+        let old_text = encrypt_text(
+            &alice_db,
+            &alice_id,
+            &legacy_conversation,
+            &Uuid::new_v4().to_string(),
+            "from an earlier build",
+        )
+        .await
+        .unwrap();
+        assert!(has_direct_group(&shared_db, &bob_id, &legacy_conversation)
+            .await
+            .unwrap());
+        let decoded = process_crypto_event(
+            &shared_db,
+            &bob_id,
+            &legacy_conversation,
+            &alice_id,
+            None,
+            Some(2),
+            false,
+            &pair,
+            &old_text.payload,
+        )
+        .await
+        .expect("a group stored by an earlier build stays usable");
+        assert_eq!(decoded.content.as_deref(), Some("from an earlier build"));
+
+        // Bob and Carol, both on the shared profile, join the same group.
+        let conversation_id = Uuid::new_v4().to_string();
+        let bob_package = prepare_device(&shared_db, &bob_id).await.unwrap();
+        let carol_package = prepare_device(&shared_db, &carol_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[
+                GroupPeerKeyPackage {
+                    user_id: bob_id.clone(),
+                    device_id: bob_package.device_id.clone(),
+                    payload: bob_package.payload.clone(),
+                },
+                GroupPeerKeyPackage {
+                    user_id: carol_id.clone(),
+                    device_id: carol_package.device_id.clone(),
+                    payload: carol_package.payload.clone(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        for id in [&bob_id, &carol_id] {
+            let joined = process_crypto_event(
+                &shared_db,
+                id,
+                &conversation_id,
+                &alice_id,
+                None,
+                Some(1),
+                true,
+                &roster,
+                &start.welcome_payload,
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                joined.kind, "welcome",
+                "account {id} joins on the shared profile"
+            );
+        }
+        let sent = encrypt_text(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &Uuid::new_v4().to_string(),
+            "hello both",
+        )
+        .await
+        .unwrap();
+        for id in [&bob_id, &carol_id] {
+            let received = process_crypto_event(
+                &shared_db,
+                id,
+                &conversation_id,
+                &alice_id,
+                None,
+                Some(2),
+                true,
+                &roster,
+                &sent.payload,
+            )
+            .await
+            .unwrap();
+            assert_eq!(received.content.as_deref(), Some("hello both"));
+        }
+        // Carol never sees Bob's legacy group as hers.
+        assert!(
+            !has_direct_group(&shared_db, &carol_id, &legacy_conversation)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pending_bootstrap_works_on_a_fresh_profile_before_device_setup() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-fresh-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let db = open_database(&root.join("fresh.sqlite")).await;
+        let user_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        assert!(get_pending_bootstrap(&db, &user_id, &conversation_id)
+            .await
+            .expect("a fresh profile has no pending setup, not an error")
+            .is_none());
+        clear_pending_bootstrap(&db, &user_id, &conversation_id)
+            .await
+            .expect("clearing a missing setup on a fresh profile succeeds");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_cache_is_bound_to_account_conversation_and_sender() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-cache-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let mallory_db = open_database(&root.join("mallory.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let mallory_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), mallory_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let mut groups = Vec::new();
+        for _ in 0..2 {
+            let conversation_id = Uuid::new_v4().to_string();
+            let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+            let mallory_device = prepare_device(&mallory_db, &mallory_id).await.unwrap();
+            let start = create_group(
+                &alice_db,
+                &alice_id,
+                &conversation_id,
+                &[
+                    GroupPeerKeyPackage {
+                        user_id: bob_id.clone(),
+                        device_id: bob_device.device_id.clone(),
+                        payload: bob_device.payload.clone(),
+                    },
+                    GroupPeerKeyPackage {
+                        user_id: mallory_id.clone(),
+                        device_id: mallory_device.device_id.clone(),
+                        payload: mallory_device.payload.clone(),
+                    },
+                ],
+            )
+            .await
+            .unwrap();
+            for (db, id) in [(&bob_db, &bob_id), (&mallory_db, &mallory_id)] {
+                process_crypto_event(
+                    db,
+                    id,
+                    &conversation_id,
+                    &alice_id,
+                    None,
+                    Some(1),
+                    true,
+                    &roster,
+                    &start.welcome_payload,
+                )
+                .await
+                .unwrap();
+            }
+            groups.push(conversation_id);
+        }
+        let (first, second) = (&groups[0], &groups[1]);
+
+        // Mallory learns the id of Alice's next message and pre-seeds Bob's
+        // cache with it, in the same conversation and in another one.
+        let message_id = Uuid::new_v4().to_string();
+        for conversation_id in [first, second] {
+            // A malicious client is not bound by its own local retry records.
+            sqlx::query("DELETE FROM ghostchat_crypto_application_outbox")
+                .execute(&mallory_db)
+                .await
+                .unwrap();
+            let forged = encrypt_text(
+                &mallory_db,
+                &mallory_id,
+                conversation_id,
+                &message_id,
+                "forged",
+            )
+            .await
+            .unwrap();
+            process_crypto_event(
+                &bob_db,
+                &bob_id,
+                conversation_id,
+                &mallory_id,
+                Some(&message_id),
+                None,
+                true,
+                &roster,
+                &forged.payload,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &bob_id, first, &alice_id, &message_id)
+                .await
+                .unwrap(),
+            None,
+            "another sender's row must not answer for Alice's message"
+        );
+        let real = encrypt_text(&alice_db, &alice_id, first, &message_id, "real")
+            .await
+            .unwrap();
+        let received = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            first,
+            &alice_id,
+            Some(&message_id),
+            None,
+            true,
+            &roster,
+            &real.payload,
+        )
+        .await
+        .unwrap();
+        assert_eq!(received.content.as_deref(), Some("real"));
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &bob_id, first, &alice_id, &message_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("real")
+        );
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &bob_id, second, &mallory_id, &message_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("forged"),
+            "each conversation keeps its own entry"
+        );
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &mallory_id, first, &mallory_id, &message_id)
+                .await
+                .unwrap(),
+            None,
+            "another account on this profile cannot read Bob's entry"
+        );
+        // Alice's own sent text is cached under her account as the sender.
+        assert_eq!(
+            get_cached_sent_text(&alice_db, &alice_id, first, &alice_id, &message_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("real")
+        );
+
+        // An existing profile's cache (keyed by client message id only) is
+        // rebuilt; its rows stay readable, but only in their conversation.
+        let legacy_id = Uuid::new_v4().to_string();
+        sqlx::query("DROP TABLE ghostchat_crypto_text_cache")
+            .execute(&bob_db)
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE ghostchat_crypto_text_cache (client_message_id TEXT PRIMARY KEY NOT NULL, conversation_id TEXT NOT NULL, encrypted_content BLOB NOT NULL, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))")
+            .execute(&bob_db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO ghostchat_crypto_text_cache(client_message_id,conversation_id,encrypted_content) VALUES(?,?,?)")
+            .bind(&legacy_id)
+            .bind(first)
+            .bind(EncryptedJsonCodec::to_vec(&"older text".to_string()).unwrap())
+            .execute(&bob_db)
+            .await
+            .unwrap();
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &bob_id, first, &alice_id, &legacy_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("older text")
+        );
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &bob_id, second, &alice_id, &legacy_id)
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn group_self_leave_proposal_keeps_group_loadable_and_owner_can_commit() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-leave-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let carol_db = open_database(&root.join("carol.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let carol_device = prepare_device(&carol_db, &carol_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[
+                GroupPeerKeyPackage {
+                    user_id: bob_id.clone(),
+                    device_id: bob_device.device_id.clone(),
+                    payload: bob_device.payload.clone(),
+                },
+                GroupPeerKeyPackage {
+                    user_id: carol_id.clone(),
+                    device_id: carol_device.device_id.clone(),
+                    payload: carol_device.payload.clone(),
+                },
+            ],
+        )
+        .await
+        .expect("Alice should create the encrypted group");
+        for (db, id) in [(&bob_db, &bob_id), (&carol_db, &carol_id)] {
+            let joined = process_crypto_event(
+                db,
+                id,
+                &conversation_id,
+                &alice_id,
+                None,
+                Some(1),
+                true,
+                &roster,
+                &start.welcome_payload,
+            )
+            .await
+            .expect("Each member should join from the group Welcome");
+            assert_eq!(joined.kind, "welcome");
+        }
+
+        let leave = prepare_group_leave_proposal(&bob_db, &bob_id, &conversation_id, &roster)
+            .await
+            .expect("Bob should create a self-leave proposal");
+        assert!(
+            has_direct_group(&bob_db, &bob_id, &conversation_id)
+                .await
+                .expect("Bob's group must stay loadable after queuing his own proposal"),
+            "Bob keeps the group until the owner commits"
+        );
+        let retried = prepare_group_leave_proposal(&bob_db, &bob_id, &conversation_id, &roster)
+            .await
+            .expect("A retried leave request should return the saved proposal");
+        assert_eq!(retried.operation_id, leave.operation_id);
+
+        let request = process_crypto_event(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &bob_id,
+            Some(&leave.operation_id),
+            Some(2),
+            true,
+            &roster,
+            &leave.commit_payload,
+        )
+        .await
+        .expect("The owner should accept Bob's authenticated leave proposal");
+        assert_eq!(request.kind, "leave_request");
+        // The relay broadcasts the proposal, so every remaining member queues it.
+        let carol_request = process_crypto_event(
+            &carol_db,
+            &carol_id,
+            &conversation_id,
+            &bob_id,
+            Some(&leave.operation_id),
+            Some(2),
+            true,
+            &roster,
+            &leave.commit_payload,
+        )
+        .await
+        .expect("Other members should queue Bob's leave proposal");
+        assert_eq!(carol_request.kind, "leave_request");
+        assert!(has_direct_group(&carol_db, &carol_id, &conversation_id)
+            .await
+            .expect("Carol's group must stay loadable with a queued proposal"));
+        let commit = prepare_group_leave_commit(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &leave.operation_id,
+            &bob_id,
+            &roster,
+            None,
+        )
+        .await
+        .expect("The owner should load the queued proposal and commit it");
+        assert_eq!(commit.action, "leave");
+        finalize_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &commit.operation_id,
+        )
+        .await
+        .expect("The owner should merge the confirmed leave commit");
+
+        let remaining = vec![alice_id.clone(), carol_id.clone()];
+        let applied = process_crypto_event(
+            &carol_db,
+            &carol_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(3),
+            true,
+            &remaining,
+            &commit.commit_payload,
+        )
+        .await
+        .expect("Carol should apply the owner's leave commit");
+        assert_eq!(applied.kind, "commit");
+        assert_eq!(
+            group_fingerprint(&carol_db, &carol_id, &conversation_id)
+                .await
+                .unwrap(),
+            group_fingerprint(&alice_db, &alice_id, &conversation_id)
+                .await
+                .unwrap(),
+            "Remaining members must agree on the new group roster"
+        );
+        // A replay of the applied commit is a duplicate, not a state change.
+        let replayed = process_crypto_event(
+            &carol_db,
+            &carol_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(3),
+            true,
+            &remaining,
+            &commit.commit_payload,
+        )
+        .await
+        .unwrap();
+        assert_eq!(replayed.kind, "duplicate");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn history_message_without_event_sequence_decrypts_without_moving_cursor() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-history-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let members = vec![alice_id.clone(), bob_id.clone()];
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let welcome = create_direct_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &bob_id,
+            &bob_device.device_id,
+            &bob_device.payload,
+        )
+        .await
+        .unwrap();
+        // A Welcome must come from the ordered crypto-event stream.
+        assert!(process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            None,
+            false,
+            &members,
+            &welcome.welcome_payload,
+        )
+        .await
+        .is_err());
+        process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(7),
+            false,
+            &members,
+            &welcome.welcome_payload,
+        )
+        .await
+        .unwrap();
+
+        // Encrypted text lives in ordinary message history, whose sequence is
+        // unrelated to the crypto-event cursor; the UI sends no eventSequence.
+        let message_id = Uuid::new_v4().to_string();
+        let sent = encrypt_text(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &message_id,
+            "history text",
+        )
+        .await
+        .unwrap();
+        let received = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            Some(&message_id),
+            None,
+            false,
+            &members,
+            &sent.payload,
+        )
+        .await
+        .expect("A history message should decrypt without a crypto-event sequence");
+        assert_eq!(received.kind, "application");
+        assert_eq!(received.content.as_deref(), Some("history text"));
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &bob_id, &conversation_id, &alice_id, &message_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("history text")
+        );
+        assert_eq!(
+            get_crypto_event_cursor(&bob_db, &bob_id, &conversation_id)
+                .await
+                .unwrap(),
+            Some(7),
+            "History decryption must not move the crypto-event cursor"
+        );
+        // MLS rejects a replayed ciphertext and the state stays usable.
+        assert!(process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            Some(&message_id),
+            None,
+            false,
+            &members,
+            &sent.payload,
+        )
+        .await
+        .is_err());
+        let next_id = Uuid::new_v4().to_string();
+        let next = encrypt_text(&alice_db, &alice_id, &conversation_id, &next_id, "next")
+            .await
+            .unwrap();
+        assert_eq!(
+            process_crypto_event(
+                &bob_db,
+                &bob_id,
+                &conversation_id,
+                &alice_id,
+                Some(&next_id),
+                None,
+                false,
+                &members,
+                &next.payload,
+            )
+            .await
+            .unwrap()
+            .content
+            .as_deref(),
+            Some("next")
+        );
+    }
+
+    /// Legacy rows come from an older build, i.e. before this process ran
+    /// its migration pass. Tests that inject them into a database this
+    /// process already migrated forget that pass first.
+    fn forget_hash_reference_migration(db: &SqlitePool) {
+        if let (Some(path), Some(set)) = (
+            migration_marker(db),
+            MIGRATED_DATABASES
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_mut(),
+        ) {
+            set.remove(&path);
+        }
+    }
+
+    fn legacy_ref_for(current_ref: &[u8]) -> Vec<u8> {
+        let hash_ref: openmls::prelude::KeyPackageRef =
+            EncryptedJsonCodec::from_slice(current_ref).unwrap();
+        lookup_key_v1(
+            STORAGE_KEY.get().unwrap(),
+            &serde_json::to_vec(&hash_ref).unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// Bob in a two-member group with his own leave proposal queued.
+    async fn group_with_queued_proposal(root: &Path) -> (SqlitePool, String, String) {
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[GroupPeerKeyPackage {
+                user_id: bob_id.clone(),
+                device_id: bob_device.device_id.clone(),
+                payload: bob_device.payload.clone(),
+            }],
+        )
+        .await
+        .unwrap();
+        process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(1),
+            true,
+            &roster,
+            &start.welcome_payload,
+        )
+        .await
+        .unwrap();
+        prepare_group_leave_proposal(&bob_db, &bob_id, &conversation_id, &roster)
+            .await
+            .unwrap();
+        (bob_db, bob_id, conversation_id)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn legacy_digest_proposal_refs_are_migrated_and_group_reloads() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-propmig-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let (bob_db, bob_id, conversation_id) = group_with_queued_proposal(&root).await;
+        let current_ref =
+            sqlx::query_scalar::<_, Vec<u8>>("SELECT proposal_ref FROM openmls_proposal")
+                .fetch_one(&bob_db)
+                .await
+                .unwrap();
+        assert!(current_ref.starts_with(DECODABLE_LOOKUP_KEY_PREFIX));
+        sqlx::query("UPDATE openmls_proposal SET proposal_ref=?")
+            .bind(legacy_ref_for(&current_ref))
+            .execute(&bob_db)
+            .await
+            .unwrap();
+        forget_hash_reference_migration(&bob_db);
+        assert!(has_direct_group(&bob_db, &bob_id, &conversation_id)
+            .await
+            .expect("A proposal saved by an older build should be migrated so the group loads"),);
+        let migrated =
+            sqlx::query_scalar::<_, Vec<u8>>("SELECT proposal_ref FROM openmls_proposal")
+                .fetch_one(&bob_db)
+                .await
+                .unwrap();
+        assert_eq!(migrated, current_ref);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn migration_drops_legacy_rows_that_duplicate_existing_refs() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-dupmig-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let (bob_db, bob_id, conversation_id) = group_with_queued_proposal(&root).await;
+        // Bob still holds an unused KeyPackage from prepare_device's second call.
+        prepare_device(&bob_db, &bob_id).await.unwrap();
+        let (package_ref, package) = sqlx::query_as::<_, (Vec<u8>, Vec<u8>)>(
+            "SELECT key_package_ref,key_package FROM openmls_key_package LIMIT 1",
+        )
+        .fetch_one(&bob_db)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO openmls_key_package(key_package_ref,key_package) VALUES(?,?)")
+            .bind(legacy_ref_for(&package_ref))
+            .bind(&package)
+            .execute(&bob_db)
+            .await
+            .unwrap();
+        let (group_id, proposal_ref, proposal) = sqlx::query_as::<_, (Vec<u8>, Vec<u8>, Vec<u8>)>(
+            "SELECT group_id,proposal_ref,proposal FROM openmls_proposal",
+        )
+        .fetch_one(&bob_db)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO openmls_proposal(group_id,proposal_ref,proposal) VALUES(?,?,?)")
+            .bind(&group_id)
+            .bind(legacy_ref_for(&proposal_ref))
+            .bind(&proposal)
+            .execute(&bob_db)
+            .await
+            .unwrap();
+        forget_hash_reference_migration(&bob_db);
+
+        assert!(has_direct_group(&bob_db, &bob_id, &conversation_id)
+            .await
+            .expect("A legacy duplicate must not make every crypto call fail"),);
+        for (table, column) in [
+            ("openmls_key_package", "key_package_ref"),
+            ("openmls_proposal", "proposal_ref"),
+        ] {
+            let legacy = sqlx::query_scalar::<_, i64>(&format!(
+                "SELECT count(*) FROM {table} WHERE substr({column},1,4)=?"
+            ))
+            .bind(LOOKUP_KEY_V1_PREFIX.as_slice())
+            .fetch_one(&bob_db)
+            .await
+            .unwrap();
+            assert_eq!(legacy, 0, "{table} should keep no legacy duplicate");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn legacy_digest_key_package_refs_are_migrated_and_still_join() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-migrate-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+
+        // Rewrite Bob's KeyPackage row to the one-way digest older builds wrote.
+        let current_ref =
+            sqlx::query_scalar::<_, Vec<u8>>("SELECT key_package_ref FROM openmls_key_package")
+                .fetch_one(&bob_db)
+                .await
+                .unwrap();
+        assert!(current_ref.starts_with(DECODABLE_LOOKUP_KEY_PREFIX));
+        let hash_ref: openmls::prelude::KeyPackageRef =
+            EncryptedJsonCodec::from_slice(&current_ref).unwrap();
+        let legacy_ref = lookup_key_v1(
+            STORAGE_KEY.get().unwrap(),
+            &serde_json::to_vec(&hash_ref).unwrap(),
+        )
+        .unwrap();
+        sqlx::query("UPDATE openmls_key_package SET key_package_ref=?")
+            .bind(&legacy_ref)
+            .execute(&bob_db)
+            .await
+            .unwrap();
+        forget_hash_reference_migration(&bob_db);
+
+        let welcome = create_direct_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &bob_id,
+            &bob_device.device_id,
+            &bob_device.payload,
+        )
+        .await
+        .unwrap();
+        let joined = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(1),
+            false,
+            &[alice_id.clone(), bob_id.clone()],
+            &welcome.welcome_payload,
+        )
+        .await
+        .expect("A KeyPackage saved by an older build should still accept its Welcome");
+        assert_eq!(joined.kind, "welcome");
+    }
+
+    async fn legacy_key_package_rows(db: &SqlitePool) -> i64 {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM openmls_key_package WHERE substr(key_package_ref,1,4)=?",
+        )
+        .bind(LOOKUP_KEY_V1_PREFIX.as_slice())
+        .fetch_one(db)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn hash_reference_migration_runs_once_per_database_after_a_clean_pass() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-once-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let db = open_database(&root.join("alice.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        prepare_device(&db, &alice_id).await.unwrap();
+        let current_ref =
+            sqlx::query_scalar::<_, Vec<u8>>("SELECT key_package_ref FROM openmls_key_package")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        sqlx::query("UPDATE openmls_key_package SET key_package_ref=?")
+            .bind(legacy_ref_for(&current_ref))
+            .execute(&db)
+            .await
+            .unwrap();
+
+        // The clean pass in prepare_device is remembered: no rescan.
+        prepare_crypto_storage(&db).await.unwrap();
+        assert_eq!(
+            legacy_key_package_rows(&db).await,
+            1,
+            "a clean pass must not rescan"
+        );
+
+        // A new database path (the same rows copied) is still migrated.
+        let copy = root.join("copy.sqlite");
+        sqlx::query("VACUUM INTO ?")
+            .bind(copy.to_string_lossy().to_string())
+            .execute(&db)
+            .await
+            .unwrap();
+        let copy_db = open_database(&copy).await;
+        prepare_crypto_storage(&copy_db).await.unwrap();
+        assert_eq!(legacy_key_package_rows(&copy_db).await, 0);
+
+        // A failed pass is not remembered: the next call runs it again.
+        let fresh = root.join("fresh.sqlite");
+        sqlx::query("VACUUM INTO ?")
+            .bind(fresh.to_string_lossy().to_string())
+            .execute(&db)
+            .await
+            .unwrap();
+        let fresh_db = open_database(&fresh).await;
+        sqlx::query("ALTER TABLE openmls_proposal RENAME TO openmls_proposal_hidden")
+            .execute(&fresh_db)
+            .await
+            .unwrap();
+        assert!(migrate_hash_reference_keys(&fresh_db).await.is_err());
+        sqlx::query("ALTER TABLE openmls_proposal_hidden RENAME TO openmls_proposal")
+            .execute(&fresh_db)
+            .await
+            .unwrap();
+        assert_eq!(legacy_key_package_rows(&fresh_db).await, 1);
+        prepare_crypto_storage(&fresh_db).await.unwrap();
+        assert_eq!(legacy_key_package_rows(&fresh_db).await, 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn deleted_account_leaf_is_tolerated_until_the_owner_removes_it() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-deleted-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let carol_db = open_database(&root.join("carol.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let carol_device = prepare_device(&carol_db, &carol_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[
+                GroupPeerKeyPackage {
+                    user_id: bob_id.clone(),
+                    device_id: bob_device.device_id.clone(),
+                    payload: bob_device.payload.clone(),
+                },
+                GroupPeerKeyPackage {
+                    user_id: carol_id.clone(),
+                    device_id: carol_device.device_id.clone(),
+                    payload: carol_device.payload.clone(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        for (db, id) in [(&bob_db, &bob_id), (&carol_db, &carol_id)] {
+            process_crypto_event(
+                db,
+                id,
+                &conversation_id,
+                &alice_id,
+                None,
+                Some(1),
+                true,
+                &roster,
+                &start.welcome_payload,
+            )
+            .await
+            .expect("Each member should join from the group Welcome");
+        }
+
+        // Carol deletes her account: the server roster loses her, MLS does not.
+        let mut remaining = vec![alice_id.clone(), bob_id.clone()];
+        remaining.sort();
+        let deleted = vec![carol_id.clone()];
+        let before = encrypt_text(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &Uuid::new_v4().to_string(),
+            "before removal",
+        )
+        .await
+        .unwrap();
+        let unknown = vec![Uuid::new_v4().to_string()];
+        assert!(
+            process_crypto_event_with_deleted(
+                &bob_db,
+                &bob_id,
+                &conversation_id,
+                &alice_id,
+                None,
+                None,
+                true,
+                &remaining,
+                &unknown,
+                &before.payload,
+            )
+            .await
+            .is_err(),
+            "a leaf that is not a recorded deleted account is still rejected"
+        );
+        let decrypted = process_crypto_event_with_deleted(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            None,
+            true,
+            &remaining,
+            &deleted,
+            &before.payload,
+        )
+        .await
+        .expect("Bob should still decrypt while Carol's deleted leaf remains");
+        assert_eq!(decrypted.content.as_deref(), Some("before removal"));
+
+        assert!(
+            prepare_deleted_member_removal(
+                &alice_db,
+                &alice_id,
+                &conversation_id,
+                &remaining,
+                &[],
+                None
+            )
+            .await
+            .is_err(),
+            "without the deleted record the roster mismatch is still refused"
+        );
+        let removal = prepare_deleted_member_removal(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &remaining,
+            &deleted,
+            None,
+        )
+        .await
+        .unwrap()
+        .expect("The owner should stage the removal of Carol's deleted leaf");
+        assert_eq!(removal.action, "remove_deleted");
+        assert_eq!(removal.member_ids, deleted);
+        assert_eq!(removal.expected_member_ids, remaining);
+        finalize_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &removal.operation_id,
+        )
+        .await
+        .expect("The owner should merge the confirmed removal");
+        let applied = process_crypto_event_with_deleted(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(2),
+            true,
+            &remaining,
+            &deleted,
+            &removal.commit_payload,
+        )
+        .await
+        .expect("Bob should apply the removal commit");
+        assert_eq!(applied.kind, "commit");
+        assert_eq!(
+            group_fingerprint(&bob_db, &bob_id, &conversation_id)
+                .await
+                .unwrap(),
+            group_fingerprint(&alice_db, &alice_id, &conversation_id)
+                .await
+                .unwrap(),
+        );
+        assert!(prepare_deleted_member_removal(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &remaining,
+            &deleted,
+            None
+        )
+        .await
+        .unwrap()
+        .is_none());
+
+        // The rosters now match exactly: no tolerance is needed any more.
+        let after = encrypt_text(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &Uuid::new_v4().to_string(),
+            "after removal",
+        )
+        .await
+        .unwrap();
+        let decrypted = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            None,
+            true,
+            &remaining,
+            &after.payload,
+        )
+        .await
+        .expect("Bob should decrypt with the exact server roster");
+        assert_eq!(decrypted.content.as_deref(), Some("after removal"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_newer_setup_generation_drops_the_old_group_so_the_new_welcome_is_joined() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-reset-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let carol_db = open_database(&root.join("carol.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+        let alice_device = prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        prepare_device(&carol_db, &carol_id).await.unwrap();
+        let package = |user_id: &str, device: &DevicePreparation| GroupPeerKeyPackage {
+            user_id: user_id.to_owned(),
+            device_id: device.device_id.clone(),
+            payload: device.payload.clone(),
+        };
+        // Carol starts the setup; only Bob receives her Welcome before her
+        // account is deleted.
+        let old_setup = create_group(
+            &carol_db,
+            &carol_id,
+            &conversation_id,
+            &[
+                package(&alice_id, &alice_device),
+                package(&bob_id, &bob_device),
+            ],
+        )
+        .await
+        .unwrap();
+        let joined = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &carol_id,
+            None,
+            Some(1),
+            true,
+            &roster,
+            &old_setup.welcome_payload,
+        )
+        .await
+        .unwrap();
+        assert_eq!(joined.kind, "welcome");
+
+        // Alice, who never joined, takes the setup over (generation 1) and
+        // creates the group again for the remaining roster.
+        let mut remaining = vec![alice_id.clone(), bob_id.clone()];
+        remaining.sort();
+        assert!(
+            apply_setup_generation(&alice_db, &alice_id, &conversation_id, 1)
+                .await
+                .unwrap()
+        );
+        let bob_fresh = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let new_setup = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[package(&bob_id, &bob_fresh)],
+        )
+        .await
+        .unwrap();
+        assert!(
+            get_pending_bootstrap(&alice_db, &alice_id, &conversation_id)
+                .await
+                .unwrap()
+                .is_some(),
+            "the new setup's own pending bootstrap is kept"
+        );
+        assert!(
+            !apply_setup_generation(&alice_db, &alice_id, &conversation_id, 1)
+                .await
+                .unwrap(),
+            "the same generation again changes nothing"
+        );
+        assert!(has_direct_group(&alice_db, &alice_id, &conversation_id)
+            .await
+            .unwrap());
+
+        // While Bob still holds the old group, the new Welcome is a duplicate
+        // for him and he would stay in a group nobody else is in.
+        let stuck = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(2),
+            true,
+            &remaining,
+            &new_setup.welcome_payload,
+        )
+        .await
+        .unwrap();
+        assert_eq!(stuck.kind, "welcome_duplicate");
+
+        // The newer generation drops the old group; an older (stale) value
+        // afterwards does nothing.
+        assert!(
+            apply_setup_generation(&bob_db, &bob_id, &conversation_id, 1)
+                .await
+                .unwrap()
+        );
+        assert!(!has_direct_group(&bob_db, &bob_id, &conversation_id)
+            .await
+            .unwrap());
+        assert!(
+            !apply_setup_generation(&bob_db, &bob_id, &conversation_id, 0)
+                .await
+                .unwrap()
+        );
+        let rejoined = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(3),
+            true,
+            &remaining,
+            &new_setup.welcome_payload,
+        )
+        .await
+        .expect("Bob should join the new setup's group");
+        assert_eq!(rejoined.kind, "welcome");
+        assert!(
+            !apply_setup_generation(&bob_db, &bob_id, &conversation_id, 1)
+                .await
+                .unwrap(),
+            "the joined group of the current generation is kept"
+        );
+        let hello = encrypt_text(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &Uuid::new_v4().to_string(),
+            "after the reset",
+        )
+        .await
+        .unwrap();
+        let decrypted = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            None,
+            true,
+            &remaining,
+            &hello.payload,
+        )
+        .await
+        .unwrap();
+        assert_eq!(decrypted.content.as_deref(), Some("after the reset"));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_staged_commit_keeps_the_commit_sequence_it_was_built_on() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-seq-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let carol_db = open_database(&root.join("carol.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let carol_device = prepare_device(&carol_db, &carol_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[
+                GroupPeerKeyPackage {
+                    user_id: bob_id.clone(),
+                    device_id: bob_device.device_id.clone(),
+                    payload: bob_device.payload.clone(),
+                },
+                GroupPeerKeyPackage {
+                    user_id: carol_id.clone(),
+                    device_id: carol_device.device_id.clone(),
+                    payload: carol_device.payload.clone(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(1),
+            true,
+            &roster,
+            &start.welcome_payload,
+        )
+        .await
+        .unwrap();
+
+        // The server's commit sequence the commit was built on is saved with
+        // the staged update, so a retry after a restart sends the same value.
+        let mut remaining = vec![alice_id.clone(), bob_id.clone()];
+        remaining.sort();
+        let deleted = vec![carol_id.clone()];
+        let staged = prepare_deleted_member_removal(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &remaining,
+            &deleted,
+            Some(4),
+        )
+        .await
+        .unwrap()
+        .expect("Carol's leaf is still in the group");
+        assert_eq!(staged.expected_commit_seq, Some(4));
+        let json = serde_json::to_value(&staged).unwrap();
+        assert_eq!(json["expectedCommitSeq"], 4);
+        let saved = get_pending_group_membership_update(&alice_db, &alice_id, &conversation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved.operation_id, staged.operation_id);
+        assert_eq!(saved.expected_commit_seq, Some(4));
+        // The pending update was built on the earlier state: asking again
+        // after the group moved on must not relabel it.
+        let again = prepare_deleted_member_removal(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &remaining,
+            &deleted,
+            Some(9),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(again.operation_id, staged.operation_id);
+        assert_eq!(again.expected_commit_seq, Some(4));
+        discard_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &staged.operation_id,
+        )
+        .await
+        .unwrap();
+
+        // A server without the sequence gives no value; none is invented.
+        let plain = prepare_deleted_member_removal(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &remaining,
+            &deleted,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(plain.expected_commit_seq, None);
+        assert!(serde_json::to_value(&plain)
+            .unwrap()
+            .get("expectedCommitSeq")
+            .is_none());
+        discard_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &plain.operation_id,
+        )
+        .await
+        .unwrap();
+        assert!(prepare_deleted_member_removal(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &remaining,
+            &deleted,
+            Some(-1),
+        )
+        .await
+        .is_err());
+
+        // A leave commit is stamped the same way.
+        let leave = prepare_group_leave_proposal(&bob_db, &bob_id, &conversation_id, &roster)
+            .await
+            .unwrap();
+        process_crypto_event_with_deleted(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &bob_id,
+            Some(&leave.operation_id),
+            Some(2),
+            true,
+            &roster,
+            &[],
+            &leave.commit_payload,
+        )
+        .await
+        .unwrap();
+        let commit = prepare_group_leave_commit(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &leave.operation_id,
+            &bob_id,
+            &roster,
+            Some(6),
+        )
+        .await
+        .unwrap();
+        assert_eq!(commit.action, "leave");
+        assert_eq!(commit.expected_commit_seq, Some(6));
+        let retried = prepare_group_leave_commit(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &leave.operation_id,
+            &bob_id,
+            &roster,
+            Some(7),
+        )
+        .await
+        .unwrap();
+        assert_eq!(retried.expected_commit_seq, Some(6));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_staged_removal_is_dropped_and_the_accepted_one_applies() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-refused-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let carol_db = open_database(&root.join("carol.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let carol_device = prepare_device(&carol_db, &carol_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[
+                GroupPeerKeyPackage {
+                    user_id: bob_id.clone(),
+                    device_id: bob_device.device_id.clone(),
+                    payload: bob_device.payload.clone(),
+                },
+                GroupPeerKeyPackage {
+                    user_id: carol_id.clone(),
+                    device_id: carol_device.device_id.clone(),
+                    payload: carol_device.payload.clone(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(1),
+            true,
+            &roster,
+            &start.welcome_payload,
+        )
+        .await
+        .unwrap();
+        let mut remaining = vec![alice_id.clone(), bob_id.clone()];
+        remaining.sort();
+        let deleted = vec![carol_id.clone()];
+        // Owner Alice and admin Bob both stage the removal of deleted Carol;
+        // the server accepts Alice's and refuses Bob's as already done.
+        let accepted = prepare_deleted_member_removal(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &remaining,
+            &deleted,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        finalize_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &accepted.operation_id,
+        )
+        .await
+        .unwrap();
+        let refused = prepare_deleted_member_removal(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &remaining,
+            &deleted,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            discard_group_membership_update(
+                &bob_db,
+                &bob_id,
+                &conversation_id,
+                &Uuid::new_v4().to_string()
+            )
+            .await
+            .is_err(),
+            "only the staged operation itself can be dropped"
+        );
+        discard_group_membership_update(&bob_db, &bob_id, &conversation_id, &refused.operation_id)
+            .await
+            .unwrap();
+        assert!(
+            get_pending_group_membership_update(&bob_db, &bob_id, &conversation_id)
+                .await
+                .unwrap()
+                .is_none(),
+            "a dropped operation is not retried"
+        );
+        let applied = process_crypto_event_with_deleted(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(2),
+            true,
+            &remaining,
+            &deleted,
+            &accepted.commit_payload,
+        )
+        .await
+        .expect("the accepted removal applies after the refused one was dropped");
+        assert_eq!(applied.kind, "commit");
+        assert_eq!(
+            group_fingerprint(&bob_db, &bob_id, &conversation_id)
+                .await
+                .unwrap(),
+            group_fingerprint(&alice_db, &alice_id, &conversation_id)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn removed_deleted_account_cannot_be_re_added_by_a_commit() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-readd-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let carol_db = open_database(&root.join("carol.sqlite")).await;
+        let carol_again_db = open_database(&root.join("carol-again.sqlite")).await;
+        let dave_db = open_database(&root.join("dave.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let dave_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let carol_device = prepare_device(&carol_db, &carol_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[
+                GroupPeerKeyPackage {
+                    user_id: bob_id.clone(),
+                    device_id: bob_device.device_id.clone(),
+                    payload: bob_device.payload.clone(),
+                },
+                GroupPeerKeyPackage {
+                    user_id: carol_id.clone(),
+                    device_id: carol_device.device_id.clone(),
+                    payload: carol_device.payload.clone(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(1),
+            true,
+            &roster,
+            &start.welcome_payload,
+        )
+        .await
+        .unwrap();
+
+        // Carol is deleted and her leaf is removed by the owner.
+        let mut remaining = vec![alice_id.clone(), bob_id.clone()];
+        remaining.sort();
+        let deleted = vec![carol_id.clone()];
+        let removal = prepare_deleted_member_removal(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &remaining,
+            &deleted,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        finalize_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &removal.operation_id,
+        )
+        .await
+        .unwrap();
+        process_crypto_event_with_deleted(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(2),
+            true,
+            &remaining,
+            &deleted,
+            &removal.commit_payload,
+        )
+        .await
+        .unwrap();
+
+        // A legitimate add of Dave is still accepted while Carol stays listed.
+        let dave_device = prepare_device(&dave_db, &dave_id).await.unwrap();
+        let add_dave = prepare_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &remaining,
+            &[GroupPeerKeyPackage {
+                user_id: dave_id.clone(),
+                device_id: dave_device.device_id.clone(),
+                payload: dave_device.payload.clone(),
+            }],
+            None,
+        )
+        .await
+        .unwrap();
+        finalize_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &add_dave.operation_id,
+        )
+        .await
+        .unwrap();
+        let mut with_dave = vec![alice_id.clone(), bob_id.clone(), dave_id.clone()];
+        with_dave.sort();
+        let applied = process_crypto_event_with_deleted(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(3),
+            true,
+            &with_dave,
+            &deleted,
+            &add_dave.commit_payload,
+        )
+        .await
+        .expect("a legitimate add commit is accepted");
+        assert_eq!(applied.kind, "commit");
+
+        // A commit that adds a new leaf for deleted Carol must be refused,
+        // although the server still lists her as a deleted account.
+        let carol_again = prepare_device(&carol_again_db, &carol_id).await.unwrap();
+        let readd = prepare_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &with_dave,
+            &[GroupPeerKeyPackage {
+                user_id: carol_id.clone(),
+                device_id: carol_again.device_id.clone(),
+                payload: carol_again.payload.clone(),
+            }],
+            None,
+        )
+        .await
+        .unwrap();
+        let before = group_fingerprint(&bob_db, &bob_id, &conversation_id)
+            .await
+            .unwrap();
+        assert!(
+            process_crypto_event_with_deleted(
+                &bob_db,
+                &bob_id,
+                &conversation_id,
+                &alice_id,
+                None,
+                Some(4),
+                true,
+                &with_dave,
+                &deleted,
+                &readd.commit_payload,
+            )
+            .await
+            .is_err(),
+            "a deleted account's leaf may stay or be removed, never be added"
+        );
+        assert_eq!(
+            group_fingerprint(&bob_db, &bob_id, &conversation_id)
+                .await
+                .unwrap(),
+            before,
+            "the refused commit must not be merged"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn past_epoch_history_rows_are_marked_undecryptable_once() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-pastepoch-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let carol_db = open_database(&root.join("carol.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let carol_device = prepare_device(&carol_db, &carol_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[
+                GroupPeerKeyPackage {
+                    user_id: bob_id.clone(),
+                    device_id: bob_device.device_id.clone(),
+                    payload: bob_device.payload.clone(),
+                },
+                GroupPeerKeyPackage {
+                    user_id: carol_id.clone(),
+                    device_id: carol_device.device_id.clone(),
+                    payload: carol_device.payload.clone(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(1),
+            true,
+            &roster,
+            &start.welcome_payload,
+        )
+        .await
+        .unwrap();
+        let old_id = Uuid::new_v4().to_string();
+        let old = encrypt_text(&alice_db, &alice_id, &conversation_id, &old_id, "old")
+            .await
+            .unwrap();
+        let mut remaining = vec![alice_id.clone(), bob_id.clone()];
+        remaining.sort();
+        let removal = prepare_group_removal_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &roster,
+            std::slice::from_ref(&carol_id),
+            None,
+        )
+        .await
+        .unwrap();
+        finalize_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &removal.operation_id,
+        )
+        .await
+        .unwrap();
+        let new_id = Uuid::new_v4().to_string();
+        let new = encrypt_text(&alice_db, &alice_id, &conversation_id, &new_id, "new")
+            .await
+            .unwrap();
+        let decode = |id: String, payload: String| {
+            let (bob_db, bob_id, conversation_id, alice_id, remaining) = (
+                bob_db.clone(),
+                bob_id.clone(),
+                conversation_id.clone(),
+                alice_id.clone(),
+                remaining.clone(),
+            );
+            async move {
+                process_crypto_event(
+                    &bob_db,
+                    &bob_id,
+                    &conversation_id,
+                    &alice_id,
+                    Some(&id),
+                    None,
+                    true,
+                    &remaining,
+                    &payload,
+                )
+                .await
+            }
+        };
+        let state = |id: String| {
+            let (bob_db, bob_id, conversation_id, alice_id) = (
+                bob_db.clone(),
+                bob_id.clone(),
+                conversation_id.clone(),
+                alice_id.clone(),
+            );
+            async move {
+                get_cached_text_state(&bob_db, &bob_id, &conversation_id, &alice_id, &id)
+                    .await
+                    .unwrap()
+            }
+        };
+
+        // A row from a later epoch fails now but is not permanent.
+        assert!(decode(new_id.clone(), new.payload.clone()).await.is_err());
+        assert!(!state(new_id.clone()).await.undecryptable);
+        process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(2),
+            true,
+            &remaining,
+            &removal.commit_payload,
+        )
+        .await
+        .unwrap();
+        // A row from an epoch this device has left can never be decrypted.
+        assert!(decode(old_id.clone(), old.payload.clone()).await.is_err());
+        let marked = state(old_id.clone()).await;
+        assert!(marked.undecryptable, "a past-epoch row is marked once");
+        assert_eq!(marked.content, None);
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &bob_id, &conversation_id, &alice_id, &old_id)
+                .await
+                .unwrap(),
+            None,
+            "a marker is not plaintext"
+        );
+        let decoded = decode(new_id.clone(), new.payload.clone()).await.unwrap();
+        assert_eq!(decoded.content.as_deref(), Some("new"));
+        let cached = state(new_id).await;
+        assert_eq!(cached.content.as_deref(), Some("new"));
+        assert!(!cached.undecryptable);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn inspecting_a_relay_commit_authenticates_it_without_applying_it() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-inspect-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let carol_db = open_database(&root.join("carol.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let carol_device = prepare_device(&carol_db, &carol_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[
+                GroupPeerKeyPackage {
+                    user_id: bob_id.clone(),
+                    device_id: bob_device.device_id.clone(),
+                    payload: bob_device.payload.clone(),
+                },
+                GroupPeerKeyPackage {
+                    user_id: carol_id.clone(),
+                    device_id: carol_device.device_id.clone(),
+                    payload: carol_device.payload.clone(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(1),
+            true,
+            &roster,
+            &start.welcome_payload,
+        )
+        .await
+        .unwrap();
+        let missed_id = Uuid::new_v4().to_string();
+        let missed = encrypt_text(&alice_db, &alice_id, &conversation_id, &missed_id, "missed")
+            .await
+            .unwrap();
+        let mut remaining = vec![alice_id.clone(), bob_id.clone()];
+        remaining.sort();
+        let removal = prepare_group_removal_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &roster,
+            std::slice::from_ref(&carol_id),
+            None,
+        )
+        .await
+        .unwrap();
+        finalize_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &removal.operation_id,
+        )
+        .await
+        .unwrap();
+        let before = group_fingerprint(&bob_db, &bob_id, &conversation_id)
+            .await
+            .unwrap();
+
+        // A relay event claiming the wrong sender is not an authenticated commit.
+        assert!(inspect_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &carol_id,
+            2,
+            true,
+            &remaining,
+            &[],
+            &removal.commit_payload,
+        )
+        .await
+        .is_err());
+        let inspected = inspect_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            2,
+            true,
+            &remaining,
+            &[],
+            &removal.commit_payload,
+        )
+        .await
+        .expect("a valid commit from a current member is recognised");
+        assert_eq!(inspected.kind, "commit");
+        assert_eq!(
+            group_fingerprint(&bob_db, &bob_id, &conversation_id)
+                .await
+                .unwrap(),
+            before,
+            "inspection must not apply the commit"
+        );
+        assert_eq!(
+            get_crypto_event_cursor(&bob_db, &bob_id, &conversation_id)
+                .await
+                .unwrap(),
+            Some(1),
+            "inspection must not move the relay cursor"
+        );
+        // The current epoch is intact: the pending row still decrypts, and
+        // the commit then applies for real.
+        let decoded = decode_history_before_pending_commits(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            &missed_id,
+            true,
+            &missed.payload,
+        )
+        .await
+        .unwrap();
+        assert_eq!(decoded.content.as_deref(), Some("missed"));
+        let applied = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(2),
+            true,
+            &remaining,
+            &removal.commit_payload,
+        )
+        .await
+        .unwrap();
+        assert_eq!(applied.kind, "commit");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pending_history_message_decrypts_before_a_membership_commit() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-precommit-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let carol_db = open_database(&root.join("carol.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let carol_device = prepare_device(&carol_db, &carol_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[
+                GroupPeerKeyPackage {
+                    user_id: bob_id.clone(),
+                    device_id: bob_device.device_id.clone(),
+                    payload: bob_device.payload.clone(),
+                },
+                GroupPeerKeyPackage {
+                    user_id: carol_id.clone(),
+                    device_id: carol_device.device_id.clone(),
+                    payload: carol_device.payload.clone(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        for (db, id) in [(&bob_db, &bob_id), (&carol_db, &carol_id)] {
+            process_crypto_event(
+                db,
+                id,
+                &conversation_id,
+                &alice_id,
+                None,
+                Some(1),
+                true,
+                &roster,
+                &start.welcome_payload,
+            )
+            .await
+            .unwrap();
+        }
+
+        // Alice sends while Bob is elsewhere, then removes Carol.
+        let missed_id = Uuid::new_v4().to_string();
+        let missed = encrypt_text(&alice_db, &alice_id, &conversation_id, &missed_id, "missed")
+            .await
+            .unwrap();
+        let mut remaining = vec![alice_id.clone(), bob_id.clone()];
+        remaining.sort();
+        let removal = prepare_group_removal_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &roster,
+            std::slice::from_ref(&carol_id),
+            None,
+        )
+        .await
+        .unwrap();
+        finalize_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &removal.operation_id,
+        )
+        .await
+        .unwrap();
+
+        // Bob opens the group: the server roster already lacks Carol and the
+        // removal commit is pending on the relay. Decoding the pending
+        // history first, against the local epoch's roster, keeps the text.
+        // The ordinary history path compares with the changed server roster.
+        assert!(process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            Some(&missed_id),
+            None,
+            true,
+            &remaining,
+            &missed.payload,
+        )
+        .await
+        .is_err());
+        let decoded = decode_history_before_pending_commits(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            &missed_id,
+            true,
+            &missed.payload,
+        )
+        .await
+        .expect("A message from the current local epoch should decrypt before the commit");
+        assert_eq!(decoded.content.as_deref(), Some("missed"));
+        assert_eq!(
+            get_crypto_event_cursor(&bob_db, &bob_id, &conversation_id)
+                .await
+                .unwrap(),
+            Some(1),
+            "history decoding never moves the relay cursor"
+        );
+        let applied = process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(2),
+            true,
+            &remaining,
+            &removal.commit_payload,
+        )
+        .await
+        .unwrap();
+        assert_eq!(applied.kind, "commit");
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &bob_id, &conversation_id, &alice_id, &missed_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("missed"),
+            "the plaintext stays in the local cache after the epoch moved on"
+        );
+        // Without the earlier decode the past-epoch ciphertext is unreadable.
+        assert!(process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            Some(&Uuid::new_v4().to_string()),
+            None,
+            true,
+            &remaining,
+            &missed.payload,
+        )
+        .await
+        .is_err());
+        // The local-epoch mode only decodes history text, never relay events.
+        assert!(decode_history_before_pending_commits(
+            &carol_db,
+            &carol_id,
+            &conversation_id,
+            &alice_id,
+            &Uuid::new_v4().to_string(),
+            true,
+            &removal.commit_payload,
         )
         .await
         .is_err());

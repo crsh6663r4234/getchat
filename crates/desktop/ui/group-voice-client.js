@@ -15,9 +15,9 @@
 
   function create(api) {
     let room = null;
-    let generation = 0;
     let microphone = null;
     let microphoneTrack = null;
+    let selectedMicrophoneId;
     let audioQueue = Promise.resolve();
     let conversation = null;
     let members = new Map();
@@ -26,6 +26,9 @@
     let micManuallyMuted = true;
     let pushToTalkPressed = false;
     let screenOperation = null;
+    // Bumped by leave() and by every join so a join still awaiting its token
+    // or connect cannot attach a room after the user left.
+    let joinGeneration = 0;
     const audioElements = new Map();
     const screenElements = new Map();
     const mutedAccounts = new Set();
@@ -166,7 +169,7 @@
     async function prepareMicrophone(activeRoom, settings) {
       if (!window.GhostChatAudio) throw new Error("The audio engine did not load. Restart GhostChat.");
       let prepared;
-      prepared = await window.GhostChatAudio.open(settings, { onStatus() {
+      prepared = await window.GhostChatAudio.open({ ...settings, microphoneId: selectedMicrophoneId ?? settings.microphoneId }, { onStatus() {
         if (room === activeRoom && microphone === prepared) publishState();
       } });
       if (room !== activeRoom) { await prepared.close(); return; }
@@ -213,7 +216,7 @@
         .on(E.Reconnected, () => publishState({ status: "connected" }))
         .on(E.Disconnected, () => {
           if (room !== activeRoom) return;
-          generation++;
+          joinGeneration++;
           void microphone?.close(); microphone = null; microphoneTrack = null;
           api.onScreenRemoved?.();
           for (const [sid, element] of audioElements) element.remove();
@@ -225,13 +228,16 @@
         .on(E.AudioPlaybackStatusChanged, canPlayback => { if (!canPlayback) api.onAudioBlocked(); });
     }
 
+    // A join that a leave() or a newer join superseded resolves to
+    // { cancelled: true } (not an error, and distinguishable from success).
     async function join(nextConversation) {
       if (!LK?.Room) throw new Error("The group voice module did not load. Restart GhostChat and try again.");
       if (room) {
         if (conversation?.id === nextConversation.id) return;
         await leave();
       }
-      const joining = ++generation;
+      const ticket = ++joinGeneration;
+      let activeRoom = null;
       conversation = nextConversation;
       mutedAccounts.clear();
       micManuallyMuted = true;
@@ -240,10 +246,10 @@
       api.onChange({ ...state });
       try {
         const [credentials, memberRows] = await Promise.all([api.getToken(nextConversation.id), api.getMembers(nextConversation.id)]);
-        if (joining !== generation) return;
+        if (ticket !== joinGeneration) return { cancelled: true };
         members = new Map(memberRows.map(member => [member.id, member]));
         const settings = api.getSettings();
-        const activeRoom = new LK.Room({
+        activeRoom = new LK.Room({
           adaptiveStream: true,
           dynacast: true,
           audioOutput: settings.speakerId ? { deviceId: settings.speakerId } : undefined,
@@ -256,20 +262,20 @@
           rtcConfig: { iceTransportPolicy: "relay" },
           peerConnectionTimeout: 15_000,
         });
-        if (joining !== generation || room !== activeRoom) { await activeRoom.disconnect(); return; }
+        if (ticket !== joinGeneration || room !== activeRoom) { await activeRoom.disconnect(); return { cancelled: true }; }
         await activeRoom.startAudio().catch(() => {});
         let micAvailable = true;
         try { micAvailable = (await LK.Room.getLocalDevices("audioinput", false)).length > 0; } catch {}
-        if (joining !== generation || room !== activeRoom) return;
+        if (ticket !== joinGeneration || room !== activeRoom) return { cancelled: true };
         // Joining a group never publishes the microphone automatically.
-        // No SDK microphone capture: only our processed user-provided track is published.
+        // Only the shared processed track may publish microphone audio.
+        if (room !== activeRoom) return { cancelled: true };
         publishState({ status: "connected", micMuted: true, micManuallyMuted: true, pushToTalkPressed: false, micAvailable, screenSharing: false, screenStarting: false, error: "" });
       } catch (error) {
-        if (joining !== generation) return;
-        if (room) {
-          try { await room.disconnect(); } catch {}
-          room = null;
-        }
+        const superseded = ticket !== joinGeneration || (activeRoom && room !== activeRoom);
+        if (activeRoom && room === activeRoom) room = null;
+        if (activeRoom) { try { await activeRoom.disconnect(); } catch {} }
+        if (superseded) return { cancelled: true };
         const message = "Group voice could not establish its required relay connection. Verify the media server and its authenticated TURN service.";
         publishState({ ...idleState(), error: message });
         throw new Error(message);
@@ -277,7 +283,7 @@
     }
 
     async function leave() {
-      generation++;
+      joinGeneration += 1;
       const activeRoom = room;
       room = null;
       const previousMicrophone = microphone;
@@ -285,15 +291,19 @@
       await previousMicrophone?.close();
       api.onScreenRemoved?.();
       screenOperation = null;
-      if (activeRoom) await activeRoom.disconnect();
-      conversation = null;
-      members.clear();
-      activeSpeakers.clear();
-      for (const element of audioElements.values()) element.remove();
-      for (const screen of screenElements.values()) screen.tile.remove();
-      audioElements.clear(); screenElements.clear(); mutedAccounts.clear();
-      state = idleState();
-      api.onChange({ ...state });
+      // Clean up even if disconnect() rejects; the error still reaches the caller.
+      try {
+        if (activeRoom) await activeRoom.disconnect();
+      } finally {
+        conversation = null;
+        members.clear();
+        activeSpeakers.clear();
+        for (const element of audioElements.values()) element.remove();
+        for (const screen of screenElements.values()) screen.tile.remove();
+        audioElements.clear(); screenElements.clear(); mutedAccounts.clear();
+        state = idleState();
+        api.onChange({ ...state });
+      }
     }
 
     async function toggleMicrophone() {
@@ -383,6 +393,7 @@
     }
 
     function setMicrophoneDevice(deviceId) {
+      selectedMicrophoneId = deviceId || "";
       const activeRoom = room;
       if (!activeRoom || !microphone) return Promise.resolve();
       return queueAudio(activeRoom, () => prepareMicrophone(activeRoom, { ...api.getSettings(), microphoneId: deviceId || "" }));
@@ -399,7 +410,9 @@
       if (room && deviceId) await room.switchActiveDevice("audiooutput", deviceId);
       for (const [sid, element] of audioElements) {
         const track = room?.remoteParticipants ? [...room.remoteParticipants.values()].flatMap(p => [...p.trackPublications.values()].map(x => x.track)).find(item => item?.sid === sid) : null;
-        if (track) applyAudioPreferences(element, identityAccountId(track.participant || {}));
+        // LiveKit tracks carry no participant reference; the element records
+        // the account so per-peer mutes survive a speaker change.
+        if (track) applyAudioPreferences(element, element.dataset.accountId || "");
         else if (typeof element.setSinkId === "function" && deviceId) await element.setSinkId(deviceId).catch(() => {});
       }
     }

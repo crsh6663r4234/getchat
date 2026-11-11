@@ -4,8 +4,9 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ui = path.resolve(__dirname, '../crates/desktop/ui');
 
-function directFixture(config, { failShare = false, relayOnly = true } = {}) {
-  const pcs = []; const signals = []; let micRequests = 0; let screenRequests = 0; let shareLeaves = 0;
+function directFixture(config, { failShare = false, relayOnly = true, deferConfig = false, shareFactory = null, invisible = false, screen = null } = {}) {
+  const intervals = [];
+  const pcs = []; const timers = []; const errors = []; let releaseConfig; let settingsFailures = 0; const configGate = new Promise(resolve => { releaseConfig = resolve; }); const signals = []; let micRequests = 0; let micSource = null; let screenRequests = 0; let shareLeaves = 0;
   class Peer {
     connectionState = 'new'; signalingState = 'stable'; transceivers = [];
     constructor(configuration) { this.configuration = configuration; pcs.push(this); }
@@ -20,26 +21,37 @@ function directFixture(config, { failShare = false, relayOnly = true } = {}) {
     async setLocalDescription(value) {
       this.localDescription = value;
     }
+    async setRemoteDescription(value) { this.remoteDescription = value; }
+    async createAnswer() { return { type: 'answer', sdp: 'fixture' }; }
+    async addIceCandidate() {}
     async getStats() { return new Map(); }
     close() { this.connectionState = 'closed'; }
   }
-  const window = { GhostChatShare: { create: () => ({ start: async () => { if (failShare) throw new Error('TURN unavailable'); }, leave: async () => { shareLeaves++; } }) } };
+  const window = { GhostChatShare: { create: shareFactory || (() => ({ start: async () => { if (failShare) throw new Error('TURN unavailable'); }, leave: async () => { shareLeaves++; } })) } };
   const context = {
     window, RTCPeerConnection: Peer, console,
     navigator: { mediaDevices: {
       getSupportedConstraints: () => ({}),
-      getUserMedia: async () => { micRequests++; throw { name: 'NotFoundError' }; },
-      getDisplayMedia: async () => { screenRequests++; throw new Error('Unexpected direct screen fallback'); },
+      getUserMedia: async () => { micRequests++; if (micSource) return micSource(); throw { name: 'NotFoundError' }; },
+      getDisplayMedia: async () => { screenRequests++; if (screen) return screen(); throw new Error('Unexpected direct screen fallback'); },
     } },
-    setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {},
+    setTimeout: (fn, ms) => { timers.push({ fn, ms, cleared: false }); return timers.length; },
+    clearTimeout: id => { if (timers[id - 1]) timers[id - 1].cleared = true; },
+    setInterval: fn => { intervals.push({ fn, cleared: false }); return intervals.length; }, clearInterval: id => { if (intervals[id - 1]) intervals[id - 1].cleared = true; },
   };
+  window.GhostChatAudio = { open: async () => {
+    const stream = await context.navigator.mediaDevices.getUserMedia();
+    return { stream, rawStream: stream, status: { state: 'running' },
+      setMuted(value) { for (const track of stream.getAudioTracks()) track.enabled = !value; },
+      async close() { for (const track of stream.getTracks()) track.stop(); } };
+  } };
   vm.runInNewContext(fs.readFileSync(path.join(ui, 'voice-client.js'), 'utf8'), context);
   const client = window.GhostChatVoice.create({
-    getSettings: () => ({ relayOnly }), getIceConfiguration: async () => config,
+    getSettings: () => { if (settingsFailures > 0) { settingsFailures--; throw new Error('settings unavailable'); } return { relayOnly }; }, getIceConfiguration: async () => { if (deferConfig) await configGate; return config; },
     getUserId: () => 'a', getShareToken: async () => ({}), sendSignal: signal => signals.push(signal),
-    onChange() {}, onError() {}, onIncoming() {},
+    onChange() {}, onError: message => errors.push(message), onIncoming() {}, isInvisible: () => invisible,
   });
-  return { client, pcs, signals, counts: () => ({ micRequests, screenRequests, shareLeaves }) };
+  return { client, pcs, signals, timers, intervals, errors, releaseConfig, failSettingsOnce: () => { settingsFailures = 1; }, counts: () => ({ micRequests, screenRequests, shareLeaves }), setMic: fn => { micSource = fn; } };
 }
 
 function livekitFixture({ connectFails = false } = {}) {
@@ -51,6 +63,7 @@ function livekitFixture({ connectFails = false } = {}) {
     on(event, handler) { this.events.set(event, handler); return this; }
     async connect(url, token, options) { this.connectOptions = options; if (connectFails) throw new Error('No TURN candidates'); }
     async startAudio() {}
+    async switchActiveDevice(kind, deviceId) { (this.switches ||= []).push([kind, deviceId]); return true; }
     async disconnect() { this.disconnected = true; this.events.get('Disconnected')?.(); }
     static async getLocalDevices() { return []; }
   }
@@ -109,6 +122,237 @@ async function run() {
   await assert.rejects(noTurn.client.start({ id: 'conversation', peer_id: 'b' }), /authenticated TURN relay/);
   assert.equal(noTurn.pcs.length, 0, 'No direct peer connection is constructed without TURN');
 
+  // Direct call lifecycle: accept racing a caller hangup, double accept, stuck connect.
+  // Calls are relay-only since 4.0.50, so the lifecycle fixtures need an authenticated TURN relay.
+  const plain = { turn_available: true, ice_servers: [{ urls: ['turn:relay.fixture:3478?transport=udp'], username: 'fixture', credential: 'fixture' }] };
+  const offerSignal = { conversation_id: 'conversation', from_user_id: 'b', kind: 'offer', payload: { type: 'offer', sdp: 'fixture' } };
+  const hungUp = directFixture(plain, { deferConfig: true });
+  await hungUp.client.handleSignal(offerSignal);
+  const pendingAccept = hungUp.client.accept();
+  await hungUp.client.handleSignal({ conversation_id: 'conversation', from_user_id: 'b', kind: 'hangup' });
+  hungUp.releaseConfig();
+  await pendingAccept;
+  assert.equal(hungUp.client.getState().status, 'idle', 'accept after caller hangup opens no call');
+  assert.equal(hungUp.pcs.length, 0, 'No peer connection is created for a cancelled call');
+  assert(!hungUp.signals.some(signal => signal.kind === 'answer'), 'No answer is sent for a cancelled call');
+
+  const twice = directFixture(plain, { deferConfig: true });
+  await twice.client.handleSignal(offerSignal);
+  const firstAccept = twice.client.accept(); const secondAccept = twice.client.accept();
+  twice.releaseConfig();
+  await Promise.all([firstAccept, secondAccept]);
+  assert.equal(twice.pcs.length, 1, 'Double accept creates one peer connection');
+  assert.equal(twice.signals.filter(signal => signal.kind === 'answer').length, 1, 'Double accept sends one answer');
+  twice.client.hangup();
+
+  // A busy callee answers a second call with an automatic hangup. In
+  // invisible mode that reply would reveal it is online, so the second
+  // caller must see exactly what an offline callee gives: nothing.
+  for (const invisible of [false, true]) {
+    for (const busy of ['incoming', 'call']) {
+      const fixture = directFixture(plain, { invisible });
+      if (busy === 'incoming') await fixture.client.handleSignal(offerSignal);
+      else await fixture.client.start({ id: 'conversation', peer_id: 'b' });
+      const before = fixture.signals.length;
+      await fixture.client.handleSignal({ conversation_id: 'other', from_user_id: 'c', kind: 'offer', payload: { type: 'offer', sdp: 'fixture' } });
+      const replies = fixture.signals.slice(before).filter(signal => signal.peerId === 'c');
+      if (invisible) assert.deepEqual(replies, [], `invisible and busy (${busy}): the second caller gets no reply`);
+      else assert.deepEqual(replies.map(signal => signal.kind), ['hangup'], `busy (${busy}): the second caller is told`);
+      fixture.client.hangup();
+    }
+  }
+  // Declining tells the caller we are here; an offline callee says nothing
+  // and the caller rings to its own timeout. Invisible must look the same.
+  for (const invisible of [false, true]) {
+    const fixture = directFixture(plain, { invisible });
+    await fixture.client.handleSignal(offerSignal);
+    const before = fixture.signals.length;
+    fixture.client.decline();
+    assert.equal(fixture.client.getState().status, 'idle', 'a declined call stops ringing here');
+    const replies = fixture.signals.slice(before).map(signal => signal.kind);
+    if (invisible) assert.deepEqual(replies, [], 'an invisible decline sends the caller nothing');
+    else assert.deepEqual(replies, ['hangup'], 'a visible decline tells the caller once');
+  }
+  // Invisible mode still receives the call and can answer it.
+  {
+    const fixture = directFixture(plain, { invisible: true });
+    await fixture.client.handleSignal(offerSignal);
+    assert.equal(fixture.client.getState().status, 'incoming', 'an invisible callee still rings');
+    await fixture.client.accept();
+    assert.equal(fixture.signals.filter(signal => signal.kind === 'answer').length, 1, 'an invisible callee can answer');
+    fixture.client.hangup();
+  }
+
+  // The same caller re-sends its offer while accept() probes the relay: the
+  // pending accept continues with the newest offer instead of doing nothing.
+  {
+    const fixture = directFixture(plain, { deferConfig: true });
+    await fixture.client.handleSignal(offerSignal);
+    const pending = fixture.client.accept();
+    await fixture.client.handleSignal({ ...offerSignal, payload: { type: 'offer', sdp: 'renewed' } });
+    fixture.releaseConfig();
+    await pending;
+    assert.equal(fixture.pcs.length, 1, 'the accept opens the call after a duplicate offer');
+    assert.equal(fixture.pcs[0].remoteDescription.sdp, 'renewed', 'the newest offer is answered');
+    assert.equal(fixture.signals.filter(signal => signal.kind === 'answer').length, 1);
+    fixture.client.hangup();
+  }
+  // An offer from someone else meanwhile still cancels the pending accept.
+  {
+    const fixture = directFixture(plain, { deferConfig: true });
+    await fixture.client.handleSignal(offerSignal);
+    const pending = fixture.client.accept();
+    await fixture.client.handleSignal({ conversation_id: 'conversation', from_user_id: 'b', kind: 'hangup' });
+    await fixture.client.handleSignal({ ...offerSignal, conversation_id: 'other', from_user_id: 'c' });
+    fixture.releaseConfig();
+    await pending;
+    assert.equal(fixture.pcs.length, 0, 'an accept never answers a different caller');
+  }
+
+  // Cancelling the picker of a direct share refresh keeps the adaptive
+  // quality monitor running for the share that continues.
+  {
+    const screenStream = () => {
+      const track = { kind: 'video', stop() {}, applyConstraints: async () => {}, getSettings: () => ({}) };
+      return { getTracks: () => [track], getVideoTracks: () => [track], getAudioTracks: () => [] };
+    };
+    let cancel = false;
+    const fixture = directFixture(plain, { screen: async () => { if (cancel) { const error = new Error('cancelled'); error.name = 'AbortError'; throw error; } return screenStream(); } });
+    await fixture.client.start({ id: 'conversation', peer_id: 'b' });
+    fixture.pcs[0].connectionState = 'connected'; fixture.pcs[0].onconnectionstatechange();
+    await fixture.client.toggleScreenSharing();
+    const running = () => fixture.intervals.filter(item => !item.cleared).length;
+    const before = running();
+    assert.ok(before >= 1, 'sharing starts the share monitor');
+    cancel = true;
+    await fixture.client.refreshScreenSharing();
+    assert.equal(running(), before, 'a cancelled refresh leaves the share monitor running');
+    fixture.client.hangup();
+  }
+
+  const stuck = directFixture(plain);
+  await stuck.client.start({ id: 'conversation', peer_id: 'b' });
+  await stuck.client.handleSignal({ conversation_id: 'conversation', from_user_id: 'b', kind: 'answer', payload: { type: 'answer', sdp: 'fixture' } });
+  stuck.pcs[0].connectionState = 'connecting';
+  const connectTimer = stuck.timers.filter(timer => timer.ms === 30_000 && !timer.cleared);
+  assert.equal(connectTimer.length, 1, 'Applying the answer starts the connect timeout');
+  connectTimer[0].fn();
+  assert.equal(stuck.client.getState().status, 'idle', 'A call stuck in connecting is closed');
+  assert.equal(stuck.signals.at(-1).kind, 'hangup', 'The peer is told the call ended');
+  assert.match(stuck.errors.at(-1), /could not connect/);
+
+  const recovering = directFixture(plain);
+  await recovering.client.start({ id: 'conversation', peer_id: 'b' });
+  const recoveringPeer = recovering.pcs[0];
+  recoveringPeer.setRemoteDescription = async () => {
+    recoveringPeer.connectionState = 'connected'; recoveringPeer.onconnectionstatechange();
+    recoveringPeer.connectionState = 'disconnected'; recoveringPeer.onconnectionstatechange();
+  };
+  await recovering.client.handleSignal({ conversation_id: 'conversation', from_user_id: 'b', kind: 'answer', payload: { type: 'answer', sdp: 'fixture' } });
+  recovering.timers.filter(timer => timer.ms === 30_000 && !timer.cleared).forEach(timer => timer.fn());
+  assert.equal(recovering.client.getState().status, 'reconnecting', 'A call that already connected is not hung up by the connect timeout');
+  assert(!recovering.signals.some(signal => signal.kind === 'hangup'));
+  recovering.client.hangup();
+
+  const flaky = directFixture(plain);
+  await flaky.client.handleSignal(offerSignal);
+  flaky.failSettingsOnce();
+  await assert.rejects(flaky.client.accept(), /settings unavailable/);
+  await flaky.client.accept();
+  assert.equal(flaky.pcs.length, 1, 'accept works again after a settings failure');
+  flaky.client.hangup();
+
+  const closedMidSignal = directFixture(plain);
+  await closedMidSignal.client.start({ id: 'conversation', peer_id: 'b' });
+  closedMidSignal.pcs[0].setRemoteDescription = async () => { closedMidSignal.client.hangup(); throw new Error('peer connection closed'); };
+  await closedMidSignal.client.handleSignal({ conversation_id: 'conversation', from_user_id: 'b', kind: 'answer', payload: { type: 'answer', sdp: 'fixture' } });
+  assert.equal(closedMidSignal.client.getState().status, 'idle', 'A call closed during a signal await does not make handleSignal throw');
+
+  // Stopping our own GhostShare must not drop the peer's share we are watching.
+  {
+    let shareApi; let leaves = 0; let sharing = false; let remote = null;
+    const remoteStream = { getVideoTracks: () => [] };
+    const fixture = directFixture({ ...plain, group_voice_available: true }, { shareFactory: options => {
+      shareApi = options;
+      return {
+        watch: async () => { remote = remoteStream; shareApi.onRemoteStream(remoteStream); },
+        start: async () => { sharing = true; shareApi.onLocalStream({ getTracks: () => [] }); },
+        stop: async () => { sharing = false; shareApi.onLocalStream(null); },
+        leave: async () => { leaves++; remote = null; shareApi.onLocalStream(null); shareApi.onRemoteStream(null); },
+        getState: () => ({ connected: true, sharing, localStream: null, remoteStream: remote }),
+      };
+    } });
+    await fixture.client.start({ id: 'conversation', peer_id: 'b' });
+    fixture.pcs[0].connectionState = 'connected'; fixture.pcs[0].onconnectionstatechange();
+    await fixture.client.handleSignal({ conversation_id: 'conversation', from_user_id: 'b', kind: 'ghostshare_started' });
+    assert.equal(fixture.client.getState().remoteVideoStream, remoteStream);
+    await fixture.client.toggleScreenSharing();
+    assert.equal(fixture.client.getState().screenSharing, true);
+    const stoppedBefore = fixture.signals.filter(signal => signal.kind === 'screen_stopped').length;
+    await fixture.client.toggleScreenSharing();
+    assert.equal(fixture.signals.filter(signal => signal.kind === 'screen_stopped').length - stoppedBefore, 1, 'stopping our share tells the peer once');
+    assert.equal(fixture.client.getState().screenSharing, false);
+    assert.equal(fixture.client.getState().remoteVideoStream, remoteStream, "stopping our share keeps showing the peer's share");
+    assert.equal(leaves, 0, 'the SFU room stays connected while the peer is still sharing');
+    fixture.client.hangup();
+    assert.equal(leaves, 1, 'hangup still leaves the SFU room');
+  }
+
+  // A peer that announced ghostshare_started but whose track has not been
+  // subscribed yet must keep the SFU room alive when we stop our own share.
+  {
+    let shareApi; let leaves = 0; let sharing = false;
+    const fixture = directFixture({ ...plain, group_voice_available: true }, { shareFactory: options => {
+      shareApi = options;
+      return {
+        watch: async () => {},
+        start: async () => { sharing = true; shareApi.onLocalStream({ getTracks: () => [] }); },
+        stop: async () => { sharing = false; shareApi.onLocalStream(null); },
+        leave: async () => { leaves++; shareApi.onLocalStream(null); shareApi.onRemoteStream(null); },
+        getState: () => ({ connected: true, sharing, localStream: null, remoteStream: null }),
+      };
+    } });
+    await fixture.client.start({ id: 'conversation', peer_id: 'b' });
+    fixture.pcs[0].connectionState = 'connected'; fixture.pcs[0].onconnectionstatechange();
+    await fixture.client.toggleScreenSharing();
+    await fixture.client.handleSignal({ conversation_id: 'conversation', from_user_id: 'b', kind: 'ghostshare_started' });
+    await fixture.client.toggleScreenSharing();
+    assert.equal(fixture.client.getState().screenSharing, false);
+    assert.equal(leaves, 0, 'a pending peer share keeps the SFU room connected');
+    await fixture.client.handleSignal({ conversation_id: 'conversation', from_user_id: 'b', kind: 'screen_stopped' });
+    await fixture.client.toggleScreenSharing();
+    await fixture.client.toggleScreenSharing();
+    assert.equal(leaves, 1, 'once the peer stopped, stopping our share leaves the room');
+    fixture.client.hangup();
+  }
+
+  // A microphone opened for a call that ended while the capture was pending
+  // (device switch, unmute, or a hangup during replaceTrack) must be released.
+  const micStream = () => {
+    const track = { kind: 'audio', enabled: true, stopped: false, stop() { this.stopped = true; }, getSettings: () => ({}) };
+    return { track, getAudioTracks: () => [track], getTracks: () => [track] };
+  };
+  for (const action of ['setMicrophoneDevice', 'toggleMicrophone', 'replaceTrack']) {
+    const fixture = directFixture(plain);
+    await fixture.client.start({ id: 'conversation', peer_id: 'b' });
+    const opened = micStream();
+    let pending;
+    if (action === 'replaceTrack') {
+      fixture.setMic(async () => opened);
+      fixture.pcs[0].transceivers[0].sender.replaceTrack = async () => { fixture.client.hangup(); };
+      pending = fixture.client.setMicrophoneDevice('next-mic');
+    } else {
+      let release; fixture.setMic(() => new Promise(resolve => { release = () => resolve(opened); }));
+      pending = fixture.client[action](action === 'setMicrophoneDevice' ? 'next-mic' : undefined);
+      await new Promise(resolve => setImmediate(resolve));
+      fixture.client.hangup();
+      release();
+    }
+    await pending.catch(() => {});
+    assert.equal(opened.track.stopped, true, `${action}: a microphone captured for an ended call is stopped`);
+    assert.equal(fixture.client.getState().status, 'idle');
+  }
+
   for (const connectFails of [false, true]) {
     const fixture = livekitFixture({ connectFails });
     vm.runInNewContext(fs.readFileSync(path.join(ui, 'group-voice-client.js'), 'utf8'), fixture.context);
@@ -138,6 +382,120 @@ async function run() {
       assert.equal(fixture.rooms[1].disconnected, true);
     } else { await share.watch('direct'); await share.leave(); }
     assert.equal(fixture.rooms[1].connectOptions.rtcConfig.iceTransportPolicy, 'relay');
+  }
+
+  // Leaving a group while its join is still fetching the token or connecting
+  // must not leave a hidden room connected (listening) afterwards.
+  for (const stage of ['token', 'connect']) {
+    const fixture = livekitFixture();
+    vm.runInNewContext(fs.readFileSync(path.join(ui, 'group-voice-client.js'), 'utf8'), fixture.context);
+    let release; const gate = new Promise(resolve => { release = resolve; });
+    if (stage === 'connect') fixture.window.LivekitClient.Room.prototype.connect = async function (url, token, options) { this.connectOptions = options; await gate; };
+    const group = fixture.window.GhostChatGroupVoice.create({
+      getToken: async () => { if (stage === 'token') await gate; return { url: 'wss://fixture', token: 'fixture' }; }, getMembers: async () => [],
+      getSettings: () => ({}), getUserId: () => 'a', getDisplayName: () => 'Fixture', getAvatar: () => null,
+      isPeerMuted: () => false, onChange() {}, onAudioBlocked() {},
+    });
+    const pendingJoin = group.join({ id: 'group' });
+    await new Promise(resolve => setImmediate(resolve));
+    await group.leave();
+    release();
+    const outcome = await pendingJoin.catch(error => ({ error }));
+    assert.equal(outcome?.cancelled, true, `a join superseded during ${stage} reports that it was cancelled`);
+    assert.equal(group.getState().status, 'idle', `leave during ${stage} keeps the group idle`);
+    assert(fixture.rooms.every(item => item.disconnected), `leave during ${stage} leaves no connected room`);
+  }
+
+  // leave() cleans up even when the room's disconnect() rejects.
+  {
+    const fixture = livekitFixture();
+    vm.runInNewContext(fs.readFileSync(path.join(ui, 'group-voice-client.js'), 'utf8'), fixture.context);
+    const changes = [];
+    const group = fixture.window.GhostChatGroupVoice.create({
+      getToken: async () => ({ url: 'wss://fixture', token: 'fixture' }), getMembers: async () => [],
+      getSettings: () => ({ volume: 100 }), getUserId: () => 'a', getDisplayName: () => 'Fixture', getAvatar: () => null,
+      isPeerMuted: () => false, onChange: value => changes.push(value), onAudioBlocked() {},
+    });
+    await group.join({ id: 'group' });
+    let removed = 0;
+    const element = { dataset: {}, muted: false, volume: 1, play: async () => {}, remove() { removed++; }, setSinkId: async () => {} };
+    const track = { sid: 'TR_peer', kind: 'audio', attach: () => element, detach() {} };
+    const participant = { identity: 'peer-device', metadata: JSON.stringify({ account_id: 'peer' }), isMicrophoneEnabled: true, trackPublications: new Map([['TR_peer', { track }]]) };
+    fixture.rooms[0].remoteParticipants.set('peer-device', participant);
+    fixture.rooms[0].events.get('TrackSubscribed')(track, {}, participant);
+    fixture.rooms[0].disconnect = async () => { throw new Error('signal connection lost'); };
+    await group.leave().catch(() => {});
+    assert.equal(removed, 1, 'a rejecting disconnect still removes the audio elements');
+    assert.equal(group.getState().status, 'idle', 'a rejecting disconnect still resets the state');
+    assert.equal(changes.at(-1).status, 'idle', 'the idle state is published');
+  }
+
+  // A device picked before first unmute must reach the shared engine,
+  // without allowing LiveKit to capture an unprocessed microphone.
+  {
+    const fixture = livekitFixture();
+    vm.runInNewContext(fs.readFileSync(path.join(ui, 'group-voice-client.js'), 'utf8'), fixture.context);
+    const group = fixture.window.GhostChatGroupVoice.create({
+      getToken: async () => ({ url: 'wss://fixture', token: 'fixture' }), getMembers: async () => [],
+      getSettings: () => ({}), getUserId: () => 'a', getDisplayName: () => 'Fixture', getAvatar: () => null,
+      isPeerMuted: () => false, onChange() {}, onAudioBlocked() {},
+    });
+    await group.join({ id: 'group' });
+    await group.setMicrophoneDevice('next-mic');
+    let selected;
+    fixture.window.GhostChatAudio = { open: async settings => {
+      selected = settings.microphoneId;
+      throw new Error('fixture capture unavailable');
+    } };
+    await assert.rejects(group.toggleMicrophone(), /fixture capture unavailable/);
+    assert.equal(selected, 'next-mic', 'first unmute uses the selected device');
+    assert.equal(fixture.rooms[0].switches, undefined, 'SDK capture is never used');
+    await group.leave();
+  }
+
+  // Switching the speaker must keep a peer the user muted for themself muted.
+  {
+    const fixture = livekitFixture();
+    vm.runInNewContext(fs.readFileSync(path.join(ui, 'group-voice-client.js'), 'utf8'), fixture.context);
+    const group = fixture.window.GhostChatGroupVoice.create({
+      getToken: async () => ({ url: 'wss://fixture', token: 'fixture' }), getMembers: async () => [],
+      getSettings: () => ({ volume: 100 }), getUserId: () => 'a', getDisplayName: () => 'Fixture', getAvatar: () => null,
+      isPeerMuted: () => false, onChange() {}, onAudioBlocked() {},
+    });
+    await group.join({ id: 'group' });
+    const element = { dataset: {}, muted: false, volume: 1, play: async () => {}, remove() {}, setSinkId: async () => {} };
+    const track = { sid: 'TR_peer', kind: 'audio', attach: () => element, detach() {} };
+    const participant = { identity: 'peer-device', metadata: JSON.stringify({ account_id: 'peer' }), isMicrophoneEnabled: true, trackPublications: new Map([['TR_peer', { track }]]) };
+    fixture.rooms[0].remoteParticipants.set('peer-device', participant);
+    fixture.rooms[0].events.get('TrackSubscribed')(track, {}, participant);
+    group.setPeerMuted('peer', true);
+    assert.equal(element.muted, true);
+    await group.setSpeakerDevice('next-speaker');
+    assert.equal(element.muted, true, 'a speaker change keeps a locally muted peer muted');
+    await group.leave();
+  }
+
+  // The ringtone stops when the incoming call is accepted, declined or hung up,
+  // including while its AudioContext is still resuming.
+  {
+    let releaseResume; let started = 0; const intervals = new Set(); let nextId = 1;
+    class FakeAudio {
+      state = 'suspended'; currentTime = 0; destination = {};
+      resume() { return new Promise(resolve => { releaseResume = () => { this.state = 'running'; resolve(); }; }); }
+      createOscillator() { return { frequency: {}, connect() {}, disconnect() {}, start() { started++; }, stop() {} }; }
+      createGain() { const param = { setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} }; return { gain: param, connect() {}, disconnect() {} }; }
+    }
+    const window = { AudioContext: FakeAudio, addEventListener() {} };
+    vm.runInNewContext(fs.readFileSync(path.join(ui, 'call-ringtone.js'), 'utf8'), {
+      window, console, document: { addEventListener() {} },
+      setInterval: () => { const id = nextId++; intervals.add(id); return id; }, clearInterval: id => intervals.delete(id),
+    });
+    window.GhostChatRingtone.setIncoming(true);
+    assert.equal(intervals.size, 1);
+    window.GhostChatRingtone.setIncoming(false);
+    releaseResume(); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(started, 0, 'no ring plays after the call stopped ringing during resume');
+    assert.equal(intervals.size, 0, 'the ring repeat timer is cleared');
   }
 
   // Exercise the actual checked-in SDK merge used for initial join and resumed

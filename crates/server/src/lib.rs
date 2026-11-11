@@ -42,9 +42,9 @@ use tokio::{
 };
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
-pub mod ratelimit;
 pub mod device_proof;
 mod media_revocation;
+pub mod ratelimit;
 
 const MESSAGE_LIMIT: usize = 4_000;
 const MAX_CRYPTO_PAYLOAD_BYTES: usize = 64 * 1024;
@@ -65,6 +65,8 @@ pub struct AppState {
     online_users: Arc<Mutex<HashMap<String, usize>>>,
     voice: VoiceServerConfig,
     distributed_limiter: Result<Option<ratelimit::RateLimiter>, ratelimit::LimitError>,
+    /// GHOSTCHAT_REQUIRE_REDIS=1, read once at startup.
+    require_redis: bool,
 }
 
 #[derive(Clone)]
@@ -87,11 +89,22 @@ struct ServerEvent {
 struct ApiError {
     status: StatusCode,
     message: &'static str,
+    /// A stable identifier for refusals a client must tell apart from other
+    /// errors with the same status (sent as `code` next to `error`).
+    code: Option<&'static str>,
 }
 
 impl ApiError {
     fn new(status: StatusCode, message: &'static str) -> Self {
-        Self { status, message }
+        Self {
+            status,
+            message,
+            code: None,
+        }
+    }
+    fn with_code(mut self, code: &'static str) -> Self {
+        self.code = Some(code);
+        self
     }
     fn bad(message: &'static str) -> Self {
         Self::new(StatusCode::BAD_REQUEST, message)
@@ -136,11 +149,11 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (
-            self.status,
-            Json(serde_json::json!({"error": self.message})),
-        )
-            .into_response()
+        let mut body = serde_json::json!({"error": self.message});
+        if let Some(code) = self.code {
+            body["code"] = code.into();
+        }
+        (self.status, Json(body)).into_response()
     }
 }
 
@@ -228,6 +241,7 @@ pub async fn build_state_with_attachment_dir(db: SqlitePool, attachment_dir: Pat
             livekit_api_secret,
         },
         distributed_limiter: ratelimit::RateLimiter::from_env(),
+        require_redis: env::var("GHOSTCHAT_REQUIRE_REDIS").as_deref() == Ok("1"),
     }
 }
 
@@ -397,7 +411,10 @@ pub fn router(state: AppState) -> Router {
         .fallback(|| async { ApiError::not_found() })
         .layer(DefaultBodyLimit::max(96 * 1024))
         .layer(cors)
-        .layer(axum::middleware::from_fn_with_state(state.clone(), distributed_admission))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            distributed_admission,
+        ))
         .with_state(state)
 }
 
@@ -406,24 +423,50 @@ async fn distributed_admission(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    if request.uri().path() == "/health" { return next.run(request).await; }
+    if request.uri().path() == "/health" {
+        return next.run(request).await;
+    }
     match &state.distributed_limiter {
-        Err(_) => return ApiError::unavailable("Distributed admission is misconfigured.").into_response(),
-        Ok(None) if env::var("GHOSTCHAT_REQUIRE_REDIS").as_deref() == Ok("1") =>
-            return ApiError::unavailable("Distributed admission is required but unavailable.").into_response(),
-        Ok(None) => {}, // Compatibility mode, explicitly not distributed security.
+        Err(_) => {
+            return ApiError::unavailable("Distributed admission is misconfigured.").into_response()
+        }
+        Ok(None) if state.require_redis => {
+            return ApiError::unavailable("Distributed admission is required but unavailable.")
+                .into_response()
+        }
+        Ok(None) => {} // Compatibility mode, explicitly not distributed security.
         Ok(Some(limiter)) => {
-            let subject = request.headers().get(header::AUTHORIZATION)
-                .and_then(|value| value.to_str().ok()).filter(|v| v.len() <= 256)
-                .map(session_hash).unwrap_or_else(|| "anonymous".into());
+            let subject = request
+                .headers()
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .filter(|v| v.len() <= 256)
+                .map(session_hash)
+                .unwrap_or_else(|| "anonymous".into());
             for (scope, identity, count, window) in [
                 ("http-global", "global", 200, Duration::from_secs(1)),
-                ("http-session", subject.as_str(), 600, Duration::from_secs(60)),
+                (
+                    "http-session",
+                    subject.as_str(),
+                    600,
+                    Duration::from_secs(60),
+                ),
             ] {
                 match limiter.check(scope, identity, count, window).await {
-                    Ok(decision) if decision.allowed => {},
-                    Ok(_) => return ApiError::new(StatusCode::TOO_MANY_REQUESTS, "Please slow down and try again.").into_response(),
-                    Err(_) => return ApiError::unavailable("Distributed admission could not be verified.").into_response(),
+                    Ok(decision) if decision.allowed => {}
+                    Ok(_) => {
+                        return ApiError::new(
+                            StatusCode::TOO_MANY_REQUESTS,
+                            "Please slow down and try again.",
+                        )
+                        .into_response()
+                    }
+                    Err(_) => {
+                        return ApiError::unavailable(
+                            "Distributed admission could not be verified.",
+                        )
+                        .into_response()
+                    }
                 }
             }
         }
@@ -786,6 +829,8 @@ async fn ghost_share_token(
     if participant.1 != "direct" {
         return Err(ApiError::not_found());
     }
+    // A block forbids GhostShare like it forbids call signaling.
+    ensure_direct_not_blocked(&state.db, &conversation_id, &user.id).await?;
     media_revocation::admit(&state, &conversation_id).await?;
     let api_key = state.voice.livekit_api_key.as_deref().ok_or_else(|| {
         ApiError::unavailable("GhostShare needs a configured LiveKit media server.")
@@ -796,10 +841,21 @@ async fn ghost_share_token(
     let server_url = state.voice.livekit_url.as_deref().ok_or_else(|| {
         ApiError::unavailable("GhostShare needs a configured LiveKit media server.")
     })?;
-    if !allow_rate(&state, &format!("ghostshare-token:{}", user.id), 12, Duration::from_secs(60)) {
-        return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, "Please wait before requesting another GhostShare token."));
+    if !allow_rate(
+        &state,
+        &format!("ghostshare-token:{}", user.id),
+        12,
+        Duration::from_secs(60),
+    ) {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Please wait before requesting another GhostShare token.",
+        ));
     }
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
     let room = format!("ghostshare-{conversation_id}");
     let identity = format!("{}-{}", user.id, Uuid::new_v4().simple());
     let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#);
@@ -810,12 +866,19 @@ async fn ghost_share_token(
         "video": {"roomJoin": true, "room": room, "canPublish": true,
           "canPublishSources": ["screen_share", "screen_share_audio"], "canSubscribe": true, "canPublishData": false}
     });
-    let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).map_err(|_| ApiError::internal())?);
+    let payload =
+        URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).map_err(|_| ApiError::internal())?);
     let signing_input = format!("{header}.{payload}");
-    let mut mac = Hmac::<Sha256>::new_from_slice(api_secret.as_bytes()).map_err(|_| ApiError::internal())?;
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(api_secret.as_bytes()).map_err(|_| ApiError::internal())?;
     mac.update(signing_input.as_bytes());
-    let token = format!("{signing_input}.{}", URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()));
-    Ok(Json(serde_json::json!({"url": server_url, "token": token, "room": room, "expires_at": now.saturating_add(media_revocation::JOIN_TTL)})))
+    let token = format!(
+        "{signing_input}.{}",
+        URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+    );
+    Ok(Json(
+        serde_json::json!({"url": server_url, "token": token, "room": room, "expires_at": now.saturating_add(media_revocation::JOIN_TTL)}),
+    ))
 }
 
 fn allow_rate(state: &AppState, key: &str, count: usize, period: Duration) -> bool {
@@ -845,15 +908,19 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Result<Sta
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or_else(ApiError::unauthorized)?;
+    let logged_out_session_hash = session_hash(token);
     sqlx::query("DELETE FROM sessions WHERE token_hash=? AND user_id=?")
-        .bind(session_hash(token))
+        .bind(&logged_out_session_hash)
         .bind(&user.id)
         .execute(&state.db)
         .await
         .map_err(|_| ApiError::internal())?;
     let _ = state.events.send(ServerEvent {
         recipients: vec![user.id],
-        event: serde_json::json!({"type":"session_revoked"}),
+        event: serde_json::json!({
+            "type": "session_revoked",
+            "session_hash": logged_out_session_hash,
+        }),
     });
     Ok(StatusCode::NO_CONTENT)
 }
@@ -917,41 +984,101 @@ async fn list_presence(
     .fetch_all(&state.db)
     .await
     .map_err(|_| ApiError::internal())?;
-    let connected = state.online_users.lock().map(|users| users.clone()).unwrap_or_default();
-    let rows = rows.into_iter().map(|mut row| {
-        // A remembered account session is not an online application. Friends
-        // see offline until at least one authenticated WebSocket is alive.
-        if row.user_id != user.id && connected.get(&row.user_id).copied().unwrap_or(0) == 0 {
-            row.mode = "offline".into();
-        }
-        row
-    }).collect();
+    let connected = state
+        .online_users
+        .lock()
+        .map(|users| users.clone())
+        .unwrap_or_default();
+    let rows = rows
+        .into_iter()
+        .map(|mut row| {
+            // A remembered account session is not an online application. Friends
+            // see offline until at least one authenticated WebSocket is alive.
+            // Invisible must look exactly like offline to everyone else.
+            if row.user_id != user.id
+                && (connected.get(&row.user_id).copied().unwrap_or(0) == 0
+                    || row.mode == "invisible")
+            {
+                row.mode = "offline".into();
+            }
+            row
+        })
+        .collect();
     Ok(Json(rows))
 }
 
 fn register_online_connection(state: &AppState, user_id: &str) -> bool {
-    let Ok(mut users) = state.online_users.lock() else { return false; };
+    let Ok(mut users) = state.online_users.lock() else {
+        return false;
+    };
     let count = users.entry(user_id.to_owned()).or_insert(0);
     *count += 1;
     *count == 1
 }
 
 fn unregister_online_connection(state: &AppState, user_id: &str) -> bool {
-    let Ok(mut users) = state.online_users.lock() else { return false; };
-    let Some(count) = users.get_mut(user_id) else { return false; };
+    let Ok(mut users) = state.online_users.lock() else {
+        return false;
+    };
+    let Some(count) = users.get_mut(user_id) else {
+        return false;
+    };
     *count = count.saturating_sub(1);
-    if *count == 0 { users.remove(user_id); true } else { false }
+    if *count == 0 {
+        users.remove(user_id);
+        true
+    } else {
+        false
+    }
 }
 
+/// Connect/disconnect transition. For an invisible account friends already
+/// see offline, so they get no event (its timing would reveal the transition).
 async fn broadcast_current_presence(state: &AppState, user_id: &str) {
-    let saved_mode = sqlx::query_scalar::<_, String>("SELECT mode FROM user_presence WHERE user_id=?")
-        .bind(user_id).fetch_optional(&state.db).await.ok().flatten().unwrap_or_else(|| "online".into());
-    let connected = state.online_users.lock().ok().and_then(|users| users.get(user_id).copied()).unwrap_or(0) > 0;
-    let mode = if connected { saved_mode } else { "offline".into() };
-    let mut recipients = sqlx::query_scalar::<_, String>("SELECT CASE WHEN user_low=? THEN user_high ELSE user_low END FROM friendships WHERE user_low=? OR user_high=?")
+    broadcast_presence(state, user_id, false).await;
+}
+
+async fn broadcast_presence(state: &AppState, user_id: &str, explicit_mode_change: bool) {
+    let saved_mode =
+        sqlx::query_scalar::<_, String>("SELECT mode FROM user_presence WHERE user_id=?")
+            .bind(user_id)
+            .fetch_optional(&state.db)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "online".into());
+    let connected = state
+        .online_users
+        .lock()
+        .ok()
+        .and_then(|users| users.get(user_id).copied())
+        .unwrap_or(0)
+        > 0;
+    let notify_friends = explicit_mode_change || saved_mode != "invisible";
+    let mode = if connected {
+        saved_mode
+    } else {
+        "offline".into()
+    };
+    let friends = sqlx::query_scalar::<_, String>("SELECT CASE WHEN user_low=? THEN user_high ELSE user_low END FROM friendships WHERE user_low=? OR user_high=?")
         .bind(user_id).bind(user_id).bind(user_id).fetch_all(&state.db).await.unwrap_or_default();
-    recipients.push(user_id.to_owned());
-    let _ = state.events.send(ServerEvent { recipients, event: serde_json::json!({"type":"presence_updated","user_id":user_id,"mode":mode}) });
+    // Invisible must look exactly like offline to friends; only the account
+    // itself learns its saved mode.
+    let friend_mode = if mode == "invisible" {
+        "offline".to_owned()
+    } else {
+        mode.clone()
+    };
+    if notify_friends {
+        let _ = state.events.send(ServerEvent {
+            recipients: friends,
+            event: serde_json::json!({"type":"presence_updated","user_id":user_id,"mode":friend_mode}),
+        });
+    }
+    let _ = state.events.send(ServerEvent {
+        recipients: vec![user_id.to_owned()],
+        event: serde_json::json!({"type":"presence_updated","user_id":user_id,"mode":mode}),
+    });
 }
 
 async fn update_presence(
@@ -970,8 +1097,11 @@ async fn update_presence(
         .execute(&state.db)
         .await
         .map_err(|_| ApiError::internal())?;
-    broadcast_current_presence(&state, &user.id).await;
-    Ok(Json(PresenceRow { user_id: user.id, mode }))
+    broadcast_presence(&state, &user.id, true).await;
+    Ok(Json(PresenceRow {
+        user_id: user.id,
+        mode,
+    }))
 }
 
 #[derive(Deserialize)]
@@ -1626,15 +1756,106 @@ async fn delete_account(
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
     let user = authenticate(&headers, &state).await?;
-    let attachment_ids = sqlx::query_scalar::<_, String>("SELECT id FROM attachments WHERE stored_on_disk=1 AND (uploaded_by=? OR conversation_id IN (SELECT conversation_id FROM conversation_members WHERE user_id=?))")
-        .bind(&user.id)
-        .bind(&user.id)
-        .fetch_all(&state.db)
+    let mut tx = state.db.begin().await.map_err(|_| ApiError::internal())?;
+    let memberships = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT c.id,c.kind,cm.role FROM conversation_members cm JOIN conversations c ON c.id=cm.conversation_id WHERE cm.user_id=?",
+    )
+    .bind(&user.id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal())?;
+    // Direct conversations are removed with the account (unchanged). In a
+    // group only this membership is removed, like a leave: ownership passes
+    // to the oldest admin, else the oldest member, by the stored join
+    // sequence (founders in the order given at creation, after the
+    // creator). A group is deleted only once nobody is left in it.
+    let mut deleted_conversations = Vec::new();
+    let mut remaining_groups = Vec::new();
+    for (conversation_id, kind, role) in memberships {
+        if kind != "group" {
+            deleted_conversations.push(conversation_id);
+            continue;
+        }
+        sqlx::query("DELETE FROM conversation_members WHERE conversation_id=? AND user_id=?")
+            .bind(&conversation_id)
+            .bind(&user.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal())?;
+        let remaining = sqlx::query_scalar::<_, String>(
+            "SELECT user_id FROM conversation_members WHERE conversation_id=?",
+        )
+        .bind(&conversation_id)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|_| ApiError::internal())?;
-    let mut tx = state.db.begin().await.map_err(|_| ApiError::internal())?;
-    sqlx::query("DELETE FROM conversations WHERE id IN (SELECT conversation_id FROM conversation_members WHERE user_id=?)")
-        .bind(&user.id).execute(&mut *tx).await.map_err(|_| ApiError::internal())?;
+        if remaining.is_empty() {
+            deleted_conversations.push(conversation_id);
+            continue;
+        }
+        if role == "owner" {
+            sqlx::query(
+                "UPDATE conversation_members SET role='owner' WHERE conversation_id=? AND user_id=(SELECT user_id FROM conversation_members WHERE conversation_id=? ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, joined_seq, user_id LIMIT 1) AND NOT EXISTS(SELECT 1 FROM conversation_members WHERE conversation_id=? AND role='owner')",
+            )
+            .bind(&conversation_id)
+            .bind(&conversation_id)
+            .bind(&conversation_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal())?;
+        }
+        // In an MLS-locked group this account's leaf stays in the MLS roster
+        // until an owner/admin client commits its removal; record it so the
+        // remaining clients can tell it from an unknown member.
+        sqlx::query(
+            "INSERT OR IGNORE INTO crypto_group_deleted_members(conversation_id,user_id) SELECT conversation_id,? FROM conversation_crypto_locks WHERE conversation_id=?",
+        )
+        .bind(&user.id)
+        .bind(&conversation_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ApiError::internal())?;
+        media_revocation::enqueue(&mut tx, &conversation_id, &user.id).await?;
+        remaining_groups.push((conversation_id, remaining));
+    }
+    let mut attachment_ids = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM attachments WHERE stored_on_disk=1 AND uploaded_by=?",
+    )
+    .bind(&user.id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|_| ApiError::internal())?;
+    let mut removed_for_peers = Vec::new();
+    for conversation_id in &deleted_conversations {
+        let peers = sqlx::query_scalar::<_, String>(
+            "SELECT user_id FROM conversation_members WHERE conversation_id=? AND user_id<>?",
+        )
+        .bind(conversation_id)
+        .bind(&user.id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|_| ApiError::internal())?;
+        if !peers.is_empty() {
+            removed_for_peers.push((conversation_id.clone(), peers));
+        }
+        attachment_ids.extend(
+            sqlx::query_scalar::<_, String>(
+                "SELECT id FROM attachments WHERE stored_on_disk=1 AND conversation_id=? AND uploaded_by<>?",
+            )
+            .bind(conversation_id)
+            .bind(&user.id)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal())?,
+        );
+        sqlx::query("DELETE FROM conversations WHERE id=?")
+            .bind(conversation_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal())?;
+    }
+    // Cascades remove this account's sessions, friendships, own messages and
+    // own uploads in the remaining groups.
     sqlx::query("DELETE FROM users WHERE id=?")
         .bind(&user.id)
         .execute(&mut *tx)
@@ -1646,9 +1867,26 @@ async fn delete_account(
         let _ = tokio::fs::remove_file(path).await;
     }
     let _ = state.events.send(ServerEvent {
-        recipients: vec![user.id],
+        recipients: vec![user.id.clone()],
         event: serde_json::json!({"type":"session_revoked"}),
     });
+    // Peers of the removed direct conversations drop the chat, as after any
+    // other removal (the conversation is gone, so their refresh omits it).
+    for (conversation_id, recipients) in removed_for_peers {
+        let _ = state.events.send(ServerEvent {
+            recipients,
+            event: serde_json::json!({"type":"conversation_updated","conversation_id":conversation_id}),
+        });
+    }
+    for (conversation_id, recipients) in remaining_groups {
+        if let Err(error) = remove_livekit_participant(&state, &conversation_id, &user.id).await {
+            tracing::warn!(conversation_id = %conversation_id, account_id = %user.id, %error, "could not remove deleted account from LiveKit");
+        }
+        let _ = state.events.send(ServerEvent {
+            recipients,
+            event: serde_json::json!({"type":"conversation_updated","conversation_id":conversation_id}),
+        });
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1667,8 +1905,15 @@ async fn search_users(
     if q.len() < 2 || q.len() > 64 {
         return Ok(Json(vec![]));
     }
-    let rows = sqlx::query_as::<_, PublicUser>("SELECT id,username,display_name,avatar_data FROM users WHERE (id LIKE ? OR username LIKE ?) AND NOT EXISTS (SELECT 1 FROM user_blocks b WHERE (b.blocker_id=? AND b.blocked_id=users.id) OR (b.blocker_id=users.id AND b.blocked_id=?)) ORDER BY username LIMIT 20")
-        .bind(format!("{q}%")).bind(format!("{q}%")).bind(&user.id).bind(&user.id).fetch_all(&state.db).await.map_err(|_| ApiError::internal())?;
+    // Escape LIKE wildcards so `%` and `_` match only themselves.
+    let pattern = format!(
+        "{}%",
+        q.replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+    let rows = sqlx::query_as::<_, PublicUser>("SELECT id,username,display_name,avatar_data FROM users WHERE (id LIKE ? ESCAPE '\\' OR username LIKE ? ESCAPE '\\') AND NOT EXISTS (SELECT 1 FROM user_blocks b WHERE (b.blocker_id=? AND b.blocked_id=users.id) OR (b.blocker_id=users.id AND b.blocked_id=?)) ORDER BY username LIMIT 20")
+        .bind(&pattern).bind(&pattern).bind(&user.id).bind(&user.id).fetch_all(&state.db).await.map_err(|_| ApiError::internal())?;
     Ok(Json(
         rows.into_iter().filter(|row| row.id != user.id).collect(),
     ))
@@ -1780,6 +2025,18 @@ async fn unblock_user(
     Path(target_id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let user = authenticate(&headers, &state).await?;
+    // Same budget as block_user: SECURITY.md limits all blocking changes.
+    if !allow_rate(
+        &state,
+        &format!("block:{}", user.id),
+        60,
+        Duration::from_secs(3600),
+    ) {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Please wait before changing block settings.",
+        ));
+    }
     sqlx::query("DELETE FROM user_blocks WHERE blocker_id=? AND blocked_id=?")
         .bind(&user.id)
         .bind(&target_id)
@@ -2175,8 +2432,9 @@ async fn create_group_conversation(
         return Err(ApiError::bad("Choose 2 to 15 friends for a group."));
     }
     member_ids.retain(|id| id != &user.id);
-    member_ids.sort();
-    member_ids.dedup();
+    // Keep the given order (it is the founders' join order); drop repeats.
+    let mut seen = std::collections::HashSet::new();
+    member_ids.retain(|id| seen.insert(id.clone()));
     if !(2..=15).contains(&member_ids.len()) {
         return Err(ApiError::bad("Choose 2 to 15 friends for a group."));
     }
@@ -2299,6 +2557,8 @@ struct GroupMemberRow {
     username: String,
     avatar_data: Option<String>,
     role: String,
+    /// Join order (lower joined earlier), for deterministic client fallbacks.
+    joined_seq: Option<i64>,
 }
 
 async fn group_recipients(db: &SqlitePool, conversation_id: &str) -> Result<Vec<String>, ApiError> {
@@ -2318,7 +2578,7 @@ async fn list_group_members(
 ) -> Result<Json<Vec<GroupMemberRow>>, ApiError> {
     let user = authenticate(&headers, &state).await?;
     let members = sqlx::query_as::<_, GroupMemberRow>(
-        "SELECT u.id,u.display_name,u.username,u.avatar_data,cm.role FROM conversation_members cm JOIN conversations c ON c.id=cm.conversation_id JOIN users u ON u.id=cm.user_id WHERE cm.conversation_id=? AND c.kind='group' AND EXISTS(SELECT 1 FROM conversation_members viewer WHERE viewer.conversation_id=c.id AND viewer.user_id=?) ORDER BY CASE cm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,u.display_name COLLATE NOCASE",
+        "SELECT u.id,u.display_name,u.username,u.avatar_data,cm.role,cm.joined_seq FROM conversation_members cm JOIN conversations c ON c.id=cm.conversation_id JOIN users u ON u.id=cm.user_id WHERE cm.conversation_id=? AND c.kind='group' AND EXISTS(SELECT 1 FROM conversation_members viewer WHERE viewer.conversation_id=c.id AND viewer.user_id=?) ORDER BY CASE cm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END,u.display_name COLLATE NOCASE",
     )
     .bind(id)
     .bind(user.id)
@@ -2384,9 +2644,74 @@ async fn rename_group(
 struct EncryptedGroupMembershipUpdate {
     operation_id: String,
     expected_member_ids: Vec<String>,
+    /// Accounts the client says the commit adds or removes. Optional for
+    /// older clients; when given for a removal it must be the route target.
+    /// Not part of the idempotency hash (the route target already is).
+    #[serde(default, skip_serializing)]
+    member_ids: Vec<String>,
+    /// The conversation's commit sequence this commit was built on. Not part
+    /// of the idempotency hash, so a retry of an accepted operation is
+    /// recognised whatever it carries here.
+    #[serde(default, skip_serializing)]
+    expected_commit_seq: Option<i64>,
     commit_payload: String,
     #[serde(default)]
     welcome_payload: String,
+}
+
+/// The server cannot read an MLS commit, so it cannot see which group state
+/// (epoch) a commit was built on. `conversation_crypto_locks.commit_seq`
+/// counts the commits accepted for a conversation; a membership commit must
+/// name the value it was built on. Two different commits built on the same
+/// state can therefore never both be accepted, which would fork the group.
+fn stale_crypto_commit(missing: bool) -> ApiError {
+    ApiError::conflict(if missing {
+        "This encrypted membership change does not say which group state it was built on. Update GhostChat and try again."
+    } else {
+        "The encrypted group changed while this update was being prepared. Sync the group and try again."
+    })
+    .with_code("stale_commit_seq")
+}
+
+async fn require_crypto_commit_seq(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    conversation_id: &str,
+    expected: Option<i64>,
+) -> Result<i64, ApiError> {
+    let expected = expected.ok_or_else(|| stale_crypto_commit(true))?;
+    let current = sqlx::query_scalar::<_, i64>(
+        "SELECT commit_seq FROM conversation_crypto_locks WHERE conversation_id=?",
+    )
+    .bind(conversation_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|_| ApiError::internal())?;
+    if current != Some(expected) {
+        return Err(stale_crypto_commit(false));
+    }
+    Ok(expected)
+}
+
+/// Counts an accepted commit, in the transaction that relays it. The update
+/// is conditional, so of two requests racing from the same value only one
+/// can be counted.
+async fn advance_crypto_commit_seq(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    conversation_id: &str,
+    expected: i64,
+) -> Result<(), ApiError> {
+    let advanced = sqlx::query(
+        "UPDATE conversation_crypto_locks SET commit_seq=commit_seq+1 WHERE conversation_id=? AND commit_seq=?",
+    )
+    .bind(conversation_id)
+    .bind(expected)
+    .execute(&mut **tx)
+    .await
+    .map_err(|_| ApiError::internal())?;
+    if advanced.rows_affected() != 1 {
+        return Err(stale_crypto_commit(false));
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -2542,6 +2867,12 @@ async fn add_group_members(
             ));
         }
     }
+    let built_on_commit_seq = match crypto_update.as_ref() {
+        Some(update) => {
+            Some(require_crypto_commit_seq(&mut tx, &id, update.expected_commit_seq).await?)
+        }
+        None => None,
+    };
 
     let current_member_ids = sqlx::query_scalar::<_, String>(
         "SELECT user_id FROM conversation_members WHERE conversation_id=? ORDER BY user_id",
@@ -2690,6 +3021,9 @@ async fn add_group_members(
         .execute(&mut *tx)
         .await
         .map_err(|_| ApiError::internal())?;
+        if let Some(built_on) = built_on_commit_seq {
+            advance_crypto_commit_seq(&mut tx, &id, built_on).await?;
+        }
     }
     tx.commit().await.map_err(|_| ApiError::internal())?;
     for event in &crypto_events {
@@ -3093,6 +3427,8 @@ async fn commit_encrypted_group_leave(
             "Finish encrypted group setup before changing its members.",
         ));
     }
+    let built_on_commit_seq =
+        require_crypto_commit_seq(&mut tx, &id, update.expected_commit_seq).await?;
     let current_member_ids = sqlx::query_scalar::<_, String>(
         "SELECT user_id FROM conversation_members WHERE conversation_id=? ORDER BY user_id",
     )
@@ -3177,6 +3513,7 @@ async fn commit_encrypted_group_leave(
     .await
     .map_err(|_| ApiError::internal())?;
     media_revocation::enqueue(&mut tx, &id, &target_id).await?;
+    advance_crypto_commit_seq(&mut tx, &id, built_on_commit_seq).await?;
     tx.commit().await.map_err(|_| ApiError::internal())?;
 
     if let Err(error) = remove_livekit_participant(&state, &id, &target_id).await {
@@ -3228,6 +3565,19 @@ async fn remove_encrypted_group_member(
     if !update.welcome_payload.is_empty() {
         return Err(ApiError::bad(
             "An MLS removal must not contain a Welcome message.",
+        ));
+    }
+    // The server cannot read the commit (MLS ciphertext). The client states
+    // its target, and a statement that differs from the route is refused.
+    if !update.member_ids.is_empty()
+        && (update.member_ids.len() != 1
+            || Uuid::parse_str(&update.member_ids[0])
+                .map(|id| id.to_string())
+                .ok()
+                != Some(target_id.clone()))
+    {
+        return Err(ApiError::bad(
+            "The MLS removal declares a different member than this operation.",
         ));
     }
     validate_crypto_payload(&update.commit_payload)?;
@@ -3291,8 +3641,42 @@ async fn remove_encrypted_group_member(
     .bind(&target_id)
     .fetch_optional(&mut *tx)
     .await
-    .map_err(|_| ApiError::internal())?
-    .ok_or_else(ApiError::not_found)?;
+    .map_err(|_| ApiError::internal())?;
+    // A deleted account is no longer a member, but its MLS leaf stays in the
+    // group until one removal commit for it is accepted here.
+    let deleted_target = target_role.is_none()
+        && sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM crypto_group_deleted_members WHERE conversation_id=? AND user_id=? AND removal_committed_at IS NULL)",
+        )
+        .bind(&id)
+        .bind(&target_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|_| ApiError::internal())?
+            != 0;
+    let target_role = match target_role {
+        Some(role) => role,
+        None if deleted_target => "member".to_owned(),
+        None => {
+            // Another owner/admin's removal of this deleted leaf was already
+            // accepted: tell the client its own staged removal is moot.
+            let already_removed = sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM crypto_group_deleted_members WHERE conversation_id=? AND user_id=? AND removal_committed_at IS NOT NULL)",
+            )
+            .bind(&id)
+            .bind(&target_id)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal())?;
+            if already_removed != 0 {
+                return Err(ApiError::new(
+                    StatusCode::GONE,
+                    "This deleted account was already removed from the encrypted group.",
+                ));
+            }
+            return Err(ApiError::not_found());
+        }
+    };
     if target_role == "owner" || (actor_role == "admin" && target_role != "member") {
         return Err(ApiError::forbidden());
     }
@@ -3309,6 +3693,8 @@ async fn remove_encrypted_group_member(
             "Finish encrypted group setup before changing its members.",
         ));
     }
+    let built_on_commit_seq =
+        require_crypto_commit_seq(&mut tx, &id, update.expected_commit_seq).await?;
     let current_member_ids = sqlx::query_scalar::<_, String>(
         "SELECT user_id FROM conversation_members WHERE conversation_id=? ORDER BY user_id",
     )
@@ -3322,12 +3708,23 @@ async fn remove_encrypted_group_member(
         ));
     }
 
-    sqlx::query("DELETE FROM conversation_members WHERE conversation_id=? AND user_id=?")
+    if deleted_target {
+        sqlx::query(
+            "UPDATE crypto_group_deleted_members SET removal_committed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE conversation_id=? AND user_id=?",
+        )
         .bind(&id)
         .bind(&target_id)
         .execute(&mut *tx)
         .await
         .map_err(|_| ApiError::internal())?;
+    } else {
+        sqlx::query("DELETE FROM conversation_members WHERE conversation_id=? AND user_id=?")
+            .bind(&id)
+            .bind(&target_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal())?;
+    }
     let mut crypto_events = Vec::new();
     for (index, recipient_id) in current_member_ids
         .iter()
@@ -3360,20 +3757,27 @@ async fn remove_encrypted_group_member(
         crypto_events.push(event);
     }
     sqlx::query(
-        "INSERT INTO crypto_membership_operations(conversation_id,actor_id,operation_id,request_hash) VALUES(?,?,?,?)",
+        "INSERT INTO crypto_membership_operations(conversation_id,actor_id,operation_id,request_hash,target_id) VALUES(?,?,?,?,?)",
     )
     .bind(&id)
     .bind(&user.id)
     .bind(&update.operation_id)
     .bind(&request_hash)
+    .bind(&target_id)
     .execute(&mut *tx)
     .await
     .map_err(|_| ApiError::internal())?;
-    media_revocation::enqueue(&mut tx, &id, &target_id).await?;
+    // A deleted account's media access was revoked when it was deleted.
+    if !deleted_target {
+        media_revocation::enqueue(&mut tx, &id, &target_id).await?;
+    }
+    advance_crypto_commit_seq(&mut tx, &id, built_on_commit_seq).await?;
     tx.commit().await.map_err(|_| ApiError::internal())?;
 
-    if let Err(error) = remove_livekit_participant(&state, &id, &target_id).await {
-        tracing::warn!(conversation_id = %id, account_id = %target_id, %error, "could not remove group member from LiveKit");
+    if !deleted_target {
+        if let Err(error) = remove_livekit_participant(&state, &id, &target_id).await {
+            tracing::warn!(conversation_id = %id, account_id = %target_id, %error, "could not remove group member from LiveKit");
+        }
     }
     for event in &crypto_events {
         publish_crypto_event(&state, event).await?;
@@ -3586,6 +3990,96 @@ struct GroupCryptoLockStatus {
     locked: bool,
     locked_by: Option<String>,
     setup_complete: bool,
+    /// Accounts deleted while members of this MLS-locked group, whose MLS
+    /// leaves remaining clients may tolerate until they are removed.
+    deleted_member_ids: Vec<String>,
+    /// The same accounts with when they were deleted and when the removal
+    /// commit for their leaf was accepted (null while it is still pending).
+    deleted_members: Vec<DeletedCryptoMember>,
+    /// The unfinished setup was started by an account that no longer exists;
+    /// the group owner (or the oldest admin when there is no owner) may take
+    /// it over through the lock route.
+    locked_by_deleted_account: bool,
+    /// Counts takeovers of an unfinished setup. A takeover is a reset, so a
+    /// device holding the group of an older generation must drop it.
+    setup_generation: i64,
+    /// Counts the accepted membership commits (and setup takeovers). A
+    /// membership commit names the value it was built on.
+    commit_seq: i64,
+    /// The server's clock, in the format of `deletedAt`. A client measures
+    /// how long a deleted account's leaf has been waiting as the difference
+    /// of the two, so its own clock does not matter.
+    server_now: String,
+}
+
+async fn server_now(db: &SqlitePool) -> Result<String, ApiError> {
+    sqlx::query_scalar::<_, String>("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+        .fetch_one(db)
+        .await
+        .map_err(|_| ApiError::internal())
+}
+
+#[derive(Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+struct DeletedCryptoMember {
+    user_id: String,
+    deleted_at: String,
+    removal_committed_at: Option<String>,
+}
+
+async fn deleted_crypto_members(
+    db: &SqlitePool,
+    conversation_id: &str,
+) -> Result<Vec<DeletedCryptoMember>, ApiError> {
+    sqlx::query_as::<_, DeletedCryptoMember>(
+        "SELECT user_id,deleted_at,removal_committed_at FROM crypto_group_deleted_members WHERE conversation_id=? ORDER BY user_id",
+    )
+    .bind(conversation_id)
+    .fetch_all(db)
+    .await
+    .map_err(|_| ApiError::internal())
+}
+
+/// The lock status of a group conversation, with its deleted-member record.
+async fn group_crypto_lock_status(
+    db: &SqlitePool,
+    conversation_id: &str,
+) -> Result<GroupCryptoLockStatus, ApiError> {
+    let lock = sqlx::query_as::<_, (String, i64, bool, i64, i64)>(
+        "SELECT l.locked_by,l.setup_complete,NOT EXISTS(SELECT 1 FROM users u WHERE u.id=l.locked_by),l.setup_generation,l.commit_seq FROM conversation_crypto_locks l WHERE l.conversation_id=?",
+    )
+    .bind(conversation_id)
+    .fetch_optional(db)
+    .await
+    .map_err(|_| ApiError::internal())?;
+    Ok(GroupCryptoLockStatus {
+        locked: lock.is_some(),
+        locked_by: lock.as_ref().map(|(locked_by, ..)| locked_by.clone()),
+        setup_complete: lock
+            .as_ref()
+            .is_some_and(|(_, complete, ..)| *complete != 0),
+        deleted_member_ids: deleted_crypto_member_ids(db, conversation_id).await?,
+        deleted_members: deleted_crypto_members(db, conversation_id).await?,
+        locked_by_deleted_account: lock
+            .as_ref()
+            .is_some_and(|(_, complete, deleted, ..)| *complete == 0 && *deleted),
+        setup_generation: lock.as_ref().map_or(0, |(.., generation, _)| *generation),
+        commit_seq: lock.as_ref().map_or(0, |(.., commit_seq)| *commit_seq),
+        server_now: server_now(db).await?,
+    })
+}
+
+async fn deleted_crypto_member_ids(
+    db: &SqlitePool,
+    conversation_id: &str,
+) -> Result<Vec<String>, ApiError> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT user_id FROM crypto_group_deleted_members WHERE conversation_id=? ORDER BY user_id",
+    )
+    .bind(conversation_id)
+    .fetch_all(db)
+    .await
+    .map_err(|_| ApiError::internal())
 }
 
 async fn get_group_crypto_lock(
@@ -3597,18 +4091,9 @@ async fn get_group_crypto_lock(
     if !is_member(&state.db, &conversation_id, &user.id).await? {
         return Err(ApiError::not_found());
     }
-    let lock = sqlx::query_as::<_, (String, i64)>(
-        "SELECT locked_by,setup_complete FROM conversation_crypto_locks WHERE conversation_id=?",
-    )
-    .bind(conversation_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|_| ApiError::internal())?;
-    Ok(Json(GroupCryptoLockStatus {
-        locked: lock.is_some(),
-        locked_by: lock.as_ref().map(|(locked_by, _)| locked_by.clone()),
-        setup_complete: lock.is_some_and(|(_, complete)| complete != 0),
-    }))
+    Ok(Json(
+        group_crypto_lock_status(&state.db, &conversation_id).await?,
+    ))
 }
 
 async fn lock_group_crypto_roster(
@@ -3687,6 +4172,15 @@ async fn lock_group_crypto_roster(
             locked: true,
             locked_by: Some(user.id),
             setup_complete: false,
+            // A direct conversation is deleted with either account.
+            deleted_member_ids: Vec::new(),
+            deleted_members: Vec::new(),
+            locked_by_deleted_account: false,
+            // Only a group setup can be taken over, and a direct
+            // conversation has no membership commits.
+            setup_generation: 0,
+            commit_seq: 0,
+            server_now: server_now(&state.db).await?,
         }));
     }
     let actor_role = sqlx::query_scalar::<_, String>(
@@ -3723,7 +4217,56 @@ async fn lock_group_crypto_roster(
     .await
     .map_err(|_| ApiError::internal())?;
     if let Some((locked_by, setup_complete)) = existing_lock {
-        if locked_by != user.id {
+        if locked_by != user.id && setup_complete == 0 {
+            // An unfinished setup whose starter deleted their account can
+            // never be completed by them. The owner takes it over, or the
+            // oldest admin when the group has no owner.
+            let locker_deleted =
+                sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM users WHERE id=?)")
+                    .bind(&locked_by)
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|_| ApiError::internal())?
+                    == 0;
+            let successor = sqlx::query_scalar::<_, String>(
+                "SELECT user_id FROM conversation_members WHERE conversation_id=? AND role IN ('owner','admin') ORDER BY CASE role WHEN 'owner' THEN 0 ELSE 1 END, joined_seq, user_id LIMIT 1",
+            )
+            .bind(&conversation_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal())?;
+            if locker_deleted && successor.as_deref() == Some(user.id.as_str()) {
+                // The takeover is a reset, never an adoption: nobody can
+                // know which members received the old Welcome. A new setup
+                // generation starts, and the old setup's relay events and
+                // deleted-leaf records go with it, so no device can still
+                // join the old group or tolerate its leaves. The commit
+                // sequence moves on too, so nothing built on the old group
+                // is accepted for the new one.
+                sqlx::query(
+                    "UPDATE conversation_crypto_locks SET locked_by=?,setup_generation=setup_generation+1,commit_seq=commit_seq+1 WHERE conversation_id=? AND locked_by=? AND setup_complete=0",
+                )
+                .bind(&user.id)
+                .bind(&conversation_id)
+                .bind(&locked_by)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| ApiError::internal())?;
+                for table in ["crypto_events", "crypto_group_deleted_members"] {
+                    sqlx::query(&format!("DELETE FROM {table} WHERE conversation_id=?"))
+                        .bind(&conversation_id)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|_| ApiError::internal())?;
+                }
+            } else if locker_deleted {
+                return Err(ApiError::forbidden());
+            } else {
+                return Err(ApiError::conflict(
+                    "Another group admin started encryption setup. Wait for them to finish it.",
+                ));
+            }
+        } else if locked_by != user.id {
             return Err(ApiError::conflict(
                 "Another group admin started encryption setup. Wait for them to finish it.",
             ));
@@ -3751,11 +4294,9 @@ async fn lock_group_crypto_roster(
     .await
     .map_err(|_| ApiError::internal())?;
     tx.commit().await.map_err(|_| ApiError::internal())?;
-    Ok(Json(GroupCryptoLockStatus {
-        locked: true,
-        locked_by: Some(user.id),
-        setup_complete: false,
-    }))
+    Ok(Json(
+        group_crypto_lock_status(&state.db, &conversation_id).await?,
+    ))
 }
 
 async fn complete_group_crypto_setup(
@@ -3785,11 +4326,9 @@ async fn complete_group_crypto_setup(
             return Err(ApiError::forbidden());
         }
     }
-    Ok(Json(GroupCryptoLockStatus {
-        locked: true,
-        locked_by: Some(user.id),
-        setup_complete: true,
-    }))
+    Ok(Json(
+        group_crypto_lock_status(&state.db, &conversation_id).await?,
+    ))
 }
 
 async fn require_group_manager(
@@ -4352,17 +4891,26 @@ async fn toggle_saved_message(
     Path(message_id): Path<String>,
 ) -> Result<Json<SavedMessageState>, ApiError> {
     let user = authenticate(&headers, &state).await?;
-    let conversation_id = sqlx::query_scalar::<_, String>("SELECT conversation_id FROM messages WHERE id=?")
-        .bind(&message_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(|_| ApiError::internal())?
-        .ok_or_else(ApiError::not_found)?;
+    let conversation_id =
+        sqlx::query_scalar::<_, String>("SELECT conversation_id FROM messages WHERE id=?")
+            .bind(&message_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|_| ApiError::internal())?
+            .ok_or_else(ApiError::not_found)?;
     if !is_member(&state.db, &conversation_id, &user.id).await? {
         return Err(ApiError::not_found());
     }
-    if !allow_rate(&state, &format!("save:{}", user.id), 60, Duration::from_secs(60)) {
-        return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, "Please slow down and try again."));
+    if !allow_rate(
+        &state,
+        &format!("save:{}", user.id),
+        60,
+        Duration::from_secs(60),
+    ) {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Please slow down and try again.",
+        ));
     }
     let removed = sqlx::query("DELETE FROM saved_messages WHERE user_id=? AND message_id=?")
         .bind(&user.id)
@@ -4370,7 +4918,8 @@ async fn toggle_saved_message(
         .execute(&state.db)
         .await
         .map_err(|_| ApiError::internal())?
-        .rows_affected() > 0;
+        .rows_affected()
+        > 0;
     let saved = if removed {
         false
     } else {
@@ -4411,7 +4960,11 @@ async fn ensure_group_planner_member(
     .fetch_one(db)
     .await
     .map_err(|_| ApiError::internal())?;
-    if allowed == 0 { Err(ApiError::not_found()) } else { Ok(()) }
+    if allowed == 0 {
+        Err(ApiError::not_found())
+    } else {
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]
@@ -4433,7 +4986,8 @@ struct GroupPollOption {
 struct GroupPollRow {
     id: String,
     conversation_id: String,
-    creator_id: String,
+    /// `None` once the creator deleted their account.
+    creator_id: Option<String>,
     question: String,
     closes_at: Option<String>,
     closed_at: Option<String>,
@@ -4477,7 +5031,11 @@ async fn group_poll_details(
         .fetch_optional(db)
         .await
         .map_err(|_| ApiError::internal())?;
-        details.push(GroupPollDetail { poll, options, my_option_id });
+        details.push(GroupPollDetail {
+            poll,
+            options,
+            my_option_id,
+        });
     }
     Ok(details)
 }
@@ -4489,7 +5047,9 @@ async fn list_group_polls(
 ) -> Result<Json<Vec<GroupPollDetail>>, ApiError> {
     let user = authenticate(&headers, &state).await?;
     ensure_group_planner_member(&state.db, &conversation_id, &user.id).await?;
-    Ok(Json(group_poll_details(&state.db, &conversation_id, &user.id).await?))
+    Ok(Json(
+        group_poll_details(&state.db, &conversation_id, &user.id).await?,
+    ))
 }
 
 async fn create_group_poll(
@@ -4501,12 +5061,37 @@ async fn create_group_poll(
     let user = authenticate(&headers, &state).await?;
     ensure_group_planner_member(&state.db, &conversation_id, &user.id).await?;
     let question = body.question.trim();
-    let options: Vec<_> = body.options.iter().map(|item| item.trim()).filter(|item| !item.is_empty()).collect();
-    if question.is_empty() || question.len() > 240 || !(2..=8).contains(&options.len()) || options.iter().any(|item| item.len() > 100) {
-        return Err(ApiError::bad("A poll needs a question and 2 to 8 short options."));
+    let options: Vec<_> = body
+        .options
+        .iter()
+        .map(|item| item.trim())
+        .filter(|item| !item.is_empty())
+        .collect();
+    if question.is_empty()
+        || question.len() > 240
+        || !(2..=8).contains(&options.len())
+        || options.iter().any(|item| item.len() > 100)
+    {
+        return Err(ApiError::bad(
+            "A poll needs a question and 2 to 8 short options.",
+        ));
     }
-    if body.closes_at.as_ref().is_some_and(|value| value.len() > 64) {
+    if body
+        .closes_at
+        .as_ref()
+        .is_some_and(|value| value.len() > 64)
+    {
         return Err(ApiError::bad("The poll closing time is not valid."));
+    }
+    if let Some(closes_at) = body.closes_at.as_deref() {
+        let parsed = sqlx::query_scalar::<_, Option<f64>>("SELECT julianday(?)")
+            .bind(closes_at)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|_| ApiError::internal())?;
+        if parsed.is_none() {
+            return Err(ApiError::bad("The poll closing time is not valid."));
+        }
     }
     let poll_id = Uuid::new_v4().to_string();
     let mut tx = state.db.begin().await.map_err(|_| ApiError::internal())?;
@@ -4515,27 +5100,60 @@ async fn create_group_poll(
         .execute(&mut *tx).await.map_err(|_| ApiError::internal())?;
     for (position, option) in options.iter().enumerate() {
         sqlx::query("INSERT INTO group_poll_options(id,poll_id,label,position) VALUES(?,?,?,?)")
-            .bind(Uuid::new_v4().to_string()).bind(&poll_id).bind(option).bind(position as i64)
-            .execute(&mut *tx).await.map_err(|_| ApiError::internal())?;
+            .bind(Uuid::new_v4().to_string())
+            .bind(&poll_id)
+            .bind(option)
+            .bind(position as i64)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal())?;
     }
     tx.commit().await.map_err(|_| ApiError::internal())?;
     let _ = state.events.send(ServerEvent { recipients: group_recipients(&state.db, &conversation_id).await?, event: serde_json::json!({"type":"group_planner_updated","conversation_id":conversation_id}) });
-    Ok(Json(group_poll_details(&state.db, &conversation_id, &user.id).await?))
+    Ok(Json(
+        group_poll_details(&state.db, &conversation_id, &user.id).await?,
+    ))
 }
 
 #[derive(Deserialize)]
-struct VoteGroupPollRequest { option_id: String }
+struct VoteGroupPollRequest {
+    option_id: String,
+}
 
 async fn vote_group_poll(
-    State(state): State<AppState>, headers: HeaderMap, Path(poll_id): Path<String>, Json(body): Json<VoteGroupPollRequest>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(poll_id): Path<String>,
+    Json(body): Json<VoteGroupPollRequest>,
 ) -> Result<StatusCode, ApiError> {
     let user = authenticate(&headers, &state).await?;
-    let conversation_id = sqlx::query_scalar::<_, String>("SELECT conversation_id FROM group_polls WHERE id=? AND closed_at IS NULL")
-        .bind(&poll_id).fetch_optional(&state.db).await.map_err(|_| ApiError::internal())?.ok_or_else(ApiError::not_found)?;
+    // A closing time stored before it was validated may not be a time:
+    // julianday() is then NULL and so is the comparison. Such a poll has no
+    // deadline that can be enforced and stays open; COALESCE says so in SQL
+    // instead of leaving it to how the driver reads a NULL boolean.
+    let (conversation_id, expired) = sqlx::query_as::<_, (String, bool)>(
+        "SELECT conversation_id,COALESCE(julianday(closes_at)<=julianday('now'),0) FROM group_polls WHERE id=? AND closed_at IS NULL",
+    )
+    .bind(&poll_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| ApiError::internal())?
+    .ok_or_else(ApiError::not_found)?;
     ensure_group_planner_member(&state.db, &conversation_id, &user.id).await?;
-    let valid = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM group_poll_options WHERE id=? AND poll_id=?")
-        .bind(&body.option_id).bind(&poll_id).fetch_one(&state.db).await.map_err(|_| ApiError::internal())?;
-    if valid == 0 { return Err(ApiError::bad("Choose an option from this poll.")); }
+    if expired {
+        return Err(ApiError::conflict("This poll is closed."));
+    }
+    let valid = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM group_poll_options WHERE id=? AND poll_id=?",
+    )
+    .bind(&body.option_id)
+    .bind(&poll_id)
+    .fetch_one(&state.db)
+    .await
+    .map_err(|_| ApiError::internal())?;
+    if valid == 0 {
+        return Err(ApiError::bad("Choose an option from this poll."));
+    }
     sqlx::query("INSERT INTO group_poll_votes(poll_id,user_id,option_id) VALUES(?,?,?) ON CONFLICT(poll_id,user_id) DO UPDATE SET option_id=excluded.option_id,created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')")
         .bind(&poll_id).bind(&user.id).bind(&body.option_id).execute(&state.db).await.map_err(|_| ApiError::internal())?;
     let _ = state.events.send(ServerEvent { recipients: group_recipients(&state.db, &conversation_id).await?, event: serde_json::json!({"type":"group_planner_updated","conversation_id":conversation_id}) });
@@ -4543,16 +5161,23 @@ async fn vote_group_poll(
 }
 
 #[derive(Deserialize)]
-struct CreateGroupEventRequest { title: String, details: String, scheduled_at: String }
+struct CreateGroupEventRequest {
+    title: String,
+    details: String,
+    scheduled_at: String,
+}
 
 #[derive(Deserialize)]
-struct GroupEventRsvpRequest { status: String }
+struct GroupEventRsvpRequest {
+    status: String,
+}
 
 #[derive(Serialize, FromRow)]
 struct GroupEventRow {
     id: String,
     conversation_id: String,
-    creator_id: String,
+    /// `None` once the creator deleted their account.
+    creator_id: Option<String>,
     title: String,
     details: String,
     scheduled_at: String,
@@ -4564,43 +5189,75 @@ struct GroupEventRow {
     my_status: Option<String>,
 }
 
-async fn group_event_details(db: &SqlitePool, conversation_id: &str, user_id: &str) -> Result<Vec<GroupEventRow>, ApiError> {
+async fn group_event_details(
+    db: &SqlitePool,
+    conversation_id: &str,
+    user_id: &str,
+) -> Result<Vec<GroupEventRow>, ApiError> {
     sqlx::query_as::<_, GroupEventRow>(
         "SELECT e.id,e.conversation_id,e.creator_id,e.title,e.details,e.scheduled_at,e.cancelled_at,e.created_at,(SELECT count(*) FROM group_event_rsvps r WHERE r.event_id=e.id AND r.status='going') AS going,(SELECT count(*) FROM group_event_rsvps r WHERE r.event_id=e.id AND r.status='maybe') AS maybe,(SELECT count(*) FROM group_event_rsvps r WHERE r.event_id=e.id AND r.status='declined') AS declined,(SELECT status FROM group_event_rsvps r WHERE r.event_id=e.id AND r.user_id=?) AS my_status FROM group_events e WHERE e.conversation_id=? ORDER BY e.scheduled_at ASC LIMIT 100",
     ).bind(user_id).bind(conversation_id).fetch_all(db).await.map_err(|_| ApiError::internal())
 }
 
-async fn list_group_events(State(state): State<AppState>, headers: HeaderMap, Path(conversation_id): Path<String>) -> Result<Json<Vec<GroupEventRow>>, ApiError> {
+async fn list_group_events(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(conversation_id): Path<String>,
+) -> Result<Json<Vec<GroupEventRow>>, ApiError> {
     let user = authenticate(&headers, &state).await?;
     ensure_group_planner_member(&state.db, &conversation_id, &user.id).await?;
-    Ok(Json(group_event_details(&state.db, &conversation_id, &user.id).await?))
+    Ok(Json(
+        group_event_details(&state.db, &conversation_id, &user.id).await?,
+    ))
 }
 
 async fn create_group_event(
-    State(state): State<AppState>, headers: HeaderMap, Path(conversation_id): Path<String>, Json(body): Json<CreateGroupEventRequest>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(conversation_id): Path<String>,
+    Json(body): Json<CreateGroupEventRequest>,
 ) -> Result<Json<Vec<GroupEventRow>>, ApiError> {
     let user = authenticate(&headers, &state).await?;
     ensure_group_planner_member(&state.db, &conversation_id, &user.id).await?;
     let title = body.title.trim();
     let details = body.details.trim();
     let scheduled_at = body.scheduled_at.trim();
-    if !(2..=140).contains(&title.len()) || details.len() > 1_500 || scheduled_at.is_empty() || scheduled_at.len() > 64 {
-        return Err(ApiError::bad("Add a short title and a valid time for this event."));
+    if !(2..=140).contains(&title.len())
+        || details.len() > 1_500
+        || scheduled_at.is_empty()
+        || scheduled_at.len() > 64
+    {
+        return Err(ApiError::bad(
+            "Add a short title and a valid time for this event.",
+        ));
     }
     sqlx::query("INSERT INTO group_events(id,conversation_id,creator_id,title,details,scheduled_at) VALUES(?,?,?,?,?,?)")
         .bind(Uuid::new_v4().to_string()).bind(&conversation_id).bind(&user.id).bind(title).bind(details).bind(scheduled_at)
         .execute(&state.db).await.map_err(|_| ApiError::internal())?;
     let _ = state.events.send(ServerEvent { recipients: group_recipients(&state.db, &conversation_id).await?, event: serde_json::json!({"type":"group_planner_updated","conversation_id":conversation_id}) });
-    Ok(Json(group_event_details(&state.db, &conversation_id, &user.id).await?))
+    Ok(Json(
+        group_event_details(&state.db, &conversation_id, &user.id).await?,
+    ))
 }
 
 async fn rsvp_group_event(
-    State(state): State<AppState>, headers: HeaderMap, Path(event_id): Path<String>, Json(body): Json<GroupEventRsvpRequest>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(event_id): Path<String>,
+    Json(body): Json<GroupEventRsvpRequest>,
 ) -> Result<StatusCode, ApiError> {
     let user = authenticate(&headers, &state).await?;
-    if !matches!(body.status.as_str(), "going" | "maybe" | "declined") { return Err(ApiError::bad("Choose going, maybe, or declined.")); }
-    let conversation_id = sqlx::query_scalar::<_, String>("SELECT conversation_id FROM group_events WHERE id=? AND cancelled_at IS NULL")
-        .bind(&event_id).fetch_optional(&state.db).await.map_err(|_| ApiError::internal())?.ok_or_else(ApiError::not_found)?;
+    if !matches!(body.status.as_str(), "going" | "maybe" | "declined") {
+        return Err(ApiError::bad("Choose going, maybe, or declined."));
+    }
+    let conversation_id = sqlx::query_scalar::<_, String>(
+        "SELECT conversation_id FROM group_events WHERE id=? AND cancelled_at IS NULL",
+    )
+    .bind(&event_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|_| ApiError::internal())?
+    .ok_or_else(ApiError::not_found)?;
     ensure_group_planner_member(&state.db, &conversation_id, &user.id).await?;
     sqlx::query("INSERT INTO group_event_rsvps(event_id,user_id,status) VALUES(?,?,?) ON CONFLICT(event_id,user_id) DO UPDATE SET status=excluded.status,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')")
         .bind(&event_id).bind(&user.id).bind(&body.status).execute(&state.db).await.map_err(|_| ApiError::internal())?;
@@ -4613,6 +5270,10 @@ struct SendMessage {
     client_message_id: String,
     content: String,
     reply_to_id: Option<String>,
+    /// Encrypted attachments (uploaded by the sender to this conversation)
+    /// whose keys this e2e1 message carries; they are deleted with it.
+    #[serde(default)]
+    attachment_ids: Vec<String>,
 }
 
 async fn send_message(
@@ -4671,6 +5332,22 @@ async fn send_message(
     if body.client_message_id.len() > 64 || body.client_message_id.is_empty() {
         return Err(ApiError::bad("Invalid message ID."));
     }
+    let mut attachment_ids = body
+        .attachment_ids
+        .iter()
+        .map(|id| {
+            Uuid::parse_str(id)
+                .map(|id| id.to_string())
+                .map_err(|_| ApiError::bad("Invalid encrypted attachment ID."))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    attachment_ids.sort();
+    attachment_ids.dedup();
+    if attachment_ids.len() > 8 || (!attachment_ids.is_empty() && crypto_locked == 0) {
+        return Err(ApiError::bad(
+            "Only encrypted messages can carry encrypted attachments.",
+        ));
+    }
     if let Some(reply_to_id) = body.reply_to_id.as_deref() {
         let can_reply = sqlx::query_scalar::<_, i64>(
             "SELECT count(*) FROM messages WHERE id=? AND conversation_id=?",
@@ -4687,14 +5364,35 @@ async fn send_message(
         }
     }
     let id = Uuid::new_v4().to_string();
+    let mut tx = state.db.begin().await.map_err(|_| ApiError::internal())?;
     let inserted = sqlx::query("INSERT OR IGNORE INTO messages(id,conversation_id,sender_id,client_message_id,content,reply_to_id) VALUES(?,?,?,?,?,?)")
-        .bind(&id).bind(&conversation_id).bind(&user.id).bind(&body.client_message_id).bind(content).bind(body.reply_to_id.as_deref()).execute(&state.db).await.map_err(|error| {
+        .bind(&id).bind(&conversation_id).bind(&user.id).bind(&body.client_message_id).bind(content).bind(body.reply_to_id.as_deref()).execute(&mut *tx).await.map_err(|error| {
             if error.as_database_error().is_some_and(|database_error| database_error.message().contains("encrypted conversation only accepts MLS content")) {
                 ApiError::conflict("This encrypted conversation only accepts MLS-encrypted text messages.")
             } else {
                 ApiError::internal()
             }
         })?;
+    if inserted.rows_affected() > 0 {
+        for attachment_id in &attachment_ids {
+            let linked = sqlx::query(
+                "UPDATE attachments SET message_id=? WHERE id=? AND conversation_id=? AND uploaded_by=? AND encrypted=1 AND message_id IS NULL",
+            )
+            .bind(&id)
+            .bind(attachment_id)
+            .bind(&conversation_id)
+            .bind(&user.id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| ApiError::internal())?;
+            if linked.rows_affected() != 1 {
+                return Err(ApiError::bad(
+                    "An encrypted attachment must be your own unsent upload in this conversation.",
+                ));
+            }
+        }
+    }
+    tx.commit().await.map_err(|_| ApiError::internal())?;
     let message = sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,u.avatar_data AS sender_avatar,m.client_message_id,m.content,m.created_at,m.edited_at,m.pinned_at,m.reply_to_id,(SELECT r.content FROM messages r WHERE r.id=m.reply_to_id) AS reply_to_content,(SELECT u.display_name FROM messages r JOIN users u ON u.id=r.sender_id WHERE r.id=m.reply_to_id) AS reply_to_sender FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? AND m.sender_id=? AND m.client_message_id=?")
         .bind(&conversation_id).bind(&user.id).bind(&body.client_message_id).fetch_one(&state.db).await.map_err(|_| ApiError::internal())?;
     if inserted.rows_affected() > 0 {
@@ -4714,6 +5412,17 @@ struct CryptoEventRow {
     created_at: String,
 }
 
+/// A relay event as listed for a member, with the setup generation of its
+/// conversation at the time of the listing.
+#[derive(Serialize, FromRow)]
+struct CryptoEventListRow {
+    #[serde(flatten)]
+    #[sqlx(flatten)]
+    event: CryptoEventRow,
+    setup_generation: i64,
+    commit_seq: i64,
+}
+
 #[derive(Deserialize)]
 struct SendCryptoEvent {
     client_event_id: String,
@@ -4726,7 +5435,7 @@ async fn list_crypto_events(
     headers: HeaderMap,
     Path(conversation_id): Path<String>,
     Query(query): Query<HashMap<String, String>>,
-) -> Result<Json<Vec<CryptoEventRow>>, ApiError> {
+) -> Result<Json<Vec<CryptoEventListRow>>, ApiError> {
     let user = authenticate(&headers, &state).await?;
     if !is_member(&state.db, &conversation_id, &user.id).await? {
         return Err(ApiError::not_found());
@@ -4742,8 +5451,14 @@ async fn list_crypto_events(
         .and_then(|value| value.parse::<i64>().ok())
         .unwrap_or(100)
         .clamp(1, 100);
-    let events = sqlx::query_as::<_, CryptoEventRow>(
-        "SELECT sequence,id,conversation_id,sender_id,recipient_id,payload,created_at FROM crypto_events WHERE conversation_id=? AND sequence>? AND (recipient_id IS NULL OR recipient_id=?) ORDER BY sequence ASC LIMIT ?",
+    // The generation is read in the same statement as the events, so every
+    // listed event belongs to the setup generation it is listed with (a
+    // takeover deletes the older setup's events in its own transaction).
+    // Likewise commit_seq: every commit counted in it was relayed before
+    // this listing, so a member that has applied the listed events (to the
+    // end of the list) has applied at least that many commits.
+    let events = sqlx::query_as::<_, CryptoEventListRow>(
+        "SELECT sequence,id,conversation_id,sender_id,recipient_id,payload,created_at,COALESCE((SELECT l.setup_generation FROM conversation_crypto_locks l WHERE l.conversation_id=crypto_events.conversation_id),0) AS setup_generation,COALESCE((SELECT l.commit_seq FROM conversation_crypto_locks l WHERE l.conversation_id=crypto_events.conversation_id),0) AS commit_seq FROM crypto_events WHERE conversation_id=? AND sequence>? AND (recipient_id IS NULL OR recipient_id=?) ORDER BY sequence ASC LIMIT ?",
     )
     .bind(&conversation_id)
     .bind(after)
@@ -5537,8 +6252,17 @@ async fn edit_message(
             "Messages must contain 1 to 4,000 characters.",
         ));
     }
+    if content.starts_with(ATTACHMENT_MARKER) {
+        return Err(ApiError::bad(
+            "Attachment messages must use the upload action.",
+        ));
+    }
     let msg = sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,u.avatar_data AS sender_avatar,m.client_message_id,m.content,m.created_at,m.edited_at,m.pinned_at,m.reply_to_id,(SELECT r.content FROM messages r WHERE r.id=m.reply_to_id) AS reply_to_content,(SELECT u.display_name FROM messages r JOIN users u ON u.id=r.sender_id WHERE r.id=m.reply_to_id) AS reply_to_sender FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.id=?")
         .bind(&id).fetch_optional(&state.db).await.map_err(|_| ApiError::internal())?.ok_or_else(ApiError::not_found)?;
+    if !is_member(&state.db, &msg.conversation_id, &user.id).await? {
+        return Err(ApiError::not_found());
+    }
+    ensure_direct_not_blocked(&state.db, &msg.conversation_id, &user.id).await?;
     let crypto_locked = sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM conversation_crypto_locks WHERE conversation_id=?)",
     )
@@ -5609,7 +6333,21 @@ async fn delete_message(
     } else {
         false
     };
+    let encrypted_attachment_ids = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM attachments WHERE message_id=? AND conversation_id=? AND encrypted=1",
+    )
+    .bind(&id)
+    .bind(&msg.0)
+    .fetch_all(&state.db)
+    .await
+    .map_err(|_| ApiError::internal())?;
     let mut tx = state.db.begin().await.map_err(|_| ApiError::internal())?;
+    sqlx::query("DELETE FROM attachments WHERE message_id=? AND conversation_id=? AND encrypted=1")
+        .bind(&id)
+        .bind(&msg.0)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| ApiError::internal())?;
     if let Some(attachment_id) = attachment_id.as_deref() {
         sqlx::query("DELETE FROM attachments WHERE id=? AND conversation_id=?")
             .bind(attachment_id)
@@ -5629,6 +6367,10 @@ async fn delete_message(
             let path = state.attachment_dir.join(format!("{attachment_id}.blob"));
             let _ = tokio::fs::remove_file(path).await;
         }
+    }
+    for attachment_id in encrypted_attachment_ids {
+        let path = state.attachment_dir.join(format!("{attachment_id}.blob"));
+        let _ = tokio::fs::remove_file(path).await;
     }
     let recipients = sqlx::query_scalar::<_, String>(
         "SELECT user_id FROM conversation_members WHERE conversation_id=?",
@@ -5705,6 +6447,13 @@ async fn relay_typing_signal(state: &AppState, sender: &PublicUser, text: &str) 
     {
         return;
     }
+    // A blocked direct pair exchanges no typing indicators.
+    if ensure_direct_not_blocked(&state.db, &signal.conversation_id, &sender.id)
+        .await
+        .is_err()
+    {
+        return;
+    }
     let recipients = match sqlx::query_scalar::<_, String>(
         "SELECT user_id FROM conversation_members WHERE conversation_id=? AND user_id<>?",
     )
@@ -5733,24 +6482,39 @@ async fn relay_typing_signal(state: &AppState, sender: &PublicUser, text: &str) 
 // call setup; it must never fetch the client-provided URL.
 fn valid_watch_party_payload(payload: &serde_json::Value) -> bool {
     const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-    let Some(object) = payload.as_object() else { return false; };
+    let Some(object) = payload.as_object() else {
+        return false;
+    };
     if object.len() != 6 {
         return false;
     }
     let valid_source = payload["source"].as_str().is_some_and(|source| {
-        source.is_empty() || (source.len() <= 2048 && reqwest::Url::parse(source).is_ok_and(|url| {
-            url.scheme() == "https"
-                && url.host_str().is_some()
-                && url.username().is_empty()
-                && url.password().is_none()
-        }))
+        source.is_empty()
+            || (source.len() <= 2048
+                && reqwest::Url::parse(source).is_ok_and(|url| {
+                    url.scheme() == "https"
+                        && url.host_str().is_some()
+                        && url.username().is_empty()
+                        && url.password().is_none()
+                }))
     });
     valid_source
-        && payload["position"].as_f64().is_some_and(|value| (0.0..=86_400.0).contains(&value))
+        && payload["position"]
+            .as_f64()
+            .is_some_and(|value| (0.0..=86_400.0).contains(&value))
         && payload["playing"].as_bool().is_some()
-        && payload["revision"].as_u64().is_some_and(|value| value <= 1_000_000_000)
-        && payload["sentAt"].as_u64().is_some_and(|value| value <= MAX_SAFE_INTEGER)
-        && payload["action"].as_str().is_some_and(|value| matches!(value, "source" | "play" | "pause" | "seek" | "request" | "state"))
+        && payload["revision"]
+            .as_u64()
+            .is_some_and(|value| value <= 1_000_000_000)
+        && payload["sentAt"]
+            .as_u64()
+            .is_some_and(|value| value <= MAX_SAFE_INTEGER)
+        && payload["action"].as_str().is_some_and(|value| {
+            matches!(
+                value,
+                "source" | "play" | "pause" | "seek" | "request" | "state"
+            )
+        })
 }
 
 async fn relay_voice_signal(state: &AppState, sender: &PublicUser, text: &str) {
@@ -5823,6 +6587,13 @@ async fn relay_voice_signal(state: &AppState, sender: &PublicUser, text: &str) {
     });
 }
 
+fn session_revocation_applies(event: &serde_json::Value, current_session_hash: &str) -> bool {
+    if let Some(only_session_hash) = event["session_hash"].as_str() {
+        return only_session_hash == current_session_hash;
+    }
+    event["except_session_hash"].as_str() != Some(current_session_hash)
+}
+
 async fn websocket_session(mut socket: WebSocket, state: AppState) {
     let first = tokio::time::timeout(Duration::from_secs(8), socket.recv()).await;
     let token = match first {
@@ -5838,6 +6609,9 @@ async fn websocket_session(mut socket: WebSocket, state: AppState) {
     let current_session_hash = session_hash(&token);
     let user = match sqlx::query_as::<_, PublicUser>("SELECT u.id,u.username,u.display_name,u.avatar_data FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND datetime(s.expires_at)>datetime('now')")
         .bind(&current_session_hash).fetch_optional(&state.db).await { Ok(Some(user)) => user, _ => { let _ = socket.close().await; return; } };
+    // Subscribe before announcing "ready": an event published right after
+    // the client sees "ready" (for example a logout) must not be missed.
+    let mut events = state.events.subscribe();
     if socket
         .send(WsMessage::Text(
             serde_json::json!({"type":"ready"}).to_string(),
@@ -5850,7 +6624,6 @@ async fn websocket_session(mut socket: WebSocket, state: AppState) {
     if register_online_connection(&state, &user.id) {
         broadcast_current_presence(&state, &user.id).await;
     }
-    let mut events = state.events.subscribe();
     let mut session_check = tokio::time::interval(Duration::from_secs(15));
     session_check.tick().await;
     loop {
@@ -5881,9 +6654,7 @@ async fn websocket_session(mut socket: WebSocket, state: AppState) {
             },
             event = events.recv() => match event {
                 Ok(event) if event.recipients.iter().any(|id| id == &user.id) && event.event["type"] == "session_revoked" => {
-                    if event.event["except_session_hash"].as_str()
-                        != Some(current_session_hash.as_str())
-                    {
+                    if session_revocation_applies(&event.event, &current_session_hash) {
                         let _ = socket.send(WsMessage::Text(serde_json::json!({"type":"session_revoked"}).to_string())).await;
                         let _ = socket.send(WsMessage::Close(None)).await;
                         break;
@@ -5952,7 +6723,13 @@ mod tests {
             "source": "https://media.example/movie.mp4", "position": 0,
             "playing": false, "revision": 0, "sentAt": 0, "action": "state"
         });
-        for source in ["http://media.example/a", "file:///C:/secret", "javascript:alert(1)", "https://user:secret@media.example/a", "https://"] {
+        for source in [
+            "http://media.example/a",
+            "file:///C:/secret",
+            "javascript:alert(1)",
+            "https://user:secret@media.example/a",
+            "https://",
+        ] {
             let mut invalid = good.clone();
             invalid["source"] = serde_json::json!(source);
             assert!(!valid_watch_party_payload(&invalid), "accepted {source}");
@@ -5965,10 +6742,17 @@ mod tests {
             ("sentAt", serde_json::json!(9_007_199_254_740_992_u64)),
             ("playing", serde_json::json!("true")),
             ("action", serde_json::json!("fetch")),
-            ("source", serde_json::json!(format!("https://media.example/{}", "x".repeat(2048)))),
+            (
+                "source",
+                serde_json::json!(format!("https://media.example/{}", "x".repeat(2048))),
+            ),
         ] {
-            let mut invalid = good.clone(); invalid[key] = value;
-            assert!(!valid_watch_party_payload(&invalid), "accepted invalid {key}");
+            let mut invalid = good.clone();
+            invalid[key] = value;
+            assert!(
+                !valid_watch_party_payload(&invalid),
+                "accepted invalid {key}"
+            );
         }
         let mut missing = good;
         missing.as_object_mut().unwrap().remove("revision");
@@ -6012,7 +6796,8 @@ mod tests {
 
     #[tokio::test]
     async fn direct_conversation_row_loads_after_creation() {
-        let path = std::env::temp_dir().join(format!("ghostchat-conversation-{}.sqlite", Uuid::new_v4()));
+        let path =
+            std::env::temp_dir().join(format!("ghostchat-conversation-{}.sqlite", Uuid::new_v4()));
         let path_string = path.to_string_lossy().into_owned();
         let db = open_database(&path_string).await.unwrap();
 
@@ -6044,5 +6829,2762 @@ mod tests {
 
         db.close().await;
         let _ = std::fs::remove_file(path);
+    }
+
+    // Route-level harness: a real router on a loopback port backed by a fresh
+    // SQLite file with all migrations, driven over HTTP with reqwest.
+    struct TestApp {
+        base: String,
+        state: AppState,
+        client: reqwest::Client,
+        dir: PathBuf,
+    }
+
+    struct TestUser {
+        id: String,
+        token: String,
+    }
+
+    impl Drop for TestApp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    impl TestApp {
+        async fn new() -> Self {
+            Self::configured(false).await
+        }
+
+        async fn configured(require_redis: bool) -> Self {
+            let dir = std::env::temp_dir().join(format!("ghostchat-route-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let db = open_database(&dir.join("db.sqlite").to_string_lossy())
+                .await
+                .unwrap();
+            let mut state = build_state_with_attachment_dir(db, dir.join("attachments")).await;
+            // Do not inherit the developer's shell: no Redis admission, no
+            // TURN and no LiveKit, whatever GHOSTCHAT_* variables are set.
+            state.require_redis = require_redis;
+            state.distributed_limiter = Ok(None);
+            state.voice = VoiceServerConfig {
+                stun_urls: vec!["stun:stun.l.google.com:19302".into()],
+                turn_urls: Vec::new(),
+                turn_shared_secret: None,
+                livekit_url: None,
+                livekit_api_key: None,
+                livekit_api_secret: None,
+            };
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let app = router(state.clone());
+            tokio::spawn(async move {
+                let _ = axum::serve(listener, app).await;
+            });
+            let client = reqwest::Client::builder().no_proxy().build().unwrap();
+            Self {
+                base,
+                state,
+                client,
+                dir,
+            }
+        }
+
+        fn request(
+            &self,
+            method: reqwest::Method,
+            path: &str,
+            user: &TestUser,
+        ) -> reqwest::RequestBuilder {
+            self.client
+                .request(method, format!("{}{path}", self.base))
+                .bearer_auth(&user.token)
+        }
+
+        async fn user(&self, username: &str) -> TestUser {
+            let reply: serde_json::Value = self
+                .client
+                .post(format!("{}/v1/accounts", self.base))
+                .json(&serde_json::json!({"username": username, "display_name": username}))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            TestUser {
+                id: reply["user"]["id"].as_str().unwrap().to_owned(),
+                token: reply["session_token"].as_str().unwrap().to_owned(),
+            }
+        }
+
+        async fn befriend(&self, first: &TestUser, second: &TestUser) {
+            for (from, to) in [(first, second), (second, first)] {
+                let status = self
+                    .request(reqwest::Method::POST, "/v1/friends", from)
+                    .json(&serde_json::json!({"user_id": to.id}))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status();
+                // 409 means the pair is already friends (helper reused).
+                assert!(
+                    matches!(
+                        status,
+                        reqwest::StatusCode::NO_CONTENT | reqwest::StatusCode::CONFLICT
+                    ),
+                    "friend request returned {status}"
+                );
+            }
+        }
+
+        async fn group(&self, owner: &TestUser, members: &[&TestUser]) -> String {
+            for member in members {
+                self.befriend(owner, member).await;
+            }
+            let reply: serde_json::Value = self
+                .request(reqwest::Method::POST, "/v1/conversations/groups", owner)
+                .json(&serde_json::json!({
+                    "name": "Test group",
+                    "member_ids": members.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
+                }))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            reply["id"].as_str().unwrap().to_owned()
+        }
+
+        async fn direct(&self, first: &TestUser, second: &TestUser) -> String {
+            self.befriend(first, second).await;
+            let reply: serde_json::Value = self
+                .request(reqwest::Method::POST, "/v1/conversations/direct", first)
+                .json(&serde_json::json!({"user_id": second.id}))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            reply["id"].as_str().unwrap().to_owned()
+        }
+
+        async fn block(&self, blocker: &TestUser, target: &TestUser) {
+            let status = self
+                .request(
+                    reqwest::Method::POST,
+                    &format!("/v1/users/{}/block", target.id),
+                    blocker,
+                )
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, reqwest::StatusCode::NO_CONTENT);
+        }
+
+        async fn public_user(&self, user: &TestUser) -> PublicUser {
+            sqlx::query_as::<_, PublicUser>(
+                "SELECT id,username,display_name,avatar_data FROM users WHERE id=?",
+            )
+            .bind(&user.id)
+            .fetch_one(&self.state.db)
+            .await
+            .unwrap()
+        }
+
+        async fn send_text(&self, user: &TestUser, conversation: &str, text: &str) -> String {
+            let reply: serde_json::Value = self
+                .request(
+                    reqwest::Method::POST,
+                    &format!("/v1/conversations/{conversation}/messages"),
+                    user,
+                )
+                .json(&serde_json::json!({
+                    "client_message_id": Uuid::new_v4().to_string(),
+                    "content": text,
+                }))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            reply["id"].as_str().unwrap().to_owned()
+        }
+
+        async fn upload(
+            &self,
+            user: &TestUser,
+            conversation: &str,
+            bytes: Vec<u8>,
+        ) -> reqwest::Response {
+            self.request(
+                reqwest::Method::POST,
+                &format!(
+                    "/v1/conversations/{conversation}/attachments?name=notes.txt&client_message_id={}",
+                    Uuid::new_v4()
+                ),
+                user,
+            )
+            .header(header::CONTENT_TYPE, "text/plain")
+            .body(bytes)
+            .send()
+            .await
+            .unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn require_redis_comes_from_state_not_process_env() {
+        let required = TestApp::configured(true).await;
+        let health = required
+            .client
+            .get(format!("{}/health", required.base))
+            .send()
+            .await
+            .unwrap();
+        assert!(health.status().is_success());
+        let refused = required
+            .client
+            .post(format!("{}/v1/accounts", required.base))
+            .json(&serde_json::json!({"username": "alice", "display_name": "alice"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+        let open = TestApp::new().await;
+        let alice = open.user("alice").await;
+        assert!(!alice.token.is_empty());
+    }
+
+    #[tokio::test]
+    async fn message_routes_reject_non_member() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let mallory = app.user("mallory").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let message = app.send_text(&alice, &group, "hello").await;
+        let upload: serde_json::Value = app
+            .upload(&alice, &group, b"secret".to_vec())
+            .await
+            .json()
+            .await
+            .unwrap();
+        let attachment = upload["content"]
+            .as_str()
+            .unwrap()
+            .strip_prefix(ATTACHMENT_MARKER)
+            .unwrap()
+            .to_owned();
+        let checks: Vec<(Method, String, Option<serde_json::Value>)> = vec![
+            (
+                Method::GET,
+                format!("/v1/conversations/{group}/messages"),
+                None,
+            ),
+            (
+                Method::POST,
+                format!("/v1/conversations/{group}/messages"),
+                Some(serde_json::json!({"client_message_id":"x","content":"hi"})),
+            ),
+            (
+                Method::PATCH,
+                format!("/v1/messages/{message}"),
+                Some(serde_json::json!({"content":"edited"})),
+            ),
+            (Method::POST, format!("/v1/messages/{message}/pin"), None),
+            (Method::POST, format!("/v1/messages/{message}/save"), None),
+            (
+                Method::POST,
+                format!("/v1/messages/{message}/reactions"),
+                Some(serde_json::json!({"emoji":"👍"})),
+            ),
+            (
+                Method::POST,
+                format!("/v1/conversations/{group}/read"),
+                Some(serde_json::json!({"sequence":0})),
+            ),
+            (
+                Method::GET,
+                format!("/v1/conversations/{group}/reactions"),
+                None,
+            ),
+            (
+                Method::GET,
+                format!("/v1/conversations/{group}/members"),
+                None,
+            ),
+            (
+                Method::GET,
+                format!("/v1/conversations/{group}/crypto-events"),
+                None,
+            ),
+            (
+                Method::GET,
+                format!("/v1/conversations/{group}/crypto-lock"),
+                None,
+            ),
+            (
+                Method::GET,
+                format!("/v1/conversations/{group}/planner/polls"),
+                None,
+            ),
+            (
+                Method::GET,
+                format!("/v1/conversations/{group}/planner/events"),
+                None,
+            ),
+            (
+                Method::GET,
+                format!("/v1/conversations/{group}/invites"),
+                None,
+            ),
+            (Method::GET, format!("/v1/attachments/{attachment}"), None),
+            (
+                Method::POST,
+                format!("/v1/attachments/{attachment}/link"),
+                None,
+            ),
+        ];
+        for (method, path, body) in checks {
+            let mut request = app.request(method.clone(), &path, &mallory);
+            if let Some(body) = body {
+                request = request.json(&body);
+            }
+            let status = request.send().await.unwrap().status();
+            assert!(
+                matches!(status, StatusCode::NOT_FOUND | StatusCode::FORBIDDEN),
+                "{method} {path} returned {status} to a non-member"
+            );
+        }
+        let status = app.upload(&mallory, &group, b"x".to_vec()).await.status();
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let saved: serde_json::Value = app
+            .request(Method::GET, "/v1/me/saved-messages", &mallory)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(saved, serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn attachment_upload_accepts_bodies_above_json_limit() {
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let response = app.upload(&alice, &group, vec![7u8; 512 * 1024]).await;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn message_edit_rejects_attachment_marker() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let upload: serde_json::Value = app
+            .upload(&bob, &group, b"bob's file".to_vec())
+            .await
+            .json()
+            .await
+            .unwrap();
+        let attachment = upload["content"].as_str().unwrap().to_owned();
+        let carol_message = app.send_text(&carol, &group, "innocent text").await;
+        let status = app
+            .request(
+                Method::PATCH,
+                &format!("/v1/messages/{carol_message}"),
+                &carol,
+            )
+            .json(&serde_json::json!({"content": attachment}))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let status = app
+            .request(
+                Method::DELETE,
+                &format!("/v1/messages/{carol_message}"),
+                &carol,
+            )
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let attachment_id = attachment.strip_prefix(ATTACHMENT_MARKER).unwrap();
+        let download = app
+            .request(
+                Method::GET,
+                &format!("/v1/attachments/{attachment_id}"),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(download.status(), StatusCode::OK);
+        assert_eq!(download.bytes().await.unwrap().as_ref(), b"bob's file");
+    }
+
+    #[tokio::test]
+    async fn message_edit_rejects_removed_member() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let carol_message = app.send_text(&carol, &group, "original").await;
+        let status = app
+            .request(
+                Method::DELETE,
+                &format!("/v1/conversations/{group}/members/{}", carol.id),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let status = app
+            .request(
+                Method::PATCH,
+                &format!("/v1/messages/{carol_message}"),
+                &carol,
+            )
+            .json(&serde_json::json!({"content": "rewritten after removal"}))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let messages: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/messages"),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(messages[0]["content"], "original");
+    }
+
+    #[tokio::test]
+    async fn logout_keeps_other_sessions_connected() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let laptop = app.user("alice").await;
+        let desktop = TestUser {
+            id: laptop.id.clone(),
+            token: add_session(&app.state.db, &laptop.id).await.unwrap(),
+        };
+        let mut events = app.state.events.subscribe();
+        let status = app
+            .request(Method::DELETE, "/v1/sessions", &laptop)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let event = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.event["type"], "session_revoked");
+        assert!(session_revocation_applies(
+            &event.event,
+            &session_hash(&laptop.token)
+        ));
+        assert!(
+            !session_revocation_applies(&event.event, &session_hash(&desktop.token)),
+            "logging out one device must not sign out the account's other sessions"
+        );
+        let status = app
+            .request(Method::GET, "/v1/me", &desktop)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn presence_hides_invisible_mode_from_friends() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        app.befriend(&alice, &bob).await;
+        // Alice has the app open (an authenticated WebSocket).
+        register_online_connection(&app.state, &alice.id);
+        let mut events = app.state.events.subscribe();
+        let status = app
+            .request(Method::PUT, "/v1/me/presence", &alice)
+            .json(&serde_json::json!({"mode": "invisible"}))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::OK);
+        let mut seen_by_bob = None;
+        let mut seen_by_alice = None;
+        while let Ok(Ok(event)) =
+            tokio::time::timeout(Duration::from_millis(500), events.recv()).await
+        {
+            if event.event["type"] != "presence_updated" {
+                continue;
+            }
+            if event.recipients.contains(&bob.id) {
+                seen_by_bob = Some(event.event["mode"].clone());
+            }
+            if event.recipients.contains(&alice.id) {
+                seen_by_alice = Some(event.event["mode"].clone());
+            }
+        }
+        assert_eq!(seen_by_bob, Some(serde_json::json!("offline")));
+        assert_eq!(seen_by_alice, Some(serde_json::json!("invisible")));
+        let rows: serde_json::Value = app
+            .request(Method::GET, "/v1/me/presence", &bob)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let alice_row = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["user_id"] == alice.id.as_str())
+            .unwrap();
+        assert_eq!(alice_row["mode"], "offline");
+        let rows: serde_json::Value = app
+            .request(Method::GET, "/v1/me/presence", &alice)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let own_row = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["user_id"] == alice.id.as_str())
+            .unwrap();
+        assert_eq!(own_row["mode"], "invisible");
+    }
+
+    #[tokio::test]
+    async fn presence_connect_and_disconnect_of_invisible_user_send_friends_nothing() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        app.befriend(&alice, &bob).await;
+        let status = app
+            .request(Method::PUT, "/v1/me/presence", &alice)
+            .json(&serde_json::json!({"mode": "invisible"}))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::OK);
+        let mut events = app.state.events.subscribe();
+        // Alice opens the app (first WebSocket) and later closes it.
+        assert!(register_online_connection(&app.state, &alice.id));
+        broadcast_current_presence(&app.state, &alice.id).await;
+        assert!(unregister_online_connection(&app.state, &alice.id));
+        broadcast_current_presence(&app.state, &alice.id).await;
+        let mut own_events = 0;
+        while let Ok(Ok(event)) =
+            tokio::time::timeout(Duration::from_millis(300), events.recv()).await
+        {
+            assert!(
+                !event.recipients.contains(&bob.id),
+                "friend was notified of an invisible user's connect/disconnect: {}",
+                event.event
+            );
+            if event.recipients.contains(&alice.id) {
+                own_events += 1;
+            }
+        }
+        assert_eq!(own_events, 2, "the account itself still gets its presence");
+    }
+
+    #[tokio::test]
+    async fn message_edit_rejects_blocked_direct_peer() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        app.befriend(&alice, &bob).await;
+        let direct: serde_json::Value = app
+            .request(Method::POST, "/v1/conversations/direct", &alice)
+            .json(&serde_json::json!({"user_id": bob.id}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let direct = direct["id"].as_str().unwrap().to_owned();
+        let message = app.send_text(&alice, &direct, "earlier message").await;
+        let status = app
+            .request(Method::POST, &format!("/v1/users/{}/block", alice.id), &bob)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let mut events = app.state.events.subscribe();
+        let status = app
+            .request(Method::PATCH, &format!("/v1/messages/{message}"), &alice)
+            .json(&serde_json::json!({"content": "rewritten after block"}))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        while let Ok(Ok(event)) =
+            tokio::time::timeout(Duration::from_millis(300), events.recv()).await
+        {
+            assert!(
+                !(event.recipients.contains(&bob.id) && event.event["type"] == "message"),
+                "blocker received an edited message"
+            );
+        }
+        let messages: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{direct}/messages"),
+                &bob,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(messages[0]["content"], "earlier message");
+    }
+
+    #[tokio::test]
+    async fn account_deletion_keeps_other_members_groups() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        // Carol owns two groups: in the first Bob, the newer member, is an
+        // admin and wins over the older plain member Alice; in the second
+        // nobody is, so ownership falls to the oldest remaining member. The
+        // founders are given with the larger ID first, so join order and ID
+        // order disagree.
+        let with_admin = app.group(&carol, &[&alice, &bob]).await;
+        let (oldest, newest) = if alice.id > bob.id {
+            (&alice, &bob)
+        } else {
+            (&bob, &alice)
+        };
+        let without_admin = {
+            let reply: serde_json::Value = app
+                .request(Method::POST, "/v1/conversations/groups", &carol)
+                .json(&serde_json::json!({"name": "Second", "member_ids": [oldest.id, newest.id]}))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            reply["id"].as_str().unwrap().to_owned()
+        };
+        let status = app
+            .request(
+                Method::PATCH,
+                &format!("/v1/conversations/{with_admin}/members/{}", bob.id),
+                &carol,
+            )
+            .json(&serde_json::json!({"role": "admin"}))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        app.send_text(&alice, &with_admin, "alice keeps this").await;
+        app.send_text(&carol, &with_admin, "carol's own message")
+            .await;
+        let upload: serde_json::Value = app
+            .upload(&alice, &with_admin, b"alice's file".to_vec())
+            .await
+            .json()
+            .await
+            .unwrap();
+        let attachment = upload["content"]
+            .as_str()
+            .unwrap()
+            .strip_prefix(ATTACHMENT_MARKER)
+            .unwrap()
+            .to_owned();
+        // A group Carol is alone in is removed with her.
+        let solo = app.group(&carol, &[&alice, &bob]).await;
+        for member in [&alice, &bob] {
+            let status = app
+                .request(
+                    Method::DELETE,
+                    &format!("/v1/conversations/{solo}/members/{}", member.id),
+                    member,
+                )
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, StatusCode::NO_CONTENT);
+        }
+
+        let status = app
+            .request(Method::DELETE, "/v1/me/account", &carol)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let messages = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{with_admin}/messages"),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(messages.status(), StatusCode::OK);
+        let messages: serde_json::Value = messages.json().await.unwrap();
+        let contents = messages
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["content"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert!(contents.contains(&"alice keeps this".to_owned()));
+        assert!(!contents.contains(&"carol's own message".to_owned()));
+        let download = app
+            .request(
+                Method::GET,
+                &format!("/v1/attachments/{attachment}"),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(download.status(), StatusCode::OK);
+        assert_eq!(download.bytes().await.unwrap().as_ref(), b"alice's file");
+
+        let role_of = |conversation: String, user: String| {
+            let db = app.state.db.clone();
+            async move {
+                sqlx::query_scalar::<_, String>(
+                    "SELECT role FROM conversation_members WHERE conversation_id=? AND user_id=?",
+                )
+                .bind(conversation)
+                .bind(user)
+                .fetch_one(&db)
+                .await
+                .unwrap()
+            }
+        };
+        assert_eq!(role_of(with_admin.clone(), bob.id.clone()).await, "owner");
+        assert_eq!(
+            role_of(with_admin.clone(), alice.id.clone()).await,
+            "member"
+        );
+        // Founders join in the order given (creator first), whatever their IDs.
+        assert_eq!(
+            role_of(without_admin.clone(), oldest.id.clone()).await,
+            "owner"
+        );
+        assert_eq!(
+            role_of(without_admin.clone(), newest.id.clone()).await,
+            "member"
+        );
+        let remaining =
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM conversations WHERE id IN (?,?,?)")
+                .bind(&with_admin)
+                .bind(&without_admin)
+                .bind(&solo)
+                .fetch_one(&app.state.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            remaining, 2,
+            "only the group with no members left is deleted"
+        );
+    }
+
+    #[tokio::test]
+    async fn owner_or_admin_removes_deleted_account_from_encrypted_group() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let dave = app.user("dave").await;
+        let mallory = app.user("mallory").await;
+        let group = app.group(&alice, &[&bob, &carol, &dave]).await;
+        let plain_group = app.group(&alice, &[&bob, &carol]).await;
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete) VALUES(?,?,1)",
+        )
+        .bind(&group)
+        .bind(&alice.id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        let status = app
+            .request(Method::DELETE, "/v1/me/account", &carol)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let deleted_ids = |conversation: String, viewer: &TestUser| {
+            app.request(
+                Method::GET,
+                &format!("/v1/conversations/{conversation}/crypto-lock"),
+                viewer,
+            )
+            .send()
+        };
+        let lock: serde_json::Value = deleted_ids(group.clone(), &bob)
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(lock["deletedMemberIds"], serde_json::json!([carol.id]));
+        let plain: serde_json::Value = deleted_ids(plain_group.clone(), &bob)
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(plain["deletedMemberIds"], serde_json::json!([]));
+
+        let mut remaining = vec![alice.id.clone(), bob.id.clone(), dave.id.clone()];
+        remaining.sort();
+        let remove = |actor: &TestUser, target: &str, operation: String| {
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/crypto-membership/remove/{target}"),
+                actor,
+            )
+            .json(&serde_json::json!({
+                "operation_id": operation,
+                "expected_member_ids": remaining,
+                "expected_commit_seq": 0,
+                "commit_payload": "AAAA",
+                "welcome_payload": "",
+            }))
+            .send()
+        };
+        // A plain member cannot remove the deleted account.
+        let status = remove(&bob, &carol.id, Uuid::new_v4().to_string())
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        // An account that was never a member, and an unknown ID, are not
+        // recorded deleted members.
+        for target in [mallory.id.clone(), Uuid::new_v4().to_string()] {
+            let status = remove(&alice, &target, Uuid::new_v4().to_string())
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, StatusCode::NOT_FOUND, "target {target}");
+        }
+        // The owner's removal is accepted once and relayed to the others.
+        let operation = Uuid::new_v4().to_string();
+        let status = remove(&alice, &carol.id, operation.clone())
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let status = remove(&alice, &carol.id, operation).await.unwrap().status();
+        assert_eq!(status, StatusCode::NO_CONTENT, "a retry is idempotent");
+        let recipients = sqlx::query_scalar::<_, String>(
+            "SELECT recipient_id FROM crypto_events WHERE conversation_id=? ORDER BY recipient_id",
+        )
+        .bind(&group)
+        .fetch_all(&app.state.db)
+        .await
+        .unwrap();
+        let mut expected_recipients = vec![bob.id.clone(), dave.id.clone()];
+        expected_recipients.sort();
+        assert_eq!(recipients, expected_recipients);
+        // A second, different removal commit for the same leaf is refused
+        // as already done (410), so its sender can drop its staged copy.
+        let status = remove(&alice, &carol.id, Uuid::new_v4().to_string())
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::GONE);
+        let lock: serde_json::Value = deleted_ids(group.clone(), &bob)
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(lock["deletedMembers"][0]["userId"], carol.id.as_str());
+        assert!(lock["deletedMembers"][0]["removalCommittedAt"].is_string());
+        // The record stays visible so older-epoch messages still decrypt.
+        let lock: serde_json::Value = deleted_ids(group.clone(), &dave)
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(lock["deletedMemberIds"], serde_json::json!([carol.id]));
+        let members = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM conversation_members WHERE conversation_id=?",
+        )
+        .bind(&group)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+        assert_eq!(members, 3);
+    }
+
+    #[tokio::test]
+    async fn share_token_rejects_blocked_direct_peer() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let direct = app.direct(&alice, &bob).await;
+        let path = format!("/v1/conversations/{direct}/share-token");
+        // Without a block the route reaches the LiveKit check (not configured).
+        let status = app
+            .request(Method::POST, &path, &alice)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        app.block(&bob, &alice).await;
+        for user in [&alice, &bob] {
+            let status = app
+                .request(Method::POST, &path, user)
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, StatusCode::FORBIDDEN);
+        }
+    }
+
+    #[tokio::test]
+    async fn typing_is_not_relayed_across_a_block() {
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let direct = app.direct(&alice, &bob).await;
+        let sender = app.public_user(&alice).await;
+        let signal =
+            serde_json::json!({"type": "typing", "conversation_id": direct, "active": true})
+                .to_string();
+        let mut events = app.state.events.subscribe();
+        relay_typing_signal(&app.state, &sender, &signal).await;
+        let event = tokio::time::timeout(Duration::from_millis(300), events.recv())
+            .await
+            .expect("typing is relayed without a block")
+            .unwrap();
+        assert_eq!(event.event["type"], "typing");
+        app.block(&bob, &alice).await;
+        let mut events = app.state.events.subscribe();
+        relay_typing_signal(&app.state, &sender, &signal).await;
+        while let Ok(Ok(event)) =
+            tokio::time::timeout(Duration::from_millis(300), events.recv()).await
+        {
+            assert_ne!(event.event["type"], "typing", "typing crossed a block");
+        }
+    }
+
+    #[tokio::test]
+    async fn poll_votes_are_rejected_after_closes_at() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let create = |closes_at: serde_json::Value| {
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/planner/polls"),
+                &alice,
+            )
+            .json(&serde_json::json!({
+                "question": "When?", "options": ["Mon", "Tue"], "closes_at": closes_at,
+            }))
+            .send()
+        };
+        let status = create(serde_json::json!("not a time"))
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        create(serde_json::json!("2000-01-01T00:00:00.000Z"))
+            .await
+            .unwrap();
+        let polls: serde_json::Value = create(serde_json::json!("2999-01-01T00:00:00.000Z"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let vote = |poll: &serde_json::Value| {
+            app.request(
+                Method::POST,
+                &format!("/v1/group-polls/{}/vote", poll["id"].as_str().unwrap()),
+                &bob,
+            )
+            .json(&serde_json::json!({"option_id": poll["options"][0]["id"]}))
+            .send()
+        };
+        let polls = polls.as_array().unwrap();
+        let expired = polls
+            .iter()
+            .find(|p| p["closes_at"] == "2000-01-01T00:00:00.000Z")
+            .unwrap();
+        let open = polls
+            .iter()
+            .find(|p| p["closes_at"] == "2999-01-01T00:00:00.000Z")
+            .unwrap();
+        assert_eq!(vote(expired).await.unwrap().status(), StatusCode::CONFLICT);
+        assert_eq!(vote(open).await.unwrap().status(), StatusCode::NO_CONTENT);
+        let votes = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM group_poll_votes")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+        assert_eq!(votes, 1);
+
+        // A row stored before closing times were validated can hold a value
+        // that is not a time. It has no deadline that can be enforced, so it
+        // takes votes as it always did instead of failing the request.
+        let polls: serde_json::Value = create(serde_json::Value::Null)
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let legacy = polls
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["closes_at"].is_null())
+            .unwrap()
+            .clone();
+        sqlx::query("UPDATE group_polls SET closes_at='not a time' WHERE id=?")
+            .bind(legacy["id"].as_str().unwrap())
+            .execute(&app.state.db)
+            .await
+            .unwrap();
+        assert_eq!(
+            vote(&legacy).await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+        let votes = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM group_poll_votes")
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+        assert_eq!(votes, 2);
+    }
+
+    #[tokio::test]
+    async fn unblock_is_rate_limited_like_block() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let path = format!("/v1/users/{}/block", bob.id);
+        let mut limited = false;
+        for _ in 0..61 {
+            let status = app
+                .request(Method::DELETE, &path, &alice)
+                .send()
+                .await
+                .unwrap()
+                .status();
+            if status == StatusCode::TOO_MANY_REQUESTS {
+                limited = true;
+                break;
+            }
+            assert_eq!(status, StatusCode::NO_CONTENT);
+        }
+        assert!(limited, "61 unblock requests in an hour were all accepted");
+    }
+
+    #[tokio::test]
+    async fn user_search_treats_like_wildcards_literally() {
+        use reqwest::Method;
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        app.user("bob_one").await;
+        app.user("bobtwo").await;
+        let search = |q: &str| {
+            let q = q.replace('%', "%25");
+            app.request(Method::GET, &format!("/v1/users/search?q={q}"), &alice)
+                .send()
+        };
+        let names = |rows: serde_json::Value| -> Vec<String> {
+            rows.as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["username"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        let all: serde_json::Value = search("__").await.unwrap().json().await.unwrap();
+        assert!(names(all).is_empty(), "`__` must not match every username");
+        let percent: serde_json::Value = search("b%").await.unwrap().json().await.unwrap();
+        assert!(names(percent).is_empty());
+        let literal: serde_json::Value = search("bob_").await.unwrap().json().await.unwrap();
+        assert_eq!(names(literal), vec!["bob_one".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn encrypted_removal_records_its_target_and_rejects_another_declared_one() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let dave = app.user("dave").await;
+        let group = app.group(&alice, &[&bob, &carol, &dave]).await;
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete) VALUES(?,?,1)",
+        )
+        .bind(&group)
+        .bind(&alice.id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        let mut roster = vec![
+            alice.id.clone(),
+            bob.id.clone(),
+            carol.id.clone(),
+            dave.id.clone(),
+        ];
+        roster.sort();
+        let remove = |declared: &str, operation: &str| {
+            app.request(
+                Method::POST,
+                &format!(
+                    "/v1/conversations/{group}/crypto-membership/remove/{}",
+                    dave.id
+                ),
+                &alice,
+            )
+            .json(&serde_json::json!({
+                "operation_id": operation,
+                "expected_member_ids": roster,
+                "expected_commit_seq": 0,
+                "member_ids": [declared],
+                "commit_payload": "AAAA",
+                "welcome_payload": "",
+            }))
+            .send()
+        };
+        let status = remove(&carol.id, &Uuid::new_v4().to_string())
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "the commit declares another target"
+        );
+        let operation = Uuid::new_v4().to_string();
+        let status = remove(&dave.id, &operation).await.unwrap().status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let target = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT target_id FROM crypto_membership_operations WHERE conversation_id=? AND operation_id=?",
+        )
+        .bind(&group)
+        .bind(&operation)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+        assert_eq!(target.as_deref(), Some(dave.id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn deleting_an_encrypted_message_deletes_its_encrypted_attachment() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let direct = app.direct(&alice, &bob).await;
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete) VALUES(?,?,1)",
+        )
+        .bind(&direct)
+        .bind(&alice.id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        let upload = |user: &TestUser| {
+            let attachment_id = Uuid::new_v4().to_string();
+            let request = app
+                .request(
+                    Method::POST,
+                    &format!(
+                        "/v1/conversations/{direct}/encrypted-attachments?attachment_id={attachment_id}&plain_size=0&chunk_size={ENCRYPTED_ATTACHMENT_CHUNK_BYTES}&chunk_count=1"
+                    ),
+                    user,
+                )
+                .body(vec![7u8; 16])
+                .send();
+            async move {
+                assert_eq!(request.await.unwrap().status(), StatusCode::OK);
+                attachment_id
+            }
+        };
+        let send = |user: &TestUser, attachment_ids: Vec<String>| {
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{direct}/messages"),
+                user,
+            )
+            .json(&serde_json::json!({
+                "client_message_id": Uuid::new_v4().to_string(),
+                "content": "e2e1:AAAA",
+                "attachment_ids": attachment_ids,
+            }))
+            .send()
+        };
+        let blob = |id: &str| app.state.attachment_dir.join(format!("{id}.blob"));
+
+        // Another member's upload cannot be claimed by a message.
+        let bobs = upload(&bob).await;
+        let status = send(&alice, vec![bobs.clone()]).await.unwrap().status();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let attachment = upload(&alice).await;
+        let message: serde_json::Value = send(&alice, vec![attachment.clone()])
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        // An attachment links to one message only.
+        let status = send(&alice, vec![attachment.clone()])
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(blob(&attachment).exists());
+        let status = app
+            .request(
+                Method::DELETE,
+                &format!("/v1/messages/{}", message["id"].as_str().unwrap()),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(
+            !blob(&attachment).exists(),
+            "the encrypted blob is deleted with its message"
+        );
+        let rows = sqlx::query_scalar::<_, i64>("SELECT count(*) FROM attachments WHERE id=?")
+            .bind(&attachment)
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap();
+        assert_eq!(rows, 0);
+        assert!(blob(&bobs).exists(), "an unrelated upload is kept");
+    }
+
+    #[tokio::test]
+    async fn account_deletion_tells_direct_peers_the_conversation_is_gone() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let direct = app.direct(&alice, &bob).await;
+        let mut events = app.state.events.subscribe();
+        let status = app
+            .request(Method::DELETE, "/v1/me/account", &bob)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let mut told = false;
+        while let Ok(Ok(event)) =
+            tokio::time::timeout(Duration::from_millis(300), events.recv()).await
+        {
+            if event.recipients.contains(&alice.id)
+                && event.event["type"] == "conversation_updated"
+                && event.event["conversation_id"] == direct.as_str()
+            {
+                told = true;
+            }
+        }
+        assert!(
+            told,
+            "the peer must learn that the direct conversation was removed"
+        );
+    }
+
+    // Minimal RFC 6455 client over a raw TcpStream (no extra crates): enough
+    // to authenticate a session socket and read the server's frames.
+    struct RawWebSocket(tokio::net::TcpStream);
+
+    impl RawWebSocket {
+        async fn connect(base: &str, token: &str) -> Self {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let addr = base.trim_start_matches("http://");
+            let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let request = format!(
+                "GET /v1/ws HTTP/1.1\r\nHost: {addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            );
+            stream.write_all(request.as_bytes()).await.unwrap();
+            let mut response = Vec::new();
+            while !response.ends_with(b"\r\n\r\n") {
+                let mut byte = [0u8; 1];
+                stream.read_exact(&mut byte).await.unwrap();
+                response.push(byte[0]);
+            }
+            assert!(
+                response.starts_with(b"HTTP/1.1 101"),
+                "{}",
+                String::from_utf8_lossy(&response)
+            );
+            let mut socket = Self(stream);
+            socket
+                .send_text(&serde_json::json!({ "token": token }).to_string())
+                .await;
+            let (opcode, ready) = socket.read_frame().await;
+            assert_eq!(opcode, 1);
+            assert_eq!(
+                serde_json::from_slice::<serde_json::Value>(&ready).unwrap()["type"],
+                "ready"
+            );
+            socket
+        }
+
+        async fn send_text(&mut self, text: &str) {
+            use tokio::io::AsyncWriteExt;
+            let payload = text.as_bytes();
+            let mask = [0x12u8, 0x34, 0x56, 0x78];
+            let mut frame = vec![0x81u8];
+            if payload.len() < 126 {
+                frame.push(0x80 | payload.len() as u8);
+            } else {
+                frame.push(0x80 | 126);
+                frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+            }
+            frame.extend_from_slice(&mask);
+            frame.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+            self.0.write_all(&frame).await.unwrap();
+        }
+
+        async fn read_frame(&mut self) -> (u8, Vec<u8>) {
+            use tokio::io::AsyncReadExt;
+            let mut head = [0u8; 2];
+            self.0.read_exact(&mut head).await.unwrap();
+            let mut len = u64::from(head[1] & 0x7f);
+            if len == 126 {
+                let mut ext = [0u8; 2];
+                self.0.read_exact(&mut ext).await.unwrap();
+                len = u64::from(u16::from_be_bytes(ext));
+            } else if len == 127 {
+                let mut ext = [0u8; 8];
+                self.0.read_exact(&mut ext).await.unwrap();
+                len = u64::from_be_bytes(ext);
+            }
+            let mut payload = vec![0u8; len as usize];
+            self.0.read_exact(&mut payload).await.unwrap();
+            (head[0] & 0x0f, payload)
+        }
+
+        /// The next text frame's JSON within `wait`, skipping other frames.
+        async fn next_event(&mut self, wait: Duration) -> Option<serde_json::Value> {
+            let deadline = tokio::time::Instant::now() + wait;
+            loop {
+                let frame = tokio::time::timeout_at(deadline, self.read_frame())
+                    .await
+                    .ok()?;
+                match frame {
+                    (1, text) => return serde_json::from_slice(&text).ok(),
+                    (8, _) => return Some(serde_json::json!({ "type": "__closed" })),
+                    _ => continue,
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn logout_revokes_only_the_logged_out_socket() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let laptop = app.user("alice").await;
+        let desktop = TestUser {
+            id: laptop.id.clone(),
+            token: add_session(&app.state.db, &laptop.id).await.unwrap(),
+        };
+        let mut laptop_socket = RawWebSocket::connect(&app.base, &laptop.token).await;
+        let mut desktop_socket = RawWebSocket::connect(&app.base, &desktop.token).await;
+        let status = app
+            .request(Method::DELETE, "/v1/sessions", &laptop)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        // Skip the socket's own presence events.
+        let mut revoked = None;
+        while let Some(event) = laptop_socket.next_event(Duration::from_secs(2)).await {
+            if event["type"] != "presence_updated" {
+                revoked = Some(event);
+                break;
+            }
+        }
+        assert_eq!(
+            revoked.as_ref().map(|event| event["type"].clone()),
+            Some(serde_json::json!("session_revoked"))
+        );
+        let closed = laptop_socket.next_event(Duration::from_secs(2)).await;
+        assert_eq!(
+            closed.map(|event| event["type"].clone()),
+            Some(serde_json::json!("__closed")),
+            "the logged-out socket is closed"
+        );
+        // The other device's socket gets neither event and still relays.
+        while let Some(event) = desktop_socket.next_event(Duration::from_millis(500)).await {
+            assert!(
+                event["type"] != "session_revoked" && event["type"] != "__closed",
+                "the other session's socket was revoked: {event}"
+            );
+        }
+        let _ = app.state.events.send(ServerEvent {
+            recipients: vec![desktop.id.clone()],
+            event: serde_json::json!({"type": "contacts_updated"}),
+        });
+        let mut relayed = false;
+        while let Some(event) = desktop_socket.next_event(Duration::from_secs(2)).await {
+            if event["type"] == "contacts_updated" {
+                relayed = true;
+                break;
+            }
+        }
+        assert!(relayed, "the other session's socket still relays events");
+    }
+
+    #[tokio::test]
+    async fn caller_gets_the_same_relay_reply_from_invisible_and_offline_callees() {
+        use reqwest::Method;
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let to_bob = app.direct(&alice, &bob).await;
+        let to_carol = app.direct(&alice, &carol).await;
+        let status = app
+            .request(Method::PUT, "/v1/me/presence", &bob)
+            .json(&serde_json::json!({"mode": "invisible"}))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert!(status.is_success());
+        // Bob is connected but invisible; Carol is offline.
+        register_online_connection(&app.state, &bob.id);
+        let caller = app.public_user(&alice).await;
+        let mut observed = Vec::new();
+        for (conversation, callee) in [(&to_bob, &bob), (&to_carol, &carol)] {
+            let mut events = app.state.events.subscribe();
+            let offer = serde_json::json!({
+                "type": "voice_signal", "conversation_id": conversation, "to_user_id": callee.id,
+                "kind": "offer", "payload": {"type": "offer", "sdp": "v=0"},
+            });
+            relay_voice_signal(&app.state, &caller, &offer.to_string()).await;
+            let mut to_caller = Vec::new();
+            let mut to_callee = 0;
+            while let Ok(Ok(event)) =
+                tokio::time::timeout(Duration::from_millis(300), events.recv()).await
+            {
+                if event.recipients.contains(&alice.id) {
+                    to_caller.push(event.event.clone());
+                }
+                if event.recipients.contains(&callee.id) && event.event["kind"] == "offer" {
+                    to_callee += 1;
+                }
+            }
+            assert_eq!(to_callee, 1, "the callee's devices receive the call");
+            observed.push(to_caller);
+        }
+        assert_eq!(
+            observed[0], observed[1],
+            "invisible and offline look the same to the caller"
+        );
+        assert!(observed[0].is_empty());
+    }
+
+    #[tokio::test]
+    async fn account_deletion_keeps_planner_items_with_an_anonymous_creator() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let polls: serde_json::Value = app
+            .request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/planner/polls"),
+                &carol,
+            )
+            .json(&serde_json::json!({"question": "When?", "options": ["Mon", "Tue"], "closes_at": null}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let poll = polls[0].clone();
+        let events: serde_json::Value = app
+            .request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/planner/events"),
+                &carol,
+            )
+            .json(&serde_json::json!({"title": "Dinner", "details": "", "scheduled_at": "2999-01-01T19:00:00Z"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let event = events[0].clone();
+        for (user, option) in [(&alice, 0), (&carol, 1)] {
+            let status = app
+                .request(
+                    Method::POST,
+                    &format!("/v1/group-polls/{}/vote", poll["id"].as_str().unwrap()),
+                    user,
+                )
+                .json(&serde_json::json!({"option_id": poll["options"][option]["id"]}))
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, StatusCode::NO_CONTENT);
+            let status = app
+                .request(
+                    Method::POST,
+                    &format!("/v1/group-events/{}/rsvp", event["id"].as_str().unwrap()),
+                    user,
+                )
+                .json(&serde_json::json!({"status": "going"}))
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, StatusCode::NO_CONTENT);
+        }
+        let status = app
+            .request(Method::DELETE, "/v1/me/account", &carol)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let polls: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/planner/polls"),
+                &bob,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            polls.as_array().unwrap().len(),
+            1,
+            "the poll survives its creator"
+        );
+        assert_eq!(polls[0]["creator_id"], serde_json::Value::Null);
+        let votes: Vec<i64> = polls[0]["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|option| option["votes"].as_i64().unwrap())
+            .collect();
+        assert_eq!(
+            votes,
+            vec![1, 0],
+            "Alice's vote stays, the deleted account's vote is gone"
+        );
+        let events: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/planner/events"),
+                &bob,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            events.as_array().unwrap().len(),
+            1,
+            "the event survives its creator"
+        );
+        assert_eq!(events[0]["creator_id"], serde_json::Value::Null);
+        assert_eq!(events[0]["going"], 1);
+    }
+
+    #[tokio::test]
+    async fn owner_takes_over_an_unfinished_setup_of_a_deleted_account() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let dave = app.user("dave").await;
+        let group = app.group(&alice, &[&bob, &carol, &dave]).await;
+        for (user, role) in [(&bob, "admin"), (&carol, "admin")] {
+            let status = app
+                .request(
+                    Method::PATCH,
+                    &format!("/v1/conversations/{group}/members/{}", user.id),
+                    &alice,
+                )
+                .json(&serde_json::json!({"role": role}))
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, StatusCode::NO_CONTENT);
+        }
+        // Admin Carol starts encryption setup, then deletes her account.
+        let mut roster = vec![
+            alice.id.clone(),
+            bob.id.clone(),
+            carol.id.clone(),
+            dave.id.clone(),
+        ];
+        roster.sort();
+        let lock = |user: &TestUser, roster: Vec<String>| {
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/crypto-lock"),
+                user,
+            )
+            .json(&serde_json::json!({"member_ids": roster}))
+            .send()
+        };
+        assert_eq!(
+            lock(&carol, roster.clone()).await.unwrap().status(),
+            StatusCode::OK
+        );
+        let status = app
+            .request(Method::DELETE, "/v1/me/account", &carol)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let mut remaining = vec![alice.id.clone(), bob.id.clone(), dave.id.clone()];
+        remaining.sort();
+        let status: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/crypto-lock"),
+                &dave,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(status["lockedByDeletedAccount"], true);
+        // A plain member and an admin (while there is an owner) may not.
+        assert_eq!(
+            lock(&dave, remaining.clone()).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            lock(&bob, remaining.clone()).await.unwrap().status(),
+            StatusCode::FORBIDDEN
+        );
+        // The owner takes the setup over and can complete it.
+        let taken: serde_json::Value = lock(&alice, remaining.clone())
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(taken["lockedBy"], alice.id.as_str());
+        assert_eq!(taken["lockedByDeletedAccount"], false);
+        assert_eq!(taken["setupComplete"], false);
+        let status = app
+            .request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/crypto-lock/complete"),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::OK);
+        // Without an owner, the oldest admin may take over.
+        let other = app.group(&alice, &[&bob, &dave]).await;
+        let mut other_roster = vec![alice.id.clone(), bob.id.clone(), dave.id.clone()];
+        other_roster.sort();
+        sqlx::query("INSERT INTO conversation_crypto_locks(conversation_id,locked_by) VALUES(?,?)")
+            .bind(&other)
+            .bind(Uuid::new_v4().to_string())
+            .execute(&app.state.db)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE conversation_members SET role='admin' WHERE conversation_id=? AND user_id IN (?,?)")
+            .bind(&other)
+            .bind(&alice.id)
+            .bind(&bob.id)
+            .execute(&app.state.db)
+            .await
+            .unwrap();
+        let lock_other = |user: &TestUser| {
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{other}/crypto-lock"),
+                user,
+            )
+            .json(&serde_json::json!({"member_ids": other_roster}))
+            .send()
+        };
+        assert_eq!(
+            lock_other(&bob).await.unwrap().status(),
+            StatusCode::FORBIDDEN,
+            "Bob joined after Alice"
+        );
+        assert_eq!(lock_other(&alice).await.unwrap().status(), StatusCode::OK);
+    }
+
+    /// A database migrated only up to `last_version`, for upgrade tests:
+    /// seed it, close it, then let `open_database` apply the rest.
+    async fn database_migrated_to(path: &std::path::Path, last_version: i64) -> SqlitePool {
+        let all = sqlx::migrate!("./migrations");
+        let migrations: Vec<_> = all
+            .iter()
+            .filter(|migration| migration.version <= last_version)
+            .cloned()
+            .collect();
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(path)
+                    .create_if_missing(true)
+                    .foreign_keys(true),
+            )
+            .await
+            .unwrap();
+        sqlx::migrate::Migrator {
+            migrations: std::borrow::Cow::Owned(migrations),
+            ..sqlx::migrate::Migrator::DEFAULT
+        }
+        .run(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    async fn seed_user(pool: &SqlitePool, id: &str) {
+        sqlx::query(
+            "INSERT INTO users(id,username,display_name,recovery_lookup,recovery_verifier) VALUES(?,?,?,?,?)",
+        )
+        .bind(id)
+        .bind(id)
+        .bind(id)
+        .bind(format!("lookup-{id}"))
+        .bind("verifier")
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn seed_group(pool: &SqlitePool, id: &str, members: &[&str]) {
+        sqlx::query("INSERT INTO conversations(id,kind,title) VALUES(?,'group','Seeded')")
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+        for (index, member) in members.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO conversation_members(conversation_id,user_id,role) VALUES(?,?,?)",
+            )
+            .bind(id)
+            .bind(member)
+            .bind(if index == 0 { "owner" } else { "member" })
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn deleted_account_crypto_events_stay_for_members_who_have_not_fetched_them() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let direct = app.direct(&carol, &bob).await;
+        for conversation in [&group, &direct] {
+            sqlx::query(
+                "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete) VALUES(?,?,1)",
+            )
+            .bind(conversation)
+            .bind(&carol.id)
+            .execute(&app.state.db)
+            .await
+            .unwrap();
+        }
+        // Carol relays a commit to the group, a Welcome to Bob and a direct
+        // event; Bob has fetched none of them when Carol deletes her account.
+        let send = |conversation: String, event: &'static str, recipient: Option<String>| {
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{conversation}/crypto-events"),
+                &carol,
+            )
+            .json(&serde_json::json!({
+                "client_event_id": event,
+                "recipient_user_id": recipient,
+                "payload": "AAAA",
+            }))
+            .send()
+        };
+        for (conversation, event, recipient) in [
+            (group.clone(), "commit-1", None),
+            (group.clone(), "welcome-1", Some(bob.id.clone())),
+            (direct.clone(), "direct-1", None),
+        ] {
+            let status = send(conversation, event, recipient).await.unwrap().status();
+            assert_eq!(status, StatusCode::OK, "{event}");
+        }
+        let status = app
+            .request(Method::DELETE, "/v1/me/account", &carol)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let events: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/crypto-events"),
+                &bob,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let events = events.as_array().unwrap();
+        assert_eq!(
+            events.len(),
+            2,
+            "the deleted account's commit and Welcome must still reach Bob"
+        );
+        assert!(events
+            .iter()
+            .all(|event| event["sender_id"] == carol.id.as_str()));
+        // The direct conversation went with the account, and its events too.
+        let left = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM crypto_events WHERE conversation_id=?",
+        )
+        .bind(&direct)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    #[tokio::test]
+    async fn migration_0029_keeps_crypto_events_and_their_sequence() {
+        let dir = std::env::temp_dir().join(format!("ghostchat-migrate-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("db.sqlite");
+        let old = database_migrated_to(&path, 28).await;
+        for user in ["u-a", "u-b", "u-c"] {
+            seed_user(&old, user).await;
+        }
+        seed_group(&old, "g-1", &["u-a", "u-b", "u-c"]).await;
+        seed_group(&old, "g-2", &["u-a", "u-b"]).await;
+        for (id, conversation, sender, recipient) in [
+            ("e-1", "g-1", "u-c", None),
+            ("e-2", "g-1", "u-c", Some("u-b")),
+            ("e-3", "g-1", "u-a", Some("u-c")),
+            ("e-4", "g-2", "u-a", None),
+            ("e-5", "g-1", "u-a", None),
+        ] {
+            sqlx::query(
+                "INSERT INTO crypto_events(id,conversation_id,sender_id,client_event_id,recipient_id,payload,created_at) VALUES(?,?,?,?,?,?,'2026-01-02T03:04:05.000Z')",
+            )
+            .bind(id)
+            .bind(conversation)
+            .bind(sender)
+            .bind(format!("client-{id}"))
+            .bind(recipient)
+            .bind(format!("payload-{id}"))
+            .execute(&old)
+            .await
+            .unwrap();
+        }
+        // The newest event is gone before the upgrade: its sequence number
+        // must still never be handed out again (clients keep a cursor).
+        sqlx::query("DELETE FROM crypto_events WHERE id='e-5'")
+            .execute(&old)
+            .await
+            .unwrap();
+        type Row = (
+            i64,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+        );
+        let dump = "SELECT sequence,id,conversation_id,sender_id,client_event_id,recipient_id,payload,created_at FROM crypto_events ORDER BY sequence";
+        let before: Vec<Row> = sqlx::query_as(dump).fetch_all(&old).await.unwrap();
+        assert_eq!(before.len(), 4);
+        old.close().await;
+
+        let db = open_database(&path.to_string_lossy()).await.unwrap();
+        let after: Vec<Row> = sqlx::query_as(dump).fetch_all(&db).await.unwrap();
+        assert_eq!(after, before);
+        let violations = sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+        assert!(violations.is_empty());
+        let leftovers = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM sqlite_master WHERE name LIKE '%0029%'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(leftovers, 0);
+        let indexes = sqlx::query_scalar::<_, String>(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='crypto_events' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .fetch_all(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            indexes,
+            [
+                "crypto_events_conversation_recipient_sequence_idx",
+                "crypto_events_conversation_sequence_idx"
+            ]
+        );
+        sqlx::query(
+            "INSERT INTO crypto_events(id,conversation_id,sender_id,client_event_id,payload) VALUES('e-6','g-1','u-a','client-e-6','p')",
+        )
+        .execute(&db)
+        .await
+        .unwrap();
+        let sequence =
+            sqlx::query_scalar::<_, i64>("SELECT sequence FROM crypto_events WHERE id='e-6'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(sequence, 6, "a deleted event's sequence is not reused");
+        let duplicate = sqlx::query(
+            "INSERT INTO crypto_events(id,conversation_id,sender_id,client_event_id,payload) VALUES('e-7','g-1','u-a','client-e-6','p')",
+        )
+        .execute(&db)
+        .await;
+        assert!(duplicate.is_err(), "the idempotency key is still unique");
+
+        // A deleted sender keeps its events; a deleted recipient's targeted
+        // events and a deleted conversation's events still go.
+        sqlx::query("DELETE FROM users WHERE id='u-c'")
+            .execute(&db)
+            .await
+            .unwrap();
+        let ids = |db: SqlitePool| async move {
+            sqlx::query_scalar::<_, String>("SELECT id FROM crypto_events ORDER BY sequence")
+                .fetch_all(&db)
+                .await
+                .unwrap()
+        };
+        assert_eq!(ids(db.clone()).await, ["e-1", "e-2", "e-4", "e-6"]);
+        sqlx::query("DELETE FROM conversations WHERE id='g-1'")
+            .execute(&db)
+            .await
+            .unwrap();
+        assert_eq!(ids(db.clone()).await, ["e-4"]);
+        db.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn taking_over_a_deleted_accounts_setup_starts_a_new_setup_generation() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let status = app
+            .request(
+                Method::PATCH,
+                &format!("/v1/conversations/{group}/members/{}", carol.id),
+                &alice,
+            )
+            .json(&serde_json::json!({"role": "admin"}))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let lock = |user: &TestUser, mut roster: Vec<String>| {
+            roster.sort();
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/crypto-lock"),
+                user,
+            )
+            .json(&serde_json::json!({"member_ids": roster}))
+            .send()
+        };
+        let welcome = |sender: &TestUser, recipient: &TestUser, event: &'static str| {
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/crypto-events"),
+                sender,
+            )
+            .json(&serde_json::json!({
+                "client_event_id": event,
+                "recipient_user_id": recipient.id,
+                "payload": "AAAA",
+            }))
+            .send()
+        };
+        let events = |viewer: &TestUser| {
+            app.request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/crypto-events"),
+                viewer,
+            )
+            .send()
+        };
+        // Admin Carol starts the setup and delivers a Welcome to Bob only,
+        // then deletes her account before Alice gets hers.
+        let started: serde_json::Value = lock(
+            &carol,
+            vec![alice.id.clone(), bob.id.clone(), carol.id.clone()],
+        )
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+        assert_eq!(started["setupGeneration"], 0);
+        assert_eq!(started["commitSeq"], 0);
+        assert_eq!(
+            welcome(&carol, &bob, "welcome-0").await.unwrap().status(),
+            StatusCode::OK
+        );
+        let listed: serde_json::Value = events(&bob).await.unwrap().json().await.unwrap();
+        assert_eq!(listed[0]["setup_generation"], 0);
+        let status = app
+            .request(Method::DELETE, "/v1/me/account", &carol)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let before: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/crypto-lock"),
+                &bob,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(before["setupGeneration"], 0);
+        assert_eq!(before["deletedMemberIds"], serde_json::json!([carol.id]));
+
+        // The owner's takeover is a reset: a new generation, and nothing of
+        // the old setup (its Welcomes, its deleted-leaf record) is left for
+        // a device to join or tolerate.
+        let remaining = vec![alice.id.clone(), bob.id.clone()];
+        let taken: serde_json::Value = lock(&alice, remaining.clone())
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(taken["lockedBy"], alice.id.as_str());
+        assert_eq!(taken["setupComplete"], false);
+        assert_eq!(taken["setupGeneration"], 1);
+        // Nothing built on the old setup's group may be accepted any more.
+        assert_eq!(taken["commitSeq"], 1);
+        assert_eq!(taken["deletedMemberIds"], serde_json::json!([]));
+        let listed: serde_json::Value = events(&bob).await.unwrap().json().await.unwrap();
+        assert_eq!(
+            listed,
+            serde_json::json!([]),
+            "the old setup's Welcome is gone"
+        );
+        // Resuming the taken-over setup is not another reset.
+        let resumed: serde_json::Value = lock(&alice, remaining.clone())
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(resumed["setupGeneration"], 1);
+        assert_eq!(resumed["commitSeq"], 1);
+        assert_eq!(
+            welcome(&alice, &bob, "welcome-1").await.unwrap().status(),
+            StatusCode::OK
+        );
+        let listed: serde_json::Value = events(&bob).await.unwrap().json().await.unwrap();
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["setup_generation"], 1);
+        assert_eq!(listed[0]["sender_id"], alice.id.as_str());
+    }
+
+    #[tokio::test]
+    async fn migration_0030_keeps_crypto_locks_at_generation_zero() {
+        let dir = std::env::temp_dir().join(format!("ghostchat-migrate-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("db.sqlite");
+        let old = database_migrated_to(&path, 29).await;
+        for user in ["u-a", "u-b"] {
+            seed_user(&old, user).await;
+        }
+        seed_group(&old, "g-1", &["u-a", "u-b"]).await;
+        seed_group(&old, "g-2", &["u-a", "u-b"]).await;
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete,locked_at) VALUES('g-1','u-a',1,'2026-01-02T03:04:05.000Z'),('g-2','u-gone',0,'2026-02-02T03:04:05.000Z')",
+        )
+        .execute(&old)
+        .await
+        .unwrap();
+        old.close().await;
+        let db = open_database(&path.to_string_lossy()).await.unwrap();
+        let rows: Vec<(String, String, i64, String, i64)> = sqlx::query_as(
+            "SELECT conversation_id,locked_by,setup_complete,locked_at,setup_generation FROM conversation_crypto_locks ORDER BY conversation_id",
+        )
+        .fetch_all(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            [
+                (
+                    "g-1".into(),
+                    "u-a".into(),
+                    1,
+                    "2026-01-02T03:04:05.000Z".into(),
+                    0
+                ),
+                (
+                    "g-2".into(),
+                    "u-gone".into(),
+                    0,
+                    "2026-02-02T03:04:05.000Z".into(),
+                    0
+                ),
+            ]
+        );
+        db.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn two_commits_built_on_one_group_state_are_not_both_accepted() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let dave = app.user("dave").await;
+        let eve = app.user("eve").await;
+        app.befriend(&alice, &eve).await;
+        let group = app.group(&alice, &[&bob, &carol, &dave]).await;
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete) VALUES(?,?,1)",
+        )
+        .bind(&group)
+        .bind(&alice.id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        sqlx::query(
+            "UPDATE conversation_members SET role='admin' WHERE conversation_id=? AND user_id=?",
+        )
+        .bind(&group)
+        .bind(&bob.id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        let status = app
+            .request(Method::DELETE, "/v1/me/account", &carol)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let sorted = |users: &[&TestUser]| {
+            let mut ids = users.iter().map(|user| user.id.clone()).collect::<Vec<_>>();
+            ids.sort();
+            ids
+        };
+        let commit_seq = |viewer: &TestUser| {
+            let request = app.request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/crypto-lock"),
+                viewer,
+            );
+            async move {
+                let lock: serde_json::Value = request.send().await.unwrap().json().await.unwrap();
+                lock["commitSeq"].as_i64()
+            }
+        };
+        let update = |operation: &str, roster: &[String], seq: Option<i64>| {
+            let mut body = serde_json::json!({
+                "operation_id": operation,
+                "expected_member_ids": roster,
+                "commit_payload": "AAAA",
+                "welcome_payload": "",
+            });
+            if let Some(seq) = seq {
+                body["expected_commit_seq"] = seq.into();
+            }
+            body
+        };
+        let remove = |actor: &TestUser, target: &TestUser, body: serde_json::Value| {
+            app.request(
+                Method::POST,
+                &format!(
+                    "/v1/conversations/{group}/crypto-membership/remove/{}",
+                    target.id
+                ),
+                actor,
+            )
+            .json(&body)
+            .send()
+        };
+        let add = |actor: &TestUser, target: &TestUser, mut body: serde_json::Value| {
+            body["welcome_payload"] = "AAAA".into();
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/members"),
+                actor,
+            )
+            .json(&serde_json::json!({"member_ids": [target.id], "crypto_update": body}))
+            .send()
+        };
+        let stale = |response: reqwest::Response| async move {
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(body["code"], "stale_commit_seq", "{body}");
+        };
+        assert_eq!(commit_seq(&alice).await, Some(0));
+
+        // Admin Bob removes the deleted account's leaf and, from the same
+        // group state, owner Alice adds Eve. Members can apply only one of
+        // the two commits, so the server takes only the first.
+        let roster = sorted(&[&alice, &bob, &dave]);
+        let bob_operation = Uuid::new_v4().to_string();
+        let status = remove(&bob, &carol, update(&bob_operation, &roster, Some(0)))
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(commit_seq(&alice).await, Some(1));
+        let add_operation = Uuid::new_v4().to_string();
+        stale(
+            add(&alice, &eve, update(&add_operation, &roster, Some(0)))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(!is_member(&app.state.db, &group, &eve.id).await.unwrap());
+        let relayed = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM crypto_events WHERE conversation_id=? AND sender_id=?",
+        )
+        .bind(&group)
+        .bind(&alice.id)
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+        assert_eq!(relayed, 0, "the refused commit is not relayed");
+        assert_eq!(commit_seq(&alice).await, Some(1));
+        // A retry of the commit the server already took still succeeds.
+        let status = remove(&bob, &carol, update(&bob_operation, &roster, Some(0)))
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(commit_seq(&alice).await, Some(1));
+        // A commit that does not say what it was built on is refused too.
+        stale(
+            add(
+                &alice,
+                &eve,
+                update(&Uuid::new_v4().to_string(), &roster, None),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+
+        // Built on the current state, each kind of commit is taken once.
+        let status = add(&alice, &eve, update(&add_operation, &roster, Some(1)))
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(commit_seq(&alice).await, Some(2));
+        let roster = sorted(&[&alice, &bob, &dave, &eve]);
+        stale(
+            remove(
+                &alice,
+                &dave,
+                update(&Uuid::new_v4().to_string(), &roster, Some(1)),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        let status = remove(
+            &alice,
+            &dave,
+            update(&Uuid::new_v4().to_string(), &roster, Some(2)),
+        )
+        .await
+        .unwrap()
+        .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(commit_seq(&alice).await, Some(3));
+
+        // A leave commit is fenced the same way.
+        let roster = sorted(&[&alice, &bob, &eve]);
+        let leave_operation = Uuid::new_v4().to_string();
+        let status = app
+            .request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/crypto-membership/leave"),
+                &eve,
+            )
+            .json(&serde_json::json!({
+                "operation_id": leave_operation,
+                "expected_member_ids": roster,
+                "proposal_payload": "AAAA",
+            }))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let leave_commit = |seq: i64| {
+            app.request(
+                Method::POST,
+                &format!(
+                    "/v1/conversations/{group}/crypto-membership/leave/commit/{}",
+                    eve.id
+                ),
+                &alice,
+            )
+            .json(&update(&leave_operation, &roster, Some(seq)))
+            .send()
+        };
+        stale(leave_commit(2).await.unwrap()).await;
+        assert!(is_member(&app.state.db, &group, &eve.id).await.unwrap());
+        assert_eq!(
+            leave_commit(3).await.unwrap().status(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(commit_seq(&alice).await, Some(4));
+        // Listed relay events say which commit the conversation is at, read
+        // in the same statement as the events.
+        let listed: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/crypto-events"),
+                &bob,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(!listed.as_array().unwrap().is_empty());
+        assert!(listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event["commit_seq"] == 4));
+    }
+
+    #[tokio::test]
+    async fn migration_0031_keeps_crypto_locks_at_commit_zero() {
+        let dir = std::env::temp_dir().join(format!("ghostchat-migrate-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("db.sqlite");
+        let old = database_migrated_to(&path, 30).await;
+        for user in ["u-a", "u-b"] {
+            seed_user(&old, user).await;
+        }
+        seed_group(&old, "g-1", &["u-a", "u-b"]).await;
+        seed_group(&old, "g-2", &["u-a", "u-b"]).await;
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete,locked_at,setup_generation) VALUES('g-1','u-a',1,'2026-01-02T03:04:05.000Z',0),('g-2','u-b',0,'2026-02-02T03:04:05.000Z',2)",
+        )
+        .execute(&old)
+        .await
+        .unwrap();
+        old.close().await;
+        let db = open_database(&path.to_string_lossy()).await.unwrap();
+        let rows: Vec<(String, String, i64, String, i64, i64)> = sqlx::query_as(
+            "SELECT conversation_id,locked_by,setup_complete,locked_at,setup_generation,commit_seq FROM conversation_crypto_locks ORDER BY conversation_id",
+        )
+        .fetch_all(&db)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            [
+                (
+                    "g-1".into(),
+                    "u-a".into(),
+                    1,
+                    "2026-01-02T03:04:05.000Z".into(),
+                    0,
+                    0
+                ),
+                (
+                    "g-2".into(),
+                    "u-b".into(),
+                    0,
+                    "2026-02-02T03:04:05.000Z".into(),
+                    2,
+                    0
+                ),
+            ]
+        );
+        db.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn crypto_lock_reports_the_server_clock_next_to_deleted_at() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete) VALUES(?,?,1)",
+        )
+        .bind(&group)
+        .bind(&alice.id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        let status = app
+            .request(Method::DELETE, "/v1/me/account", &carol)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        // The record is backdated, so the grace period a client derives is
+        // the difference of two server timestamps, whatever its own clock.
+        sqlx::query(
+            "UPDATE crypto_group_deleted_members SET deleted_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-90 seconds') WHERE conversation_id=?",
+        )
+        .bind(&group)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        let lock: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!("/v1/conversations/{group}/crypto-lock"),
+                &bob,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let parse = |value: &serde_json::Value| {
+            let text = value.as_str().expect("an RFC 3339 timestamp");
+            assert_eq!(text.len(), 24, "{text}");
+            assert!(text.ends_with('Z'), "{text}");
+            let (date, time) = text.trim_end_matches('Z').split_once('T').unwrap();
+            let day: Vec<i64> = date.split('-').map(|part| part.parse().unwrap()).collect();
+            let clock: Vec<f64> = time.split(':').map(|part| part.parse().unwrap()).collect();
+            (day, clock[0] * 3600.0 + clock[1] * 60.0 + clock[2])
+        };
+        let (now_day, now_seconds) = parse(&lock["serverNow"]);
+        let (deleted_day, deleted_seconds) = parse(&lock["deletedMembers"][0]["deletedAt"]);
+        let elapsed =
+            now_seconds - deleted_seconds + if now_day == deleted_day { 0.0 } else { 86400.0 };
+        assert!(
+            (89.0..120.0).contains(&elapsed),
+            "serverNow - deletedAt was {elapsed}s"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_encrypted_message_can_carry_several_encrypted_attachments() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let direct = app.direct(&alice, &bob).await;
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete) VALUES(?,?,1)",
+        )
+        .bind(&direct)
+        .bind(&alice.id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        let upload = || {
+            let attachment_id = Uuid::new_v4().to_string();
+            let request = app
+                .request(
+                    Method::POST,
+                    &format!(
+                        "/v1/conversations/{direct}/encrypted-attachments?attachment_id={attachment_id}&plain_size=0&chunk_size={ENCRYPTED_ATTACHMENT_CHUNK_BYTES}&chunk_count=1"
+                    ),
+                    &alice,
+                )
+                .body(vec![7u8; 16])
+                .send();
+            async move {
+                assert_eq!(request.await.unwrap().status(), StatusCode::OK);
+                attachment_id
+            }
+        };
+        let send = |attachment_ids: Vec<String>| {
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{direct}/messages"),
+                &alice,
+            )
+            .json(&serde_json::json!({
+                "client_message_id": Uuid::new_v4().to_string(),
+                "content": "e2e1:AAAA",
+                "attachment_ids": attachment_ids,
+            }))
+            .send()
+        };
+        let blob = |id: &str| app.state.attachment_dir.join(format!("{id}.blob"));
+        // The route allows up to eight attachments on one message (the
+        // upload rate limit is ten a minute, so nine are uploaded here).
+        let mut attachments = Vec::new();
+        for _ in 0..8 {
+            attachments.push(upload().await);
+        }
+        let other = upload().await;
+        // A ninth is over the limit, and nothing of that request is linked.
+        let mut too_many = attachments.clone();
+        too_many.push(other.clone());
+        assert_eq!(
+            send(too_many).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+        let linked = || async {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM attachments WHERE message_id IS NOT NULL",
+            )
+            .fetch_one(&app.state.db)
+            .await
+            .unwrap()
+        };
+        assert_eq!(linked().await, 0);
+        let response = send(attachments.clone()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let message: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(linked().await, 8);
+        // Deleting the message deletes all of its blobs and only those.
+        let status = app
+            .request(
+                Method::DELETE,
+                &format!("/v1/messages/{}", message["id"].as_str().unwrap()),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        for attachment in &attachments {
+            assert!(!blob(attachment).exists());
+        }
+        assert!(blob(&other).exists());
+    }
+
+    #[tokio::test]
+    async fn migration_0032_keeps_attachment_links_and_allows_several_per_message() {
+        let dir = std::env::temp_dir().join(format!("ghostchat-migrate-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("db.sqlite");
+        let old = database_migrated_to(&path, 31).await;
+        for user in ["u-a", "u-b"] {
+            seed_user(&old, user).await;
+        }
+        seed_group(&old, "g-1", &["u-a", "u-b"]).await;
+        for (id, message) in [("a-1", Some("m-1")), ("a-2", None), ("a-3", Some("m-2"))] {
+            sqlx::query(
+                "INSERT INTO attachments(id,conversation_id,uploaded_by,filename,content_type,size_bytes,file_data,stored_on_disk,encrypted,message_id,created_at) VALUES(?,'g-1','u-a','f','application/octet-stream',3,x'010203',1,1,?,'2026-01-02T03:04:05.000Z')",
+            )
+            .bind(id)
+            .bind(message)
+            .execute(&old)
+            .await
+            .unwrap();
+        }
+        type Row = (
+            String,
+            String,
+            String,
+            i64,
+            Vec<u8>,
+            i64,
+            i64,
+            Option<String>,
+            String,
+        );
+        let dump = "SELECT id,conversation_id,uploaded_by,size_bytes,file_data,stored_on_disk,encrypted,message_id,created_at FROM attachments ORDER BY id";
+        let before: Vec<Row> = sqlx::query_as(dump).fetch_all(&old).await.unwrap();
+        assert_eq!(before.len(), 3);
+        old.close().await;
+
+        let db = open_database(&path.to_string_lossy()).await.unwrap();
+        let after: Vec<Row> = sqlx::query_as(dump).fetch_all(&db).await.unwrap();
+        assert_eq!(after, before);
+        // A second attachment can now be linked to the same message, and the
+        // lookup by message still has its index.
+        sqlx::query("UPDATE attachments SET message_id='m-1' WHERE id='a-2'")
+            .execute(&db)
+            .await
+            .unwrap();
+        let (unique, partial): (i64, i64) = sqlx::query_as(
+            "SELECT \"unique\",partial FROM pragma_index_list('attachments') WHERE name='attachments_by_message'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!((unique, partial), (0, 1));
+        db.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn group_members_report_their_join_order() {
+        use reqwest::Method;
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let (first, second) = if bob.id > carol.id {
+            (&bob, &carol)
+        } else {
+            (&carol, &bob)
+        };
+        app.befriend(&alice, &bob).await;
+        app.befriend(&alice, &carol).await;
+        let group: serde_json::Value = app
+            .request(Method::POST, "/v1/conversations/groups", &alice)
+            .json(&serde_json::json!({"name": "Order", "member_ids": [first.id, second.id]}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let members: serde_json::Value = app
+            .request(
+                Method::GET,
+                &format!(
+                    "/v1/conversations/{}/members",
+                    group["id"].as_str().unwrap()
+                ),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let seq = |id: &str| {
+            members
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|member| member["id"] == id)
+                .unwrap()["joined_seq"]
+                .as_i64()
+                .unwrap()
+        };
+        assert!(seq(&alice.id) < seq(&first.id) && seq(&first.id) < seq(&second.id));
     }
 }
