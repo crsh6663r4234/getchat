@@ -4,6 +4,8 @@ use aes_gcm::{
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use hmac::{Hmac, Mac};
+use openmls::framing::errors::{MessageDecryptionError, SecretTreeError};
+use openmls::group::{ProcessMessageError, ValidationError};
 use openmls::prelude::{
     BasicCredential, Ciphersuite, CredentialType, CredentialWithKey, GroupId, KeyPackage, MlsGroup,
     MlsGroupCreateConfig, MlsGroupJoinConfig, MlsMessageBodyIn, MlsMessageIn, MlsMessageOut,
@@ -338,7 +340,8 @@ async fn copy_before_account_binding(db: &SqlitePool) -> Result<(), String> {
 /// therefore never answer for another sender's, conversation's or account's
 /// message. Rows from the old table, keyed by client message id only, are
 /// kept as legacy rows (empty account and sender) so earlier history stays
-/// readable; they are only read for their own conversation and never written.
+/// readable; they are only read for their own conversation, and a row is
+/// moved to its sender once it answers for that sender (`claim_legacy_text`).
 async fn prepare_text_cache(db: &SqlitePool) -> Result<(), String> {
     let error = || "GhostChat could not prepare its encrypted message cache.".to_string();
     let old_layout = sqlx::query_scalar::<_, String>(
@@ -413,7 +416,11 @@ async fn prepare_text_cache(db: &SqlitePool) -> Result<(), String> {
 }
 
 /// Reads a cached plaintext for exactly this account, conversation and
-/// sender, falling back to a legacy row of the same conversation.
+/// sender. A legacy row of the same conversation (written before the cache
+/// was bound to a sender) answers here only for the account's own messages:
+/// nobody else can send a row as this account. Another sender's legacy row
+/// answers only through `legacy_text_row` once its MLS decode has failed,
+/// so a member cannot reuse an old client id to show another sender's text.
 async fn cached_text_row<'e, E>(
     executor: E,
     user_id: &str,
@@ -426,16 +433,80 @@ where
 {
     sqlx::query_scalar::<_, Vec<u8>>(
         "SELECT encrypted_content FROM ghostchat_crypto_text_cache \
-         WHERE conversation_id=? AND client_message_id=? AND ((user_id=? AND sender_id=?) OR (user_id='' AND sender_id='')) \
+         WHERE conversation_id=? AND client_message_id=? AND ((user_id=? AND sender_id=?) OR (user_id='' AND sender_id='' AND ?)) \
          ORDER BY user_id='' LIMIT 1",
     )
     .bind(conversation_id)
     .bind(client_message_id)
     .bind(user_id)
     .bind(sender_id)
+    .bind(user_id == sender_id)
     .fetch_optional(executor)
     .await
     .map_err(|_| "GhostChat could not load the encrypted message cache.".to_string())
+}
+
+/// A legacy cache row of this conversation and client id, for a history row
+/// of another sender. It is only used when MLS cannot decode that row (its
+/// secrets are spent or its epoch is gone), see `claim_legacy_text`.
+async fn legacy_text_row<'e, E>(
+    executor: E,
+    conversation_id: &str,
+    client_message_id: &str,
+) -> Result<Option<Vec<u8>>, String>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT encrypted_content FROM ghostchat_crypto_text_cache \
+         WHERE user_id='' AND sender_id='' AND conversation_id=? AND client_message_id=?",
+    )
+    .bind(conversation_id)
+    .bind(client_message_id)
+    .fetch_optional(executor)
+    .await
+    .map_err(|_| "GhostChat could not load the encrypted message cache.".to_string())
+}
+
+/// Answers a history row that MLS cannot decode from its legacy cache row and
+/// binds that row to this account and sender, so it never answers for another
+/// sender's message with the same client id. Nothing is written on a dry run.
+async fn claim_legacy_text(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    sender_id: &str,
+    client_message_id: &str,
+    encrypted_content: Vec<u8>,
+    dry_run: bool,
+) -> Result<CryptoEventResult, String> {
+    let error = || "GhostChat could not save the encrypted local message cache.".to_string();
+    let content: String = EncryptedJsonCodec::from_slice(&encrypted_content)
+        .map_err(|_| "The local encrypted message cache could not be decrypted.".to_string())?;
+    if !dry_run {
+        let mut transaction = db.begin().await.map_err(|_| error())?;
+        sqlx::query("INSERT OR IGNORE INTO ghostchat_crypto_text_cache(user_id,conversation_id,sender_id,client_message_id,encrypted_content) VALUES(?,?,?,?,?)")
+            .bind(user_id)
+            .bind(conversation_id)
+            .bind(sender_id)
+            .bind(client_message_id)
+            .bind(&encrypted_content)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| error())?;
+        sqlx::query("DELETE FROM ghostchat_crypto_text_cache WHERE user_id='' AND sender_id='' AND conversation_id=? AND client_message_id=?")
+            .bind(conversation_id)
+            .bind(client_message_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| error())?;
+        transaction.commit().await.map_err(|_| error())?;
+    }
+    Ok(CryptoEventResult {
+        kind: "application".into(),
+        content: Some(content),
+        peer_identity_fingerprint: None,
+    })
 }
 
 fn normalized_uuid(value: &str, label: &str) -> Result<String, String> {
@@ -2917,6 +2988,15 @@ async fn process_crypto_event_core(
     .map_err(|_| "GhostChat could not load this device's encryption identity.".to_string())?
     .ok_or_else(|| "Prepare this device for encryption in Settings first.".to_string())?;
     let own_identity = format!("ghostchat:v1:{user_id}:{device_id}");
+    // Another sender's history row may have a legacy cache row; it answers
+    // only when MLS cannot decode the row.
+    let legacy_text = match client_message_id.as_deref() {
+        Some(client_message_id) if from_history && sender_id != user_id => {
+            legacy_text_row(&mut *transaction, &conversation_id, client_message_id).await?
+        }
+        _ => None,
+    };
+    let mut answer_from_legacy = false;
 
     if !is_welcome {
         let group_exists = {
@@ -2930,6 +3010,23 @@ async fn process_crypto_event_core(
                 .is_some()
         };
         if !group_exists && from_history {
+            if let (Some(legacy_text), Some(client_message_id)) =
+                (legacy_text, client_message_id.as_deref())
+            {
+                transaction.rollback().await.map_err(|_| {
+                    "GhostChat could not close the local decryption transaction.".to_string()
+                })?;
+                return claim_legacy_text(
+                    db,
+                    &user_id,
+                    &conversation_id,
+                    &sender_id,
+                    client_message_id,
+                    legacy_text,
+                    dry_run,
+                )
+                .await;
+            }
             return Err("Encryption has not been set up for this conversation.".into());
         }
         if !group_exists && dry_run {
@@ -3086,19 +3183,37 @@ async fn process_crypto_event_core(
                 // OpenMLS keeps no past-epoch secrets: a history row from an
                 // epoch this group has left can never be decrypted here.
                 if from_history && protocol_message.epoch() < group.epoch() {
+                    answer_from_legacy = legacy_text.is_some();
                     break 'event CryptoEventResult {
                         kind: "past_epoch".into(),
                         content: None,
                         peer_identity_fingerprint: None,
                     };
                 }
-                let processed =
-                    group
-                        .process_message(&provider, protocol_message)
-                        .map_err(|_| {
-                            "GhostChat could not authenticate or decrypt this MLS event."
-                                .to_string()
-                        })?;
+                let processed = match group.process_message(&provider, protocol_message) {
+                    Ok(processed) => processed,
+                    // The row's message secret was already used up on this
+                    // device: it was decoded before, and only its legacy
+                    // cache row still holds its text.
+                    Err(ProcessMessageError::ValidationError(
+                        ValidationError::UnableToDecrypt(MessageDecryptionError::SecretTreeError(
+                            SecretTreeError::SecretReuseError
+                            | SecretTreeError::TooDistantInThePast,
+                        )),
+                    )) if legacy_text.is_some() => {
+                        answer_from_legacy = true;
+                        break 'event CryptoEventResult {
+                            kind: "legacy_cache".into(),
+                            content: None,
+                            peer_identity_fingerprint: None,
+                        };
+                    }
+                    Err(_) => {
+                        return Err(
+                            "GhostChat could not authenticate or decrypt this MLS event.".into(),
+                        )
+                    }
+                };
                 if account_id_from_credential(processed.credential().serialized_content())
                     != Some(sender_id.clone())
                 {
@@ -3265,6 +3380,26 @@ async fn process_crypto_event_core(
             }
         }
     };
+    if answer_from_legacy {
+        if let (Some(legacy_text), Some(client_message_id)) =
+            (legacy_text, client_message_id.as_deref())
+        {
+            // Nothing of the failed MLS decode is kept.
+            transaction.rollback().await.map_err(|_| {
+                "GhostChat could not close the local decryption transaction.".to_string()
+            })?;
+            return claim_legacy_text(
+                db,
+                &user_id,
+                &conversation_id,
+                &sender_id,
+                client_message_id,
+                legacy_text,
+                dry_run,
+            )
+            .await;
+        }
+    }
     if result.kind == "past_epoch" {
         if let (false, Some(client_message_id)) = (dry_run, client_message_id.as_deref()) {
             sqlx::query("INSERT OR IGNORE INTO ghostchat_crypto_undecryptable_rows(user_id,conversation_id,sender_id,client_message_id) VALUES(?,?,?,?)")
@@ -4331,6 +4466,9 @@ mod tests {
 
         // An existing profile's cache (keyed by client message id only) is
         // rebuilt; its rows stay readable, but only in their conversation.
+        // A plain read answers from a legacy row only for the account's own
+        // messages; another sender's legacy row answers once MLS cannot
+        // decode that row (see legacy_text_cache_rows_answer_only_for_their_own_message).
         let legacy_id = Uuid::new_v4().to_string();
         sqlx::query("DROP TABLE ghostchat_crypto_text_cache")
             .execute(&bob_db)
@@ -4348,18 +4486,250 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            get_cached_sent_text(&bob_db, &bob_id, first, &alice_id, &legacy_id)
+            get_cached_sent_text(&bob_db, &bob_id, first, &bob_id, &legacy_id)
                 .await
                 .unwrap()
                 .as_deref(),
             Some("older text")
         );
         assert_eq!(
-            get_cached_sent_text(&bob_db, &bob_id, second, &alice_id, &legacy_id)
+            get_cached_sent_text(&bob_db, &bob_id, second, &bob_id, &legacy_id)
                 .await
                 .unwrap(),
             None
         );
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &bob_id, first, &alice_id, &legacy_id)
+                .await
+                .unwrap(),
+            None,
+            "nothing shows that this legacy row is Alice's"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn legacy_text_cache_rows_answer_only_for_their_own_message() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-legacy-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let mallory_db = open_database(&root.join("mallory.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let mallory_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), mallory_id.clone()];
+        roster.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let mallory_device = prepare_device(&mallory_db, &mallory_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[
+                GroupPeerKeyPackage {
+                    user_id: bob_id.clone(),
+                    device_id: bob_device.device_id.clone(),
+                    payload: bob_device.payload.clone(),
+                },
+                GroupPeerKeyPackage {
+                    user_id: mallory_id.clone(),
+                    device_id: mallory_device.device_id.clone(),
+                    payload: mallory_device.payload.clone(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        for (db, id) in [(&bob_db, &bob_id), (&mallory_db, &mallory_id)] {
+            process_crypto_event(
+                db,
+                id,
+                &conversation_id,
+                &alice_id,
+                None,
+                Some(1),
+                true,
+                &roster,
+                &start.welcome_payload,
+            )
+            .await
+            .unwrap();
+        }
+        // Bob decodes a history row of `sender` with client id `id`.
+        let history = |members: &[String], sender: &str, id: &str, payload: &str| {
+            let (bob_db, bob_id, conversation_id) =
+                (bob_db.clone(), bob_id.clone(), conversation_id.clone());
+            let (members, sender, id, payload) = (
+                members.to_vec(),
+                sender.to_string(),
+                id.to_string(),
+                payload.to_string(),
+            );
+            async move {
+                process_crypto_event(
+                    &bob_db,
+                    &bob_id,
+                    &conversation_id,
+                    &sender,
+                    Some(&id),
+                    None,
+                    true,
+                    &members,
+                    &payload,
+                )
+                .await
+                .map(|result| result.content)
+            }
+        };
+        // Turns Bob's cached row into a row of the cache from before it was
+        // bound to the account and the sender.
+        let make_legacy = |id: &str| {
+            let (bob_db, id) = (bob_db.clone(), id.to_string());
+            async move {
+                sqlx::query("UPDATE ghostchat_crypto_text_cache SET user_id='',sender_id='' WHERE client_message_id=?")
+                    .bind(&id)
+                    .execute(&bob_db)
+                    .await
+                    .unwrap();
+            }
+        };
+        let old_id = Uuid::new_v4().to_string();
+        let old = encrypt_text(&alice_db, &alice_id, &conversation_id, &old_id, "alice old")
+            .await
+            .unwrap();
+        assert_eq!(
+            history(&roster, &alice_id, &old_id, &old.payload)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("alice old")
+        );
+        make_legacy(&old_id).await;
+
+        // Mallory reuses the client id of Alice's old message, and Bob reads
+        // Mallory's message before he reads Alice's old one again.
+        sqlx::query("DELETE FROM ghostchat_crypto_application_outbox")
+            .execute(&mallory_db)
+            .await
+            .unwrap();
+        let reused = encrypt_text(
+            &mallory_db,
+            &mallory_id,
+            &conversation_id,
+            &old_id,
+            "mallory",
+        )
+        .await
+        .unwrap();
+        let state = get_cached_text_state(&bob_db, &bob_id, &conversation_id, &mallory_id, &old_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            state.content, None,
+            "a legacy row must not answer for another sender's message with the same id"
+        );
+        assert_eq!(
+            history(&roster, &mallory_id, &old_id, &reused.payload)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("mallory"),
+            "Mallory's message shows her own text"
+        );
+
+        // Alice's old message cannot be decrypted again, so its legacy row
+        // answers for it and is bound to her.
+        assert_eq!(
+            history(&roster, &alice_id, &old_id, &old.payload)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("alice old"),
+            "an honestly cached old message keeps displaying"
+        );
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &bob_id, &conversation_id, &alice_id, &old_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("alice old")
+        );
+        assert_eq!(
+            get_cached_sent_text(&bob_db, &bob_id, &conversation_id, &mallory_id, &old_id)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("mallory")
+        );
+
+        // A legacy row of a message from an epoch this device has left keeps
+        // displaying too: the cache is its only copy.
+        let past_id = Uuid::new_v4().to_string();
+        let past = encrypt_text(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &past_id,
+            "alice past",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            history(&roster, &alice_id, &past_id, &past.payload)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("alice past")
+        );
+        make_legacy(&past_id).await;
+        let mut remaining = vec![alice_id.clone(), bob_id.clone()];
+        remaining.sort();
+        let removal = prepare_group_removal_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &roster,
+            std::slice::from_ref(&mallory_id),
+            None,
+        )
+        .await
+        .unwrap();
+        finalize_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &removal.operation_id,
+        )
+        .await
+        .unwrap();
+        process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(2),
+            true,
+            &remaining,
+            &removal.commit_payload,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            history(&remaining, &alice_id, &past_id, &past.payload)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("alice past")
+        );
+        let state = get_cached_text_state(&bob_db, &bob_id, &conversation_id, &alice_id, &past_id)
+            .await
+            .unwrap();
+        assert_eq!(state.content.as_deref(), Some("alice past"));
+        assert!(!state.undecryptable);
     }
 
     async fn seed_legacy_text_cache(db: &SqlitePool, client_message_id: &str) {
