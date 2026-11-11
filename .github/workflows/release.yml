@@ -85,7 +85,7 @@ jobs:
           if ($env:GHOSTCHAT_REQUIRE_WINDOWS_CODESIGN -eq "true") { $arguments.Required = $true }
           & .\scripts\sign-windows.ps1 @arguments
 
-      - name: Sign final MSI for the Tauri updater
+      - name: Sign final MSI and server for the Tauri updater
         shell: pwsh
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -103,6 +103,15 @@ jobs:
           if (-not (Test-Path -LiteralPath "$($msi.FullName).sig")) {
             throw "The Tauri updater signature was not produced."
           }
+          # The standalone server verifies this signature with the same
+          # updater public key before it replaces itself (docs/UPDATES.md).
+          # Signed after Authenticode, over the final exe bytes.
+          $serverPath = "target/release/ghostchat-server-windows-x64.exe"
+          & npx.cmd --yes "@tauri-apps/cli@2.12.4" signer sign $serverPath
+          if ($LASTEXITCODE -ne 0) { throw "The Tauri updater signer failed for the server." }
+          if (-not (Test-Path -LiteralPath "$serverPath.sig")) {
+            throw "The server updater signature was not produced."
+          }
 
       - name: Publish signed release assets and update feed
         shell: pwsh
@@ -115,7 +124,8 @@ jobs:
           $sourcePath = "target/release/ghostchat-server.exe"
           $releasePath = "target/release/ghostchat-server-windows-x64.exe"
           $checksumPath = "$releasePath.sha256"
-          if (-not (Test-Path -LiteralPath $signaturePath) -or -not (Test-Path -LiteralPath $releasePath)) {
+          $serverSignaturePath = "$releasePath.sig"
+          if (-not (Test-Path -LiteralPath $signaturePath) -or -not (Test-Path -LiteralPath $releasePath) -or -not (Test-Path -LiteralPath $serverSignaturePath)) {
             throw "The signed release assets are incomplete."
           }
           $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $releasePath).Hash.ToLowerInvariant()
@@ -149,5 +159,5 @@ jobs:
             gh release create "$releaseTag" --title "GhostChat $releaseTag" --notes-file "target/release/RELEASE_NOTES.md" --latest
             if ($LASTEXITCODE -ne 0) { throw "Could not create the GitHub Release." }
           }
-          gh release upload "$releaseTag" "$($msi.FullName)#$msiName" "$signaturePath#$msiName.sig" "$latestPath#latest.json" "$releasePath#ghostchat-server-windows-x64.exe" "$checksumPath#ghostchat-server-windows-x64.exe.sha256"
+          gh release upload "$releaseTag" "$($msi.FullName)#$msiName" "$signaturePath#$msiName.sig" "$latestPath#latest.json" "$releasePath#ghostchat-server-windows-x64.exe" "$checksumPath#ghostchat-server-windows-x64.exe.sha256" "$serverSignaturePath#ghostchat-server-windows-x64.exe.sig"
           if ($LASTEXITCODE -ne 0) { throw "Could not upload signed release assets." }
