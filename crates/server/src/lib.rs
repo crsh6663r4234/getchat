@@ -10280,6 +10280,123 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Clients up to 4.0.50 send no `expected_commit_seq`. Plain groups and
+    /// messages keep working for them; an encrypted membership commit that
+    /// names no group state cannot be fenced, so it is refused with a code
+    /// and a message that asks for an update instead of a generic error.
+    #[tokio::test]
+    async fn requests_without_expected_commit_seq_from_older_clients() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let eve = app.user("eve").await;
+        app.befriend(&alice, &eve).await;
+
+        // A plain group: adding and removing members is unchanged.
+        let plain = app.group(&alice, &[&bob, &carol]).await;
+        let added = app
+            .request(
+                Method::POST,
+                &format!("/v1/conversations/{plain}/members"),
+                &alice,
+            )
+            .json(&serde_json::json!({"member_ids": [eve.id]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(added.status(), StatusCode::OK);
+        assert!(is_member(&app.state.db, &plain, &eve.id).await.unwrap());
+        let removed = app
+            .request(
+                Method::DELETE,
+                &format!("/v1/conversations/{plain}/members/{}", eve.id),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap();
+        assert!(removed.status().is_success(), "{}", removed.status());
+        assert!(!is_member(&app.state.db, &plain, &eve.id).await.unwrap());
+
+        // An encrypted group at commit 0.
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete) VALUES(?,?,1)",
+        )
+        .bind(&group)
+        .bind(&alice.id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        let mut roster = vec![alice.id.clone(), bob.id.clone(), carol.id.clone()];
+        roster.sort();
+        let update = serde_json::json!({
+            "operation_id": Uuid::new_v4().to_string(),
+            "expected_member_ids": roster,
+            "commit_payload": "AAAA",
+            "welcome_payload": "AAAA",
+        });
+        let asks_for_update = |response: reqwest::Response| async move {
+            let status = response.status();
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(status, StatusCode::CONFLICT, "{body}");
+            assert_eq!(body["code"], "stale_commit_seq", "{body}");
+            assert!(
+                body["error"].as_str().unwrap().contains("Update GhostChat"),
+                "{body}"
+            );
+        };
+        asks_for_update(
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/members"),
+                &alice,
+            )
+            .json(&serde_json::json!({"member_ids": [eve.id], "crypto_update": update}))
+            .send()
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert!(!is_member(&app.state.db, &group, &eve.id).await.unwrap());
+        let mut removal = update.clone();
+        removal["welcome_payload"] = "".into();
+        asks_for_update(
+            app.request(
+                Method::POST,
+                &format!(
+                    "/v1/conversations/{group}/crypto-membership/remove/{}",
+                    carol.id
+                ),
+                &alice,
+            )
+            .json(&removal)
+            .send()
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert!(is_member(&app.state.db, &group, &carol.id).await.unwrap());
+
+        // An encrypted message without a group state is stored as before.
+        let sent = app
+            .request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/messages"),
+                &bob,
+            )
+            .json(&serde_json::json!({
+                "client_message_id": Uuid::new_v4().to_string(),
+                "content": "e2e1:AAAA",
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(sent.status(), StatusCode::OK);
+    }
+
     #[tokio::test]
     async fn two_commits_built_on_one_group_state_are_not_both_accepted() {
         use reqwest::{Method, StatusCode};
