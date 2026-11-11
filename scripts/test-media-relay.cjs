@@ -4,7 +4,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ui = path.resolve(__dirname, '../crates/desktop/ui');
 
-function directFixture(config, { failShare = false, relayOnly = true, deferConfig = false, shareFactory = null, invisible = false, screen = null } = {}) {
+function directFixture(config, { failShare = false, relayOnly = true, deferConfig = false, shareFactory = null, invisible = false, screen = null, serverMedia = null, settings = {} } = {}) {
   const intervals = [];
   const pcs = []; const timers = []; const errors = []; let releaseConfig; let settingsFailures = 0; const configGate = new Promise(resolve => { releaseConfig = resolve; }); const signals = []; let micRequests = 0; let micSource = null; let screenRequests = 0; let shareLeaves = 0;
   class Peer {
@@ -41,11 +41,33 @@ function directFixture(config, { failShare = false, relayOnly = true, deferConfi
   };
   vm.runInNewContext(fs.readFileSync(path.join(ui, 'voice-client.js'), 'utf8'), context);
   const client = window.GhostChatVoice.create({
-    getSettings: () => { if (settingsFailures > 0) { settingsFailures--; throw new Error('settings unavailable'); } return { relayOnly }; }, getIceConfiguration: async () => { if (deferConfig) await configGate; return config; },
+    getSettings: () => { if (settingsFailures > 0) { settingsFailures--; throw new Error('settings unavailable'); } return { relayOnly, ...settings }; }, getIceConfiguration: async () => { if (deferConfig) await configGate; return config; },
     getUserId: () => 'a', getShareToken: async () => ({}), sendSignal: signal => signals.push(signal),
     onChange() {}, onError: message => errors.push(message), onIncoming() {}, isInvisible: () => invisible,
+    ...(serverMedia ? { createServerMedia: serverMedia } : {}),
   });
   return { client, pcs, signals, timers, intervals, errors, releaseConfig, failSettingsOnce: () => { settingsFailures = 1; }, counts: () => ({ micRequests, screenRequests, shareLeaves }), setMic: fn => { micSource = fn; } };
+}
+
+// Fake server media relay transport (server-media-client.js).
+function fakeServerMedia({ connect = async () => {} } = {}) {
+  const instances = [];
+  const factory = options => {
+    const media = {
+      options, inputs: [], sending: [], closed: false,
+      connect: () => connect(media), setInputStream(stream) { media.inputs.push(stream); },
+      setSending(value) { media.sending.push(value); }, close() { media.closed = true; },
+      peers: () => new Set(), isConnected: () => !media.closed,
+    };
+    instances.push(media);
+    return media;
+  };
+  return { factory, instances };
+}
+
+function fakeMicrophone() {
+  const track = { kind: 'audio', enabled: true, getSettings: () => ({}), stop() { track.stopped = true; } };
+  return { track, getAudioTracks: () => [track], getTracks: () => [track] };
 }
 
 function livekitFixture({ connectFails = false } = {}) {
@@ -115,6 +137,132 @@ async function run() {
   const noTurn = directFixture({ turn_available: false, ice_servers: [{ urls: 'stun:public.fixture:19302' }] });
   await assert.rejects(noTurn.client.start({ id: 'conversation', peer_id: 'b' }), /authenticated TURN relay/);
   assert.equal(noTurn.pcs.length, 0, 'No direct peer connection is constructed without TURN');
+
+  // Calls through the server (server media relay). No TURN configured: the
+  // relay carries the audio from the start, and no ICE server is contacted.
+  const relayOnlyConfig = { turn_available: false, media_relay: true, ice_servers: [{ urls: 'stun:public.fixture:19302' }] };
+  const relayOffer = { conversation_id: 'conversation', from_user_id: 'b', kind: 'offer', payload: { type: 'offer', sdp: 'fixture' } };
+  const answerSignal = { conversation_id: 'conversation', from_user_id: 'b', kind: 'answer', payload: { type: 'answer', sdp: 'fixture' } };
+  {
+    const relay = fakeServerMedia();
+    const fixture = directFixture(relayOnlyConfig, { serverMedia: relay.factory });
+    await fixture.client.start({ id: 'conversation', peer_id: 'b' });
+    const pc = fixture.pcs[0];
+    assert.deepEqual([...pc.configuration.iceServers], [], 'without TURN no ICE server (and no public STUN) is used');
+    assert.equal(pc.configuration.iceTransportPolicy, 'relay', 'the signaling-only peer connection can never expose an address');
+    assert.equal(relay.instances.length, 0, 'the relay room is joined only once the call is answered');
+    pc.iceGatheringState = 'complete'; pc.onicegatheringstatechange();
+    assert.equal(fixture.client.getState().status, 'calling', 'no TURN candidates is expected on the relay path');
+    await fixture.client.handleSignal(answerSignal);
+    assert.equal(relay.instances.length, 1, 'the answered call joins the relay room');
+    assert.equal(relay.instances[0].options.conversationId, 'conversation');
+    assert.equal(fixture.client.getState().status, 'connecting');
+    const stream = { id: 'relayed-b' };
+    relay.instances[0].options.onPeerStream('b', stream);
+    assert.equal(fixture.client.getState().status, 'connected', 'the peer in the relay room means the call is connected');
+    assert.equal(fixture.client.getState().remoteAudioStream, stream, 'relayed audio plays through the usual call audio element');
+    assert.equal(fixture.client.getState().mediaPath, 'server');
+    pc.connectionState = 'failed'; pc.onconnectionstatechange();
+    assert.equal(fixture.client.getState().status, 'connected', 'the unused peer connection cannot end a relayed call');
+    const connectTimer = fixture.timers.find(timer => timer.ms === 30_000);
+    assert(connectTimer?.cleared, 'the connect timeout is cleared once the relay connects');
+    fixture.client.hangup();
+    assert(relay.instances[0].closed, 'hangup closes the relay');
+    assert.equal(fixture.signals.at(-1).kind, 'hangup');
+  }
+  // The callee joins at accept; mute, push-to-talk and a microphone change reach the relay.
+  {
+    const relay = fakeServerMedia();
+    const fixture = directFixture(relayOnlyConfig, { serverMedia: relay.factory });
+    const first = fakeMicrophone(); const second = fakeMicrophone();
+    let mic = first; fixture.setMic(() => mic);
+    await fixture.client.handleSignal(relayOffer);
+    await fixture.client.accept();
+    await new Promise(resolve => setImmediate(resolve));
+    const media = relay.instances[0];
+    assert(media, 'accepting a relayed call joins the relay room');
+    assert.equal(media.inputs.at(-1).getAudioTracks()[0], first.track, 'the microphone feeds the relay');
+    assert.equal(media.sending.at(-1), true);
+    await fixture.client.toggleMicrophone();
+    assert.equal(media.sending.at(-1), false, 'mute stops relayed audio');
+    await fixture.client.toggleMicrophone();
+    assert.equal(media.sending.at(-1), true);
+    mic = second;
+    await fixture.client.setMicrophoneDevice('second');
+    assert.equal(media.inputs.at(-1).getAudioTracks()[0], second.track, 'a new microphone feeds the relay');
+    fixture.client.hangup();
+  }
+  {
+    const relay = fakeServerMedia();
+    const fixture = directFixture(relayOnlyConfig, { serverMedia: relay.factory, settings: { pushToTalk: true } });
+    fixture.setMic(() => fakeMicrophone());
+    await fixture.client.handleSignal(relayOffer);
+    await fixture.client.accept();
+    await new Promise(resolve => setImmediate(resolve));
+    const media = relay.instances[0];
+    assert.equal(media.sending.at(-1), false, 'push-to-talk sends nothing until the key is held');
+    fixture.client.setPushToTalk(true);
+    assert.equal(media.sending.at(-1), true);
+    fixture.client.setPushToTalk(false);
+    assert.equal(media.sending.at(-1), false);
+    fixture.client.hangup();
+  }
+  // A relay that cannot be joined ends the call with its reason.
+  {
+    const relay = fakeServerMedia({ connect: async () => { throw new Error('You are not allowed to join this call through the server relay.'); } });
+    const fixture = directFixture(relayOnlyConfig, { serverMedia: relay.factory });
+    await fixture.client.start({ id: 'conversation', peer_id: 'b' });
+    await fixture.client.handleSignal(answerSignal);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(fixture.client.getState().status, 'idle');
+    assert.match(fixture.errors.at(-1), /not allowed to join/);
+  }
+  // TURN configured but never connects: switch to the relay after about 8 s.
+  const turnAndRelay = { ...turnConfig, media_relay: true };
+  {
+    const relay = fakeServerMedia();
+    const fixture = directFixture(turnAndRelay, { serverMedia: relay.factory });
+    await fixture.client.start({ id: 'conversation', peer_id: 'b' });
+    assert.equal(fixture.pcs[0].configuration.iceServers.length, 1, 'TURN is tried first');
+    await fixture.client.handleSignal(answerSignal);
+    assert.equal(relay.instances.length, 0, 'the relay waits while TURN may still connect');
+    const fallback = fixture.timers.find(timer => timer.ms === 8_000 && !timer.cleared);
+    assert(fallback, 'a relay fallback timer runs while TURN connects');
+    fallback.fn();
+    assert.equal(relay.instances.length, 1, 'an unconnected TURN call switches to the server relay');
+    assert.equal(fixture.client.getState().status, 'connecting', 'the call UI keeps showing connecting');
+    relay.instances[0].options.onPeerStream('b', { id: 'relayed' });
+    assert.equal(fixture.client.getState().status, 'connected');
+    fixture.client.hangup();
+  }
+  // TURN connects in time: the relay is never used.
+  {
+    const relay = fakeServerMedia();
+    const fixture = directFixture(turnAndRelay, { serverMedia: relay.factory });
+    await fixture.client.start({ id: 'conversation', peer_id: 'b' });
+    await fixture.client.handleSignal(answerSignal);
+    const pc = fixture.pcs[0];
+    pc.connectionState = 'connected'; pc.onconnectionstatechange();
+    const fallback = fixture.timers.find(timer => timer.ms === 8_000);
+    if (fallback && !fallback.cleared) fallback.fn();
+    assert.equal(relay.instances.length, 0, 'a connected TURN call never joins the relay');
+    assert.equal(fixture.client.getState().mediaPath, 'turn');
+    fixture.client.hangup();
+  }
+  // TURN fails outright (no relay candidates, or ICE failure): switch at once instead of ending the call.
+  for (const failure of ['gathering', 'failed']) {
+    const relay = fakeServerMedia();
+    const fixture = directFixture(turnAndRelay, { serverMedia: relay.factory });
+    await fixture.client.handleSignal(relayOffer);
+    await fixture.client.accept();
+    const pc = fixture.pcs[0];
+    if (failure === 'gathering') { pc.iceGatheringState = 'complete'; pc.onicegatheringstatechange(); }
+    else { pc.connectionState = 'failed'; pc.onconnectionstatechange(); }
+    assert.equal(relay.instances.length, 1, `a TURN ${failure} switches to the relay`);
+    assert.equal(fixture.client.getState().status, 'connecting');
+    assert.deepEqual(fixture.errors, []);
+    fixture.client.hangup();
+  }
 
   // Direct call lifecycle: accept racing a caller hangup, double accept, stuck connect.
   // Calls are relay-only since 4.0.50, so the lifecycle fixtures need an authenticated TURN relay.
@@ -398,6 +546,134 @@ async function run() {
     assert.equal(outcome?.cancelled, true, `a join superseded during ${stage} reports that it was cancelled`);
     assert.equal(group.getState().status, 'idle', `leave during ${stage} keeps the group idle`);
     assert(fixture.rooms.every(item => item.disconnected), `leave during ${stage} leaves no connected room`);
+  }
+
+  // Group calls through the server relay: LiveKit missing, LiveKit never
+  // connecting, and LiveKit connecting (relay unused).
+  function relayGroupFixture({ livekit = 'configured', connect = null } = {}) {
+    const fixture = livekitFixture();
+    const timers = []; const elements = []; const captures = [];
+    Object.assign(fixture.context, {
+      setTimeout: (fn, ms) => { timers.push({ fn, ms, cleared: false }); return timers.length; },
+      clearTimeout: id => { if (timers[id - 1]) timers[id - 1].cleared = true; },
+      document: {
+        querySelector: () => ({ append(element) { element.mounted = true; } }),
+        createElement: tag => { const element = { tag, dataset: {}, sinks: [], async setSinkId(id) { element.sinks.push(id); }, play: async () => {}, remove() { element.removed = true; } }; elements.push(element); return element; },
+      },
+    });
+    fixture.context.navigator.mediaDevices.getUserMedia = async constraints => { const mic = fakeMicrophone(); captures.push({ constraints, mic }); return mic; };
+    if (connect) fixture.window.LivekitClient.Room.prototype.connect = connect;
+    vm.runInNewContext(fs.readFileSync(path.join(ui, 'group-voice-client.js'), 'utf8'), fixture.context);
+    const relay = fakeServerMedia();
+    const muted = new Set();
+    const settings = { volume: 80, speakerId: 'speaker-1' };
+    const group = fixture.window.GhostChatGroupVoice.create({
+      getToken: async () => {
+        if (livekit === 'missing') throw Object.assign(new Error('Group voice is not configured on this server.'), { status: 503 });
+        return { url: 'wss://livekit.fixture', token: 'fixture' };
+      },
+      getMembers: async () => [{ id: 'b', display_name: 'Bob' }, { id: 'c', display_name: 'Carol' }],
+      getSettings: () => settings, getUserId: () => 'a', getDisplayName: () => 'Alice', getAvatar: () => null,
+      isPeerMuted: id => muted.has(id), onChange() {}, onAudioBlocked() {},
+      createServerMedia: relay.factory,
+    });
+    return { ...fixture, group, relay, timers, elements, captures, settings };
+  }
+  {
+    const fixture = relayGroupFixture({ livekit: 'missing' });
+    await fixture.group.join({ id: 'group' });
+    assert.equal(fixture.rooms.length, 0, 'without LiveKit no SFU room is created');
+    const media = fixture.relay.instances[0];
+    assert(media, 'without LiveKit the group uses the server relay from the start');
+    assert.equal(media.options.conversationId, 'group');
+    let state = fixture.group.getState();
+    assert.equal(state.status, 'connected');
+    assert.equal(state.mediaPath, 'server');
+    assert.equal(state.micMuted, true, 'joining a group never publishes the microphone automatically');
+    assert.equal(media.sending.length, 0);
+    media.options.onPeerStream('b', { id: 'stream-b' });
+    const audio = fixture.elements.find(element => element.tag === 'audio');
+    assert.equal(audio.srcObject.id, 'stream-b', 'each relayed peer plays through its own audio element');
+    assert.equal(audio.volume, 0.8, 'the call volume applies to relayed peers');
+    assert.deepEqual(audio.sinks, ['speaker-1'], 'the selected speaker applies to relayed peers');
+    assert.equal(audio.muted, false);
+    state = fixture.group.getState();
+    assert.equal(JSON.stringify(state.participants.map(row => [row.id, row.name, row.local])), JSON.stringify([['a', 'Alice', true], ['b', 'Bob', false]]));
+    fixture.group.setPeerMuted('b', true);
+    assert.equal(audio.muted, true, 'muting a peer silences only that peer');
+    assert.equal(fixture.group.getState().participants[1].mutedForYou, true);
+    await fixture.group.setSpeakerDevice('speaker-2');
+    assert.equal(audio.sinks.at(-1), 'speaker-2');
+    // Microphone: on, mute, device change.
+    await fixture.group.toggleMicrophone();
+    assert.equal(fixture.captures.length, 1);
+    assert.equal(media.inputs.at(-1), fixture.captures[0].mic);
+    assert.equal(media.sending.at(-1), true);
+    assert.equal(fixture.group.getState().micMuted, false);
+    await fixture.group.setMicrophoneDevice('mic-2');
+    assert.equal(fixture.captures.length, 2);
+    assert.equal(fixture.captures[1].constraints.audio.deviceId, 'mic-2');
+    assert.equal(media.inputs.at(-1), fixture.captures[1].mic, 'a new microphone feeds the relay');
+    assert(fixture.captures[0].mic.track.stopped, 'the old microphone is released');
+    await fixture.group.toggleMicrophone();
+    assert.equal(media.sending.at(-1), false, 'mute stops relayed audio');
+    assert.equal(fixture.group.getState().micMuted, true);
+    await assert.rejects(fixture.group.toggleScreenSharing(), /not available yet/);
+    media.options.onPeerLeft('b');
+    assert(audio.removed, 'a peer that left loses its audio element');
+    await fixture.group.leave();
+    assert(media.closed, 'leaving closes the relay');
+    assert(fixture.captures[1].mic.track.stopped, 'leaving releases the microphone');
+    assert.equal(fixture.group.getState().status, 'idle');
+  }
+  {
+    // Push-to-talk on the relay path.
+    const fixture = relayGroupFixture({ livekit: 'missing' });
+    fixture.settings.pushToTalk = true;
+    await fixture.group.join({ id: 'group' });
+    const media = fixture.relay.instances[0];
+    await fixture.group.toggleMicrophone();
+    assert.notEqual(media.sending.at(-1), true, 'push-to-talk sends nothing until the key is held');
+    await fixture.group.setPushToTalk(true);
+    assert.equal(media.sending.at(-1), true);
+    await fixture.group.setPushToTalk(false);
+    assert.equal(media.sending.at(-1), false);
+    await fixture.group.leave();
+  }
+  {
+    let rejectConnect;
+    const fixture = relayGroupFixture({ connect: async function () { await new Promise((_, reject) => { rejectConnect = reject; }); } });
+    const joining = fixture.group.join({ id: 'group' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(fixture.rooms.length, 1, 'LiveKit is tried first when it is configured');
+    assert.equal(fixture.relay.instances.length, 0);
+    const fallback = fixture.timers.find(timer => timer.ms === 8_000 && !timer.cleared);
+    assert(fallback, 'a relay fallback timer runs while LiveKit connects');
+    fallback.fn();
+    await joining;
+    assert(fixture.rooms[0].disconnected, 'the unconnected LiveKit room is abandoned');
+    assert.equal(fixture.relay.instances.length, 1, 'an unconnected LiveKit room switches to the server relay');
+    assert.equal(fixture.group.getState().status, 'connected');
+    assert.equal(fixture.group.getState().mediaPath, 'server');
+    rejectConnect(new Error('late failure'));
+    await fixture.group.leave();
+  }
+  {
+    const fixture = relayGroupFixture();
+    await fixture.group.join({ id: 'group' });
+    const fallback = fixture.timers.find(timer => timer.ms === 8_000);
+    if (fallback && !fallback.cleared) fallback.fn();
+    assert.equal(fixture.relay.instances.length, 0, 'a connected LiveKit room never uses the relay');
+    assert.equal(fixture.group.getState().mediaPath, 'livekit');
+    await fixture.group.leave();
+  }
+  {
+    // A LiveKit connect error with the relay available switches at once.
+    const fixture = relayGroupFixture({ connect: async () => { throw new Error('No TURN candidates'); } });
+    await fixture.group.join({ id: 'group' });
+    assert.equal(fixture.relay.instances.length, 1);
+    assert.equal(fixture.group.getState().status, 'connected');
+    await fixture.group.leave();
   }
 
   // leave() cleans up even when the room's disconnect() rejects.

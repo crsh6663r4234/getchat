@@ -3209,6 +3209,12 @@
   function setConnection(online) {
     const node = $("#connectionState"); node.classList.toggle("offline", !online); node.innerHTML = `<i class="status-dot ${online ? "" : "offline"}"></i>${translate(online ? "Connected" : "Reconnecting")}`;
   }
+  // Calls fall back to relaying media through the GhostChat server
+  // (server-media-client.js) when TURN or LiveKit cannot be reached.
+  function createServerMedia(options) {
+    const url = activeBase().replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+    return window.GhostChatServerMedia.create({ ...options, url: `${url}/v1/media/ws`, token: state.token });
+  }
   function connectSocket() {
     if (state.socket) { try { state.socket.close(); } catch {} }
     const url = activeBase().replace(/^http:/, "ws:").replace(/^https:/, "wss:");
@@ -3598,6 +3604,7 @@
         }
       },
       getShareToken: conversationId => request(`/v1/conversations/${encodeURIComponent(conversationId)}/share-token`, { method: "POST" }),
+      ...(window.GhostChatServerMedia ? { createServerMedia } : {}),
       sendSignal: ({ conversationId, peerId, kind, payload }) => {
         if (!state.socket || state.socket.readyState !== WebSocket.OPEN) throw new Error("The chat server is reconnecting. Wait until it is connected and try again.");
         state.socket.send(JSON.stringify({ type: "voice_signal", conversation_id: conversationId, to_user_id: peerId, kind, payload }));
@@ -3628,6 +3635,7 @@
       isPeerMuted: accountId => isGroupPeerMuted(groupVoiceUiState.conversationId, accountId),
       getMembers: conversationId => request(`/v1/conversations/${encodeURIComponent(conversationId)}/members`),
       getToken: conversationId => request(`/v1/conversations/${encodeURIComponent(conversationId)}/voice-token`, { method: "POST" }),
+      ...(window.GhostChatServerMedia ? { createServerMedia } : {}),
       onChange: voice => { groupVoiceUiState = voice; renderVoiceControls(); },
       onAudioBlocked: () => toast("Call audio is still blocked by Windows or the audio device.", true),
       translate,

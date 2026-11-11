@@ -46,6 +46,9 @@
         screenQuality: call?.screenQuality || null,
         screenTransport: call?.screenTransport || null,
         networkQuality: call?.networkQuality || null,
+        // "turn" (WebRTC through TURN) or "server" (the GhostChat server
+        // media relay, used when TURN is missing or does not connect).
+        mediaPath: call?.mediaPath || null,
         callNote: call?.callNote || "",
         localAudioStream: call?.localStream || null,
         localScreenStream: call?.screenStream || null,
@@ -124,12 +127,13 @@
 
     function syncOutgoingAudio(activeCall) {
       const track = activeCall?.localAudioTrack;
-      if (!track) return;
+      if (!track) { activeCall?.serverMedia?.setSending(false); return; }
       const settings = api.getSettings();
       // The speech gate itself is a smooth gain stage. Keeping the RTP track
       // alive prevents WebView2 from producing a click/pop every time quiet
       // background sound crosses the gate threshold.
       track.enabled = !activeCall.manualMute && (!settings.pushToTalk || !!activeCall.pushToTalkPressed);
+      activeCall.serverMedia?.setSending(track.enabled);
     }
 
     function stopAudioProcessor(processor) {
@@ -561,6 +565,7 @@
       activeCall.rawStream = rawStream || null;
       activeCall.localAudioTrack = track;
       activeCall.audioProcessor = prepared.processor;
+      activeCall.serverMedia?.setInputStream(activeCall.localStream);
       activeCall.audioProcessing = rawStream ? {
         echoCancellation: prepared.effective?.echoCancellation === true,
         noiseSuppression: prepared.effective?.noiseSuppression === true,
@@ -579,6 +584,8 @@
           activeCall.localStream = null;
           activeCall.manualMute = true;
           activeCall.micUnavailableReason = "The microphone disconnected. You are still in the call, muted.";
+          activeCall.serverMedia?.setSending(false);
+          activeCall.serverMedia?.setInputStream(null);
           void transceiver.sender.replaceTrack(null).then(() => { transceiver.direction = "recvonly"; notify(); }).catch(notify);
         };
         activeCall.micUnavailableReason = "";
@@ -596,7 +603,12 @@
     // A call whose ICE never reaches "connected" would otherwise sit in
     // "connecting" forever with no audio and no way out except hanging up.
     const CONNECT_TIMEOUT_MS = 30_000;
+    // TURN needs UDP (or TCP to its port), which an HTTP-only tunnel to the
+    // GhostChat server cannot carry. A TURN call that has not connected after
+    // this long switches to the server media relay.
+    const RELAY_FALLBACK_MS = 8_000;
     let connectTimer = null;
+    let relayFallbackTimer = null;
     function startConnectTimer(activeCall) {
       clearTimeout(connectTimer);
       connectTimer = setTimeout(() => {
@@ -605,6 +617,68 @@
           closeCall({ notifyPeer: true, message: "The call could not connect. Check your connection and call again." });
         }
       }, CONNECT_TIMEOUT_MS);
+      clearTimeout(relayFallbackTimer);
+      relayFallbackTimer = null;
+      if (activeCall.mediaPath === "server") startServerMedia(activeCall);
+      else if (activeCall.serverRelayAvailable) {
+        relayFallbackTimer = setTimeout(() => {
+          relayFallbackTimer = null;
+          if (call === activeCall && !activeCall.everConnected && activeCall.pc?.connectionState !== "connected") switchToServerRelay(activeCall);
+        }, RELAY_FALLBACK_MS);
+      }
+    }
+
+    function markConnected(activeCall) {
+      activeCall.status = "connected";
+      activeCall.everConnected = true;
+      clearTimeout(ringTimer); ringTimer = null;
+      clearTimeout(connectTimer); connectTimer = null;
+      clearTimeout(relayFallbackTimer); relayFallbackTimer = null;
+    }
+
+    // Both ends switch on their own timers (started within a round trip of
+    // each other) and meet in the server's relay room for this conversation.
+    // The peer connection stays for signaling only.
+    function switchToServerRelay(activeCall) {
+      if (call !== activeCall || activeCall.mediaPath === "server" || !activeCall.serverRelayAvailable) return false;
+      activeCall.mediaPath = "server";
+      clearTimeout(relayFallbackTimer); relayFallbackTimer = null;
+      startServerMedia(activeCall);
+      notify();
+      return true;
+    }
+
+    function startServerMedia(activeCall) {
+      if (call !== activeCall || activeCall.serverMedia) return;
+      const media = api.createServerMedia({
+        conversationId: activeCall.conversationId,
+        onPeerStream: (peerId, stream) => {
+          if (call !== activeCall || activeCall.serverMedia !== media || peerId !== activeCall.peerId) return;
+          activeCall.remoteAudioStream = stream;
+          markConnected(activeCall);
+          notify();
+        },
+        onPeerLeft: peerId => {
+          if (call !== activeCall || activeCall.serverMedia !== media || peerId !== activeCall.peerId) return;
+          // The peer's relay socket dropped; its client reconnects or hangs up.
+          if (activeCall.everConnected) activeCall.status = "reconnecting";
+          notify();
+        },
+        onClosed: () => {
+          if (call !== activeCall || activeCall.serverMedia !== media) return;
+          closeCall({ notifyPeer: true, message: "The call relay connection to the GhostChat server was lost. Call again." });
+        },
+      });
+      activeCall.serverMedia = media;
+      media.connect().then(() => {
+        if (call !== activeCall || activeCall.serverMedia !== media) { media.close(); return; }
+        media.setInputStream(activeCall.localStream);
+        syncOutgoingAudio(activeCall);
+        notify();
+      }).catch(error => {
+        if (call !== activeCall || activeCall.serverMedia !== media) return;
+        closeCall({ notifyPeer: true, message: error?.message || "The call relay on the GhostChat server could not be reached." });
+      });
     }
 
     function closeCall({ notifyPeer = false, message = "" } = {}) {
@@ -612,6 +686,8 @@
       ringTimer = null;
       clearTimeout(connectTimer);
       connectTimer = null;
+      clearTimeout(relayFallbackTimer);
+      relayFallbackTimer = null;
       if (call && notifyPeer) {
         try { send(call.conversationId, call.peerId, "hangup", null); } catch {}
       }
@@ -620,6 +696,7 @@
         stopShareMonitor(call);
         stopConnectionMonitor(call);
         void call.ghostShare?.leave?.();
+        try { call.serverMedia?.close(); } catch {}
         for (const stream of [call.localStream, call.rawStream, call.screenStream]) {
           stream?.getTracks().forEach(track => { track.onended = null; track.stop(); });
         }
@@ -639,10 +716,28 @@
         const urls = (Array.isArray(server.urls) ? server.urls : [server.urls]).filter(url => typeof url === "string" && /^turns?:[^\s]+$/i.test(url));
         return urls.length ? [{ urls, username: server.username, credential: server.credential }] : [];
       });
+      // Newer servers relay call media themselves (media_relay). That path
+      // never reveals an address either, so it replaces a missing TURN.
+      const serverRelayAvailable = !!config?.media_relay && typeof api.createServerMedia === "function";
       if (!config?.turn_available || !turnServers.length) {
-        throw new Error("Calls require an authenticated TURN relay. No direct fallback is allowed because it could reveal your network address.");
+        if (!serverRelayAvailable) {
+          throw new Error("Calls require an authenticated TURN relay. No direct fallback is allowed because it could reveal your network address.");
+        }
+        // Signaling-only peer connection: no ICE servers and relay-only
+        // policy gather no candidate at all, so no address can leak.
+        return {
+          mediaPath: "server",
+          serverRelayAvailable,
+          ghostShareAvailable: !!config?.group_voice_available,
+          iceServers: [],
+          iceTransportPolicy: "relay",
+          bundlePolicy: "max-bundle",
+          rtcpMuxPolicy: "require",
+        };
       }
       return {
+        mediaPath: "turn",
+        serverRelayAvailable,
         ghostShareAvailable: !!config?.group_voice_available,
         iceServers: turnServers,
         iceTransportPolicy: "relay",
@@ -652,14 +747,16 @@
     }
 
     function makePeer(activeCall, configuration) {
-      const pc = new RTCPeerConnection(configuration);
+      const { mediaPath: _path, serverRelayAvailable: _relay, ghostShareAvailable: _share, ...rtcConfiguration } = configuration;
+      const pc = new RTCPeerConnection(rtcConfiguration);
       activeCall.pc = pc;
       activeCall.relayCandidates = 0;
       // Relay-only calls cannot carry media without a TURN allocation. When
       // gathering finishes with none, fail loudly instead of leaving the call
       // stuck in "connecting" with no audio in either direction.
       pc.onicegatheringstatechange = () => {
-        if (call !== activeCall || pc.iceGatheringState !== "complete" || activeCall.relayCandidates) return;
+        if (call !== activeCall || pc.iceGatheringState !== "complete" || activeCall.relayCandidates || activeCall.mediaPath === "server") return;
+        if (switchToServerRelay(activeCall)) return;
         closeCall({ notifyPeer: true, message: "The TURN relay server did not respond, so no audio can be sent. Check that coturn is running and that port 3478 (UDP and TCP) and the relay port range are open on the server firewall." });
       };
       pc.onicecandidate = event => {
@@ -689,16 +786,14 @@
         notify();
       };
       pc.onconnectionstatechange = () => {
-        if (!call || call !== activeCall) return;
+        if (!call || call !== activeCall || activeCall.mediaPath === "server") return;
         if (pc.connectionState === "connected") {
-          activeCall.status = "connected";
-          activeCall.everConnected = true;
-          clearTimeout(ringTimer); ringTimer = null;
-          clearTimeout(connectTimer); connectTimer = null;
+          markConnected(activeCall);
           startConnectionMonitor(activeCall);
         }
         else if (pc.connectionState === "disconnected") activeCall.status = "reconnecting";
         else if (pc.connectionState === "failed") {
+          if (!activeCall.everConnected && switchToServerRelay(activeCall)) return;
           closeCall({ message: "The required TURN relay connection failed. Check the relay service and network, then call again." });
           return;
         }
@@ -749,6 +844,9 @@
         negotiating: false,
         polite: api.getUserId() > conversation.peer_id,
         ghostShareAvailable: !!configuration.ghostShareAvailable,
+        mediaPath: configuration.mediaPath || "turn",
+        serverRelayAvailable: !!configuration.serverRelayAvailable,
+        serverMedia: null,
       };
       call = activeCall;
       try {
@@ -809,6 +907,9 @@
         negotiating: false,
         polite: api.getUserId() > request.peerId,
         ghostShareAvailable: !!configuration.ghostShareAvailable,
+        mediaPath: configuration.mediaPath || "turn",
+        serverRelayAvailable: !!configuration.serverRelayAvailable,
+        serverMedia: null,
       };
       call = activeCall;
       incoming = null;
@@ -956,6 +1057,7 @@
       if (call.screenStream) {
         return stopDirectScreenShare(call);
       }
+      if (call.mediaPath === "server") throw new Error("Screen sharing is not available yet on calls relayed through the GhostChat server.");
       const settings = api.getSettings();
       const activeCall = call;
       if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("Screen capture is unavailable in this WebView. Update the Microsoft Edge WebView2 Runtime.");
