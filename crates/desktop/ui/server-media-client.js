@@ -12,9 +12,22 @@
 //
 // Frame format sent by this client: [kind: u8][sequence: u32 BE][data].
 // The server prefixes [sender id length: u8][sender id] when forwarding.
+// Kinds: 1 Opus audio; 2 VP8 screen-share fragment, whose data starts with
+// [frame id: u16][fragment index: u8][fragment count: u8][flags: u8, 1 = key];
+// 3 screen share stopped.
 (() => {
   "use strict";
   const KIND_AUDIO = 1;
+  const KIND_VIDEO = 2;
+  const KIND_VIDEO_STOP = 3;
+  // Fragments stay well under the server's 64 KiB frame limit.
+  const VIDEO_FRAGMENT_BYTES = 48 * 1024;
+  const VIDEO_HEADER_BYTES = 5;
+  // A new screen frame is only encoded while the socket is nearly drained;
+  // while a share runs, audio tolerates the queue one video frame leaves.
+  const VIDEO_START_BUFFERED_BYTES = 16 * 1024;
+  const AUDIO_BUFFERED_WITH_VIDEO = 128 * 1024;
+  const KEY_FRAME_EVERY_US = 2_000_000;
   const SAMPLE_RATE = 48_000;
   const FRAME_SAMPLES = 960;
   const FRAME_MICROSECONDS = 20_000;
@@ -38,6 +51,13 @@
       && typeof EncodedAudioChunk === "function"
       && typeof AudioWorkletNode === "function"
       && typeof audioContextType() === "function";
+  }
+
+  function screenSupported() {
+    return typeof MediaStreamTrackProcessor === "function"
+      && typeof VideoEncoder === "function"
+      && typeof VideoDecoder === "function"
+      && typeof EncodedVideoChunk === "function";
   }
 
   function audioContextType() {
@@ -68,6 +88,7 @@
     const onPeerLeft = options.onPeerLeft || (() => {});
     const onPeers = options.onPeers || (() => {});
     const onClosed = options.onClosed || (() => {});
+    const onPeerScreen = options.onPeerScreen || (() => {});
     let socket = null;
     let context = null;
     let ready = false;
@@ -78,14 +99,19 @@
     let capture = null;
     let sequence = 0;
     let captureTimestamp = 0;
+    let screen = null;
     const peers = new Map();
 
     function socketOpen() {
       return socket && socket.readyState === (WebSocket.OPEN ?? 1);
     }
 
-    function sendFrame(kind, data) {
-      if (!socketOpen() || socket.bufferedAmount > MAX_BUFFERED_BYTES) return;
+    function audioBufferLimit() {
+      return screen ? AUDIO_BUFFERED_WITH_VIDEO : MAX_BUFFERED_BYTES;
+    }
+
+    function sendFrame(kind, data, limit = audioBufferLimit()) {
+      if (!socketOpen() || socket.bufferedAmount > limit) return;
       const frame = new Uint8Array(5 + data.byteLength);
       frame[0] = kind;
       new DataView(frame.buffer).setUint32(1, sequence);
@@ -111,7 +137,7 @@
     }
 
     function encodePcm(pcm) {
-      if (!sending || closed || !socketOpen() || socket.bufferedAmount > MAX_BUFFERED_BYTES) return;
+      if (!sending || closed || !socketOpen() || socket.bufferedAmount > audioBufferLimit()) return;
       if (!encoder || encoder.state === "closed") encoder = makeEncoder();
       const audio = new AudioData({
         format: "f32-planar",
@@ -144,6 +170,168 @@
       return decoder;
     }
 
+    function stopPeerVideo(peerId, peer) {
+      const video = peer?.video;
+      if (!video) return;
+      peer.video = null;
+      try { video.decoder?.close(); } catch {}
+      try { video.stream?.getTracks?.().forEach(track => track.stop()); } catch {}
+      if (video.stream) onPeerScreen(peerId, null);
+    }
+
+    function makeVideoDecoder(peerId, peer, video) {
+      const decoder = new VideoDecoder({
+        output: frame => {
+          try {
+            if (peer.video !== video) return;
+            if (!video.canvas) {
+              video.canvas = document.createElement("canvas");
+              video.draw = video.canvas.getContext("2d");
+            }
+            if (video.canvas.width !== frame.displayWidth) video.canvas.width = frame.displayWidth;
+            if (video.canvas.height !== frame.displayHeight) video.canvas.height = frame.displayHeight;
+            video.draw.drawImage(frame, 0, 0);
+            if (!video.stream) {
+              video.stream = video.canvas.captureStream();
+              onPeerScreen(peerId, video.stream);
+            }
+          } finally { frame.close?.(); }
+        },
+        error: error => {
+          // A closed decoder is rebuilt on the next fragment; the canvas and
+          // its stream stay, so the viewer keeps the tile.
+          console.debug("A relayed screen frame could not be decoded; waiting for the next key frame.", error);
+          video.waitingKey = true;
+        },
+      });
+      decoder.configure({ codec: "vp8", optimizeForLatency: true });
+      return decoder;
+    }
+
+    function peerVideo(peerId, peer) {
+      if (peer.video) {
+        if (peer.video.decoder.state === "closed") {
+          peer.video.decoder = makeVideoDecoder(peerId, peer, peer.video);
+          peer.video.waitingKey = true;
+        }
+        return peer.video;
+      }
+      const video = { parts: new Map(), waitingKey: true, decoder: null, canvas: null, draw: null, stream: null };
+      peer.video = video;
+      video.decoder = makeVideoDecoder(peerId, peer, video);
+      return video;
+    }
+
+    function handleVideoFragment(peerId, peer, frame) {
+      if (!screenSupported() || frame.data.length < VIDEO_HEADER_BYTES) return;
+      const view = new DataView(frame.data.buffer, frame.data.byteOffset, frame.data.byteLength);
+      const id = view.getUint16(0);
+      const index = frame.data[2];
+      const count = frame.data[3];
+      const key = (frame.data[4] & 1) === 1;
+      if (!count || index >= count) return;
+      const video = peerVideo(peerId, peer);
+      let entry = video.parts.get(id);
+      if (!entry) {
+        entry = { count, key, chunks: new Array(count), received: 0 };
+        video.parts.set(id, entry);
+        // Keep only a few frames in flight; older incomplete ones are lost.
+        while (video.parts.size > 4) video.parts.delete(video.parts.keys().next().value);
+      }
+      if (entry.chunks[index]) return;
+      entry.chunks[index] = frame.data.slice(VIDEO_HEADER_BYTES);
+      entry.received += 1;
+      if (entry.received < entry.count) return;
+      video.parts.delete(id);
+      if (video.waitingKey && !entry.key) return;
+      const length = entry.chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      const data = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of entry.chunks) { data.set(chunk, offset); offset += chunk.length; }
+      video.waitingKey = false;
+      try {
+        video.decoder.decode(new EncodedVideoChunk({ type: entry.key ? "key" : "delta", timestamp: frame.sequence * 1000, data }));
+      } catch (error) {
+        console.debug("A relayed screen frame was refused by the decoder.", error);
+        video.waitingKey = true;
+      }
+    }
+
+    function sendVideoChunk(chunk) {
+      if (!screen) return;
+      const bytes = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(bytes);
+      const id = screen.frameId = (screen.frameId + 1) & 0xffff;
+      const count = Math.max(1, Math.ceil(bytes.length / VIDEO_FRAGMENT_BYTES));
+      if (count > 255) { screen.forceKey = true; return; }
+      for (let index = 0; index < count; index++) {
+        const part = bytes.subarray(index * VIDEO_FRAGMENT_BYTES, (index + 1) * VIDEO_FRAGMENT_BYTES);
+        const data = new Uint8Array(VIDEO_HEADER_BYTES + part.length);
+        new DataView(data.buffer).setUint16(0, id);
+        data[2] = index;
+        data[3] = count;
+        data[4] = chunk.type === "key" ? 1 : 0;
+        data.set(part, VIDEO_HEADER_BYTES);
+        sendFrame(KIND_VIDEO, data, Infinity);
+      }
+    }
+
+    async function pumpScreen(active) {
+      const reader = active.reader;
+      for (;;) {
+        let result;
+        try { result = await reader.read(); } catch { break; }
+        if (result.done || screen !== active) { result.value?.close?.(); break; }
+        const frame = result.value;
+        try {
+          const interval = 1_000_000 / active.frameRate;
+          if (active.lastTimestamp !== null && frame.timestamp - active.lastTimestamp < interval * 0.9) continue;
+          if (!socketOpen() || socket.bufferedAmount > VIDEO_START_BUFFERED_BYTES || active.encoder.encodeQueueSize > 2) {
+            // A dropped frame breaks the delta chain: restart with a key frame.
+            active.forceKey = true;
+            continue;
+          }
+          const width = Math.max(2, frame.displayWidth - (frame.displayWidth % 2));
+          const height = Math.max(2, frame.displayHeight - (frame.displayHeight % 2));
+          if (active.width !== width || active.height !== height) {
+            active.encoder.configure({ codec: "vp8", width, height, bitrate: active.bitrate, framerate: active.frameRate, latencyMode: "realtime" });
+            active.width = width; active.height = height; active.forceKey = true;
+          }
+          const keyFrame = active.forceKey || active.lastKey === null || frame.timestamp - active.lastKey >= KEY_FRAME_EVERY_US;
+          if (keyFrame) { active.lastKey = frame.timestamp; active.forceKey = false; }
+          active.lastTimestamp = frame.timestamp;
+          active.encoder.encode(frame, { keyFrame });
+        } catch (error) {
+          console.debug("A screen frame could not be encoded for the relay.", error);
+          active.forceKey = true;
+        } finally { frame.close?.(); }
+      }
+    }
+
+    // Share a screen track through the relay at a low frame rate; null stops.
+    function setScreenTrack(track, { frameRate = 5, bitrate = 900_000 } = {}) {
+      const previous = screen;
+      screen = null;
+      if (previous) {
+        try { void previous.reader.cancel?.(); } catch {}
+        try { previous.encoder.close(); } catch {}
+        sendFrame(KIND_VIDEO_STOP, new Uint8Array([0]), Infinity);
+      }
+      if (!track || closed) return;
+      if (!screenSupported()) throw new Error("Screen sharing through the server needs a newer Microsoft Edge WebView2 Runtime.");
+      const active = {
+        reader: new MediaStreamTrackProcessor({ track }).readable.getReader(),
+        encoder: null, frameRate: Math.max(1, Math.min(15, frameRate)), bitrate,
+        width: 0, height: 0, frameId: 0, forceKey: true, lastKey: null, lastTimestamp: null,
+      };
+      active.encoder = new VideoEncoder({
+        output: chunk => { if (screen === active) sendVideoChunk(chunk); },
+        error: error => { console.debug("The relay screen encoder failed.", error); if (screen === active) screen = null; },
+      });
+      screen = active;
+      void pumpScreen(active);
+    }
+
     function ensurePeer(peerId) {
       if (!peerId || peers.has(peerId)) return peers.get(peerId) || null;
       const node = new AudioWorkletNode(context, "ghostchat-relay-playback", {
@@ -163,6 +351,7 @@
       const peer = peers.get(peerId);
       if (!peer) return;
       peers.delete(peerId);
+      stopPeerVideo(peerId, peer);
       try { peer.decoder?.close(); } catch {}
       try { peer.node.disconnect(); peer.destination.disconnect?.(); } catch {}
       onPeerLeft(peerId);
@@ -171,9 +360,12 @@
 
     function handleFrame(buffer) {
       const frame = parseRelayed(buffer);
-      if (!frame || frame.kind !== KIND_AUDIO || !frame.data.length) return;
+      if (!frame || !frame.data.length) return;
       const peer = ensurePeer(frame.peerId);
       if (!peer) return;
+      if (frame.kind === KIND_VIDEO) { handleVideoFragment(frame.peerId, peer, frame); return; }
+      if (frame.kind === KIND_VIDEO_STOP) { stopPeerVideo(frame.peerId, peer); return; }
+      if (frame.kind !== KIND_AUDIO) return;
       if (!peer.decoder || peer.decoder.state === "closed") peer.decoder = makeDecoder(peer);
       try {
         peer.decoder.decode(new EncodedAudioChunk({
@@ -189,7 +381,10 @@
     function handleText(raw) {
       let message;
       try { message = JSON.parse(raw); } catch { return; }
-      if (message.type === "peer_joined") ensurePeer(message.user_id);
+      if (message.type === "peer_joined") {
+        ensurePeer(message.user_id);
+        if (screen) screen.forceKey = true;
+      }
       else if (message.type === "peer_left") removePeer(message.user_id);
     }
 
@@ -254,6 +449,11 @@
     }
 
     function release() {
+      if (screen) {
+        try { void screen.reader.cancel?.(); } catch {}
+        try { screen.encoder.close(); } catch {}
+        screen = null;
+      }
       ready = false;
       sending = false;
       try { source?.disconnect(); } catch {}
@@ -281,11 +481,12 @@
       connect,
       setInputStream,
       setSending,
+      setScreenTrack,
       close,
       peers: () => new Set(peers.keys()),
       isConnected: () => ready && !closed,
     };
   }
 
-  window.GhostChatServerMedia = { create, supported };
+  window.GhostChatServerMedia = { create, supported, screenSupported };
 })();

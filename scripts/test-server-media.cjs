@@ -70,7 +70,7 @@ function fixture({ webCodecs = true } = {}) {
   };
   if (webCodecs) { context.AudioEncoder = Encoder; context.AudioDecoder = Decoder; }
   vm.runInNewContext(fs.readFileSync(path.join(ui, 'server-media-client.js'), 'utf8'), context);
-  return { window, sockets, encoders, decoders, nodes, contexts, timers };
+  return { window, context, sockets, encoders, decoders, nodes, contexts, timers };
 }
 
 function track(id = 'mic') { return { kind: 'audio', id }; }
@@ -201,6 +201,119 @@ async function run() {
     assert.equal(env.sockets.length, 0);
   }
 
+  // Screen sharing over the relay: low frame rate VP8 through WebCodecs,
+  // fragmented under the server's frame limit, reassembled per peer.
+  {
+    const env = fixture();
+    const sentKeys = [];
+    const videoEncoders = []; const videoDecoders = []; const canvases = [];
+    let pushFrame; let endFrames;
+    Object.assign(env.context, {
+      MediaStreamTrackProcessor: class {
+        constructor({ track }) {
+          this.track = track;
+          const queue = []; let wake = null;
+          pushFrame = frame => { queue.push(frame); wake?.(); };
+          endFrames = () => { queue.push(null); wake?.(); };
+          this.readable = { getReader: () => ({
+            read: async () => {
+              while (!queue.length) await new Promise(resolve => { wake = resolve; });
+              const value = queue.shift();
+              return value ? { value, done: false } : { value: undefined, done: true };
+            },
+            cancel: async () => { queue.push(null); wake?.(); },
+          }) };
+        }
+      },
+      VideoEncoder: class {
+        state = 'unconfigured'; encodeQueueSize = 0;
+        constructor(init) { this.init = init; videoEncoders.push(this); }
+        configure(config) { this.config = config; this.state = 'configured'; }
+        encode(frame, options) {
+          sentKeys.push(!!options?.keyFrame);
+          const size = options?.keyFrame ? 100_000 : 2_000;
+          this.init.output({ type: options?.keyFrame ? 'key' : 'delta', timestamp: frame.timestamp, byteLength: size, copyTo(target) { target.fill(options?.keyFrame ? 1 : 2); } });
+        }
+        close() { this.state = 'closed'; }
+      },
+      VideoDecoder: class {
+        state = 'unconfigured'; chunks = [];
+        constructor(init) { this.init = init; videoDecoders.push(this); }
+        configure(config) { this.config = config; this.state = 'configured'; }
+        decode(chunk) { this.chunks.push(chunk); this.init.output({ displayWidth: 640, displayHeight: 360, close() { this.closed = true; } }); }
+        close() { this.state = 'closed'; }
+      },
+      EncodedVideoChunk: class { constructor(init) { Object.assign(this, init); } },
+      document: { createElement: tag => { const canvas = { tag, drawn: 0, getContext: () => ({ drawImage: () => { canvas.drawn++; } }), captureStream: () => ({ id: `canvas-${canvases.length}`, getTracks: () => [{ stop() {} }] }) }; canvases.push(canvas); return canvas; } },
+    });
+    const screens = [];
+    const { media, connecting, socket } = await join(env, { onPeerScreen: (id, value) => screens.push([id, value]) });
+    socket.open();
+    socket.text({ type: 'ready', user_id: 'me', peers: ['peer-b'] });
+    await connecting;
+    assert.equal(env.window.GhostChatServerMedia.screenSupported(), true);
+    media.setScreenTrack({ kind: 'video', id: 'screen' }, { frameRate: 5 });
+    const tick = () => new Promise(resolve => setImmediate(resolve));
+    const before = socket.sent.length;
+    pushFrame({ timestamp: 0, displayWidth: 1281, displayHeight: 721, close() {} });
+    await tick();
+    assert.equal(videoEncoders[0].config.codec, 'vp8');
+    assert.equal(videoEncoders[0].config.width % 2, 0, 'encoder dimensions are even');
+    assert.equal(sentKeys[0], true, 'a share starts with a key frame');
+    const keyFragments = socket.sent.slice(before).map(frame => new Uint8Array(frame));
+    assert.equal(keyFragments.length, 3, 'a 100 KB key frame is split under the server limit');
+    assert(keyFragments.every(frame => frame.length <= 48 * 1024 + 10 && frame[0] === 2));
+    assert.deepEqual(keyFragments.map(frame => [frame[7], frame[8], frame[9]]), [[0, 3, 1], [1, 3, 1], [2, 3, 1]], 'fragments carry index, count and the key flag');
+    pushFrame({ timestamp: 50_000, displayWidth: 1281, displayHeight: 721, close() {} });
+    await tick();
+    assert.equal(sentKeys.length, 1, 'frames above the share frame rate are dropped');
+    pushFrame({ timestamp: 200_000, displayWidth: 1281, displayHeight: 721, close() {} });
+    await tick();
+    assert.deepEqual(sentKeys, [true, false]);
+    socket.text({ type: 'peer_joined', user_id: 'peer-c' });
+    pushFrame({ timestamp: 400_000, displayWidth: 1281, displayHeight: 721, close() {} });
+    await tick();
+    assert.equal(sentKeys.at(-1), true, 'a new viewer gets a key frame at once');
+    // Receiving: a delta before any key frame is dropped; a reassembled key frame plays.
+    const fragment = (id, index, count, key, bytes) => {
+      const data = new Uint8Array(5 + bytes.length);
+      new DataView(data.buffer).setUint16(0, id); data[2] = index; data[3] = count; data[4] = key ? 1 : 0; data.set(bytes, 5);
+      return relayed('peer-b', 2, id, data);
+    };
+    socket.binary(fragment(7, 0, 1, false, new Uint8Array([9])));
+    assert.equal(videoDecoders.length ? videoDecoders[0].chunks.length : 0, 0, 'a delta frame cannot start a picture');
+    socket.binary(fragment(8, 1, 2, true, new Uint8Array([3, 4])));
+    socket.binary(fragment(8, 0, 2, true, new Uint8Array([1, 2])));
+    assert.equal(videoDecoders[0].config.codec, 'vp8');
+    assert.deepEqual([...videoDecoders[0].chunks[0].data], [1, 2, 3, 4], 'fragments are reassembled in order');
+    assert.equal(videoDecoders[0].chunks[0].type, 'key');
+    assert.equal(screens.length, 1);
+    assert.equal(screens[0][0], 'peer-b');
+    assert.equal(screens[0][1].id.startsWith('canvas-'), true, 'the decoded share is a canvas stream');
+    assert.equal(canvases[0].drawn, 1);
+    socket.binary(fragment(9, 0, 1, false, new Uint8Array([5])));
+    assert.equal(videoDecoders[0].chunks.at(-1).type, 'delta');
+    // The sharer stops: the viewer's tile goes away.
+    socket.binary(relayed('peer-b', 3, 0, new Uint8Array([0])));
+    assert.deepEqual(screens.at(-1), ['peer-b', null]);
+    assert.equal(videoDecoders[0].state, 'closed');
+    const sentBeforeStop = socket.sent.length;
+    media.setScreenTrack(null);
+    await tick();
+    const stop = new Uint8Array(socket.sent.at(-1));
+    assert.equal(socket.sent.length, sentBeforeStop + 1);
+    assert.equal(stop[0], 3, 'stopping a share tells the viewers');
+    assert.equal(videoEncoders[0].state, 'closed');
+    media.close();
+  }
+  {
+    const env = fixture();
+    assert.equal(env.window.GhostChatServerMedia.screenSupported(), false);
+    const { media, connecting, socket } = await join(env);
+    socket.open(); socket.text({ type: 'ready', user_id: 'me', peers: [] }); await connecting;
+    assert.throws(() => media.setScreenTrack({ kind: 'video' }), /WebView2/);
+    media.close();
+  }
   // Worklets: capture packs 20 ms frames; playback buffers before playing.
   {
     const processors = {};
