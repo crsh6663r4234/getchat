@@ -406,6 +406,10 @@ fn parse_server_urls(value: &str, allowed_schemes: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// The version this server binary was built as; `/health` reports it so
+/// clients can tell an older server apart and the self-updater can compare.
+pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub fn router(state: AppState) -> Router {
     let origins = [
         HeaderValue::from_static("tauri://localhost"),
@@ -432,7 +436,13 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route(
             "/health",
-            get(|| async { Json(serde_json::json!({"status":"ok","service":"ghostchat"})) }),
+            get(|| async {
+                Json(serde_json::json!({
+                    "status": "ok",
+                    "service": "ghostchat",
+                    "version": SERVER_VERSION,
+                }))
+            }),
         )
         .route("/v1/accounts", post(create_account))
         .route("/v1/sessions/recover", post(recover_account))
@@ -7330,6 +7340,23 @@ mod tests {
             .await
             .unwrap()
         }
+    }
+
+    #[tokio::test]
+    async fn health_reports_the_server_version() {
+        let app = TestApp::new().await;
+        let health: serde_json::Value = app
+            .client
+            .get(format!("{}/health", app.base))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(health["status"], "ok");
+        assert_eq!(health["service"], "ghostchat");
+        assert_eq!(health["version"], env!("CARGO_PKG_VERSION"));
     }
 
     #[tokio::test]
