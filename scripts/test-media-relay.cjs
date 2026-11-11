@@ -52,7 +52,7 @@ function directFixture(config, { failShare = false, relayOnly = true, deferConfi
     onChange() {}, onError: message => errors.push(message), onIncoming() {}, isInvisible: () => invisible,
     ...(serverMedia ? { createServerMedia: serverMedia } : {}),
   });
-  return { client, pcs, signals, timers, intervals, errors, releaseConfig, failSettingsOnce: () => { settingsFailures = 1; }, counts: () => ({ micRequests, screenRequests, shareLeaves }), setMic: fn => { micSource = fn; } };
+  return { client, window, pcs, signals, timers, intervals, errors, releaseConfig, failSettingsOnce: () => { settingsFailures = 1; }, counts: () => ({ micRequests, screenRequests, shareLeaves }), setMic: fn => { micSource = fn; } };
 }
 
 // Fake server media relay transport (server-media-client.js).
@@ -218,6 +218,62 @@ async function run() {
     fixture.client.setPushToTalk(false);
     assert.equal(media.sending.at(-1), false);
     fixture.client.hangup();
+  }
+  // Echo on the relay path: the relay sends the audio engine's processed
+  // output, and the engine captures with echo cancellation on. Relayed audio
+  // plays through an <audio> element, which Chromium's echo canceller
+  // (system-wide reference in WebView2) covers like WebRTC playout.
+  {
+    const constraints = [];
+    const document = { currentScript: { src: 'https://app.fixture/ui/audio-engine.js' } };
+    const rawTrack = { kind: 'audio', enabled: true, getSettings: () => ({ echoCancellation: true, autoGainControl: true }), addEventListener() {}, stop() {} };
+    const raw = { id: 'raw', getAudioTracks: () => [rawTrack], getTracks: () => [rawTrack] };
+    const processedTrack = { kind: 'audio', enabled: true, stop() {} };
+    const processed = { id: 'processed', getAudioTracks: () => [processedTrack], getTracks: () => [processedTrack] };
+    class Context {
+      state = 'running'; audioWorklet = { addModule: async () => {} };
+      async resume() {} async close() { this.state = 'closed'; }
+      addEventListener() {} removeEventListener() {}
+      createMediaStreamDestination() { return { stream: processed }; }
+      createMediaStreamSource(stream) { return { stream, connect() {}, disconnect() {} }; }
+    }
+    class Worklet {
+      constructor() {
+        let handler = null;
+        this.port = { postMessage() {} };
+        Object.defineProperty(this.port, 'onmessage', { get: () => handler, set: value => { const first = !handler; handler = value; if (first) queueMicrotask(() => handler({ data: { type: 'ready' } })); } });
+      }
+      connect() {} disconnect() {}
+    }
+    const window = { AudioContext: Context };
+    vm.runInNewContext(fs.readFileSync(path.join(ui, 'audio-engine.js'), 'utf8'), {
+      window, document, URL, console, setTimeout, clearTimeout, queueMicrotask, AudioWorkletNode: Worklet,
+      navigator: { mediaDevices: { getUserMedia: async request => { constraints.push(request); return raw; }, enumerateDevices: async () => [] } },
+    });
+    const session = await window.GhostChatAudio.open({ echoCancellation: true, autoGainControl: true, noiseSuppression: true, noiseEngine: 'rnnoise' });
+    const audio = constraints[0].audio;
+    assert.equal(audio.echoCancellation, true, 'the microphone is captured with echo cancellation');
+    assert.equal(audio.autoGainControl, true);
+    assert.equal(audio.noiseSuppression, false, 'the engine, not the browser, removes noise');
+    assert.equal(session.status.echoCancellation, true, 'the effective echo cancellation is reported');
+    assert.equal(session.stream, processed, 'the engine output is the processed stream');
+    await session.close();
+
+    // The relay receives that processed stream, never the raw microphone.
+    const engineSession = () => {
+      const output = fakeMicrophone(); const input = fakeMicrophone();
+      return { stream: output, rawStream: input, status: { state: 'running' }, setMuted() {}, async close() {} };
+    };
+    const relay = fakeServerMedia();
+    const direct = directFixture(relayOnlyConfig, { serverMedia: relay.factory });
+    let opened = null;
+    direct.window.GhostChatAudio = { open: async () => (opened = engineSession()) };
+    await direct.client.handleSignal(relayOffer);
+    await direct.client.accept();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(relay.instances[0].inputs.at(-1), opened.stream, 'a direct relayed call sends the engine output');
+    assert(!relay.instances[0].inputs.includes(opened.rawStream), 'the raw microphone never reaches the relay');
+    direct.client.hangup();
   }
   // A relay that cannot be joined ends the call with its reason.
   {
@@ -762,6 +818,21 @@ async function run() {
     assert(media.closed, 'leaving closes the relay');
     assert(fixture.captures[1].mic.track.stopped, 'leaving releases the microphone');
     assert.equal(fixture.group.getState().status, 'idle');
+  }
+  {
+    // The group relay also sends the engine output, never the raw microphone.
+    const fixture = relayGroupFixture({ livekit: 'missing' });
+    let opened = null;
+    fixture.window.GhostChatAudio = { open: async () => {
+      opened = { stream: fakeMicrophone(), rawStream: fakeMicrophone(), status: { state: 'running' }, setMuted() {}, async close() {} };
+      return opened;
+    } };
+    await fixture.group.join({ id: 'group' });
+    await fixture.group.toggleMicrophone();
+    const media = fixture.relay.instances[0];
+    assert.equal(media.inputs.at(-1), opened.stream, 'a relayed group call sends the engine output');
+    assert(!media.inputs.includes(opened.rawStream), 'the raw microphone never reaches the group relay');
+    await fixture.group.leave();
   }
   {
     // Push-to-talk on the relay path.
