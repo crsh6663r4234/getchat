@@ -481,6 +481,8 @@
       }, CONNECT_TIMEOUT_MS);
       clearTimeout(relayFallbackTimer);
       relayFallbackTimer = null;
+      activeCall.connectStarted = true;
+      if (activeCall.peerWantsServer && activeCall.serverRelayAvailable) activeCall.mediaPath = "server";
       if (activeCall.mediaPath === "server") startServerMedia(activeCall);
       else if (activeCall.serverRelayAvailable) {
         relayFallbackTimer = setTimeout(() => {
@@ -498,13 +500,18 @@
       clearTimeout(relayFallbackTimer); relayFallbackTimer = null;
     }
 
-    // Both ends switch on their own timers (started within a round trip of
-    // each other) and meet in the server's relay room for this conversation.
-    // The peer connection stays for signaling only.
-    function switchToServerRelay(activeCall) {
+    // Both ends meet in the server's relay room for this conversation. The
+    // side that switches on its own (timer or TURN failure) tells the other
+    // side with a media_path signal, which switches at once: otherwise one
+    // side could stay on TURN and audio would flow one way only. The peer
+    // connection stays for signaling only.
+    function switchToServerRelay(activeCall, { announce = true } = {}) {
       if (call !== activeCall || activeCall.mediaPath === "server" || !activeCall.serverRelayAvailable) return false;
       activeCall.mediaPath = "server";
       clearTimeout(relayFallbackTimer); relayFallbackTimer = null;
+      if (announce) {
+        try { send(activeCall.conversationId, activeCall.peerId, "media_path", { path: "server" }); } catch {}
+      }
       startServerMedia(activeCall);
       notify();
       return true;
@@ -643,6 +650,9 @@
       pc.ontrack = event => {
         const track = event.track;
         if (track.kind === "audio") {
+          // On the relay path the call plays the relayed audio only; a TURN
+          // track that still connects would play it a second time.
+          if (activeCall.mediaPath === "server") return;
           activeCall.remoteAudioStream ||= new MediaStream();
           if (!activeCall.remoteAudioStream.getTracks().some(item => item.id === track.id)) activeCall.remoteAudioStream.addTrack(track);
         } else if (track.kind === "video") {
@@ -788,6 +798,8 @@
         mediaPath: configuration.mediaPath || "turn",
         serverRelayAvailable: !!configuration.serverRelayAvailable,
         serverMedia: null,
+        // The caller moved to the server relay while this side was ringing.
+        peerWantsServer: !!request.peerWantsServer,
       };
       call = activeCall;
       incoming = null;
@@ -876,6 +888,12 @@
         if (event.payload?.candidate) incoming.candidates.push(event.payload);
         return;
       }
+      // A ringing callee never joins the relay room early (it would reveal
+      // an invisible or unanswered callee); the request applies at accept.
+      if (event.kind === "media_path" && event.payload?.path === "server" && incoming?.conversationId === conversationId && incoming.peerId === peerId) {
+        incoming.peerWantsServer = true;
+        return;
+      }
       if (event.kind === "offer" && !call) {
         if (incoming && (incoming.conversationId !== conversationId || incoming.peerId !== peerId)) {
           rejectBusy(conversationId, peerId);
@@ -905,6 +923,11 @@
         } else if (event.kind === "ghostshare_started") {
           call.peerGhostShareAnnounced = true;
           await watchGhostShare(call);
+        } else if (event.kind === "media_path" && event.payload?.path === "server") {
+          // The peer fell back to the server relay; follow it at once, even
+          // if TURN looks connected here, or audio would flow one way.
+          if (call.connectStarted) switchToServerRelay(call, { announce: false });
+          else call.peerWantsServer = true;
         } else if (event.kind === "call_note" && typeof event.payload?.text === "string") {
           call.callNote = event.payload.text.slice(0, 1200);
           notify();

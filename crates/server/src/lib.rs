@@ -6886,6 +6886,9 @@ async fn relay_voice_signal(state: &AppState, sender: &PublicUser, text: &str) {
             .is_some_and(|candidate| !candidate.is_empty() && candidate.len() <= 4 * 1024),
         "hangup" | "screen_stopped" | "ghostshare_started" => signal.payload.is_null(),
         "watch_party" => valid_watch_party_payload(&signal.payload),
+        // The side that falls back to the server media relay tells the
+        // other side to switch too, so both ends use the same path.
+        "media_path" => signal.payload == serde_json::json!({ "path": "server" }),
         // Notes are call-room state only: relay them, but never persist them
         // in the chat history or account data.
         "call_note" => signal.payload["text"]
@@ -9123,6 +9126,74 @@ mod tests {
             "invisible and offline look the same to the caller"
         );
         assert!(observed[0].is_empty());
+    }
+
+    #[tokio::test]
+    async fn media_path_signal_reaches_only_the_unblocked_direct_peer() {
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let conversation = app.direct(&alice, &bob).await;
+        let sender = app.public_user(&alice).await;
+        let outsider = app.public_user(&carol).await;
+        let signal = |payload: serde_json::Value| {
+            serde_json::json!({
+                "type": "voice_signal", "conversation_id": conversation, "to_user_id": bob.id,
+                "kind": "media_path", "payload": payload,
+            })
+            .to_string()
+        };
+        // Relays one signal and returns the media_path events Bob receives.
+        let collect = |from: PublicUser, text: String| {
+            let state = app.state.clone();
+            let bob_id = bob.id.clone();
+            async move {
+                let mut events = state.events.subscribe();
+                relay_voice_signal(&state, &from, &text).await;
+                let mut to_bob = Vec::new();
+                while let Ok(Ok(event)) =
+                    tokio::time::timeout(Duration::from_millis(200), events.recv()).await
+                {
+                    if event.recipients.contains(&bob_id) && event.event["kind"] == "media_path" {
+                        to_bob.push(event.event.clone());
+                    }
+                }
+                to_bob
+            }
+        };
+        let delivered = collect(
+            sender.clone(),
+            signal(serde_json::json!({"path": "server"})),
+        )
+        .await;
+        assert_eq!(delivered.len(), 1, "the switch reaches the peer");
+        assert_eq!(delivered[0]["payload"]["path"], "server");
+        assert_eq!(delivered[0]["from_user_id"], alice.id);
+        for payload in [
+            serde_json::json!({"path": "turn"}),
+            serde_json::json!({"path": "server", "extra": "x".repeat(10_000)}),
+            serde_json::Value::Null,
+        ] {
+            let dropped = collect(sender.clone(), signal(payload.clone())).await;
+            assert!(dropped.is_empty(), "invalid payload relayed: {payload}");
+        }
+        let foreign = collect(
+            outsider.clone(),
+            signal(serde_json::json!({"path": "server"})),
+        )
+        .await;
+        assert!(
+            foreign.is_empty(),
+            "a non-member cannot switch someone's call"
+        );
+        app.block(&bob, &alice).await;
+        let blocked = collect(
+            sender.clone(),
+            signal(serde_json::json!({"path": "server"})),
+        )
+        .await;
+        assert!(blocked.is_empty(), "a blocked pair exchanges no switch");
     }
 
     // Client for the server media relay (`/v1/media/ws`): binary frames of

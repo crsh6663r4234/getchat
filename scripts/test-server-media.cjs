@@ -243,6 +243,46 @@ async function run() {
     assert.equal(listeners.size, 0, 'closing the relay removes the gesture listeners');
   }
 
+  // Group calls: a member whose LiveKit room connected watches the relay
+  // room (standby) so it can follow members who fell back to the relay.
+  // Members carrying the call over the relay say so with an "active" frame
+  // when they join and whenever someone joins after them.
+  {
+    const env = fixture();
+    const { connecting, socket } = await join(env);
+    socket.open();
+    socket.text({ type: 'ready', user_id: 'me', peers: ['peer-b'] });
+    await connecting;
+    const kinds = () => socket.sent.filter(item => typeof item !== 'string').map(item => new Uint8Array(item)[0]);
+    assert.deepEqual(kinds(), [4], 'a relay member announces itself when it joins');
+    socket.text({ type: 'peer_joined', user_id: 'peer-c' });
+    assert.deepEqual(kinds(), [4, 4], 'and again for every member that joins later');
+    const streams = env.nodes.filter(node => node.name === 'ghostchat-relay-playback').length;
+    socket.binary(relayed('peer-c', 4, 0, new Uint8Array([1])));
+    assert.equal(env.decoders.filter(decoder => decoder.chunks.length).length, 0, 'an active frame is not audio');
+    assert.equal(env.nodes.filter(node => node.name === 'ghostchat-relay-playback').length, streams);
+  }
+  {
+    const env = fixture();
+    const active = [];
+    const { media, connecting, events, socket } = await join(env, { standby: true, onPeerActive: id => active.push(id) });
+    assert.equal(env.contexts.length, 0, 'a standby watcher opens no audio');
+    socket.open();
+    assert.deepEqual(JSON.parse(socket.sent[0]), { token: 'session-token', conversation_id: 'conversation' });
+    socket.text({ type: 'ready', user_id: 'me', peers: ['peer-b'] });
+    await connecting;
+    socket.text({ type: 'peer_joined', user_id: 'peer-c' });
+    assert.deepEqual(events.streams, [], 'a standby watcher plays nobody');
+    assert.equal(socket.sent.length, 1, 'a standby watcher sends nothing after its hello');
+    assert.deepEqual(active, []);
+    socket.binary(relayed('peer-c', 4, 0, new Uint8Array([1])));
+    assert.deepEqual(active, ['peer-c'], 'an active relay member is reported');
+    socket.binary(relayed('peer-b', 1, 1, new Uint8Array([1, 2])));
+    assert.deepEqual(active, ['peer-c', 'peer-b'], 'so is a member sending relayed audio');
+    assert.equal(env.decoders.length, 0);
+    media.close();
+  }
+
   // Screen sharing over the relay: low frame rate VP8 through WebCodecs,
   // fragmented under the server's frame limit, reassembled per peer.
   {

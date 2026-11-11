@@ -14,12 +14,14 @@
 // The server prefixes [sender id length: u8][sender id] when forwarding.
 // Kinds: 1 Opus audio; 2 VP8 screen-share fragment, whose data starts with
 // [frame id: u16][fragment index: u8][fragment count: u8][flags: u8, 1 = key];
-// 3 screen share stopped.
+// 3 screen share stopped; 4 "this member carries the call over the relay"
+// (lets group members still on LiveKit follow, see `standby`).
 (() => {
   "use strict";
   const KIND_AUDIO = 1;
   const KIND_VIDEO = 2;
   const KIND_VIDEO_STOP = 3;
+  const KIND_ACTIVE = 4;
   // Fragments stay well under the server's 64 KiB frame limit.
   const VIDEO_FRAGMENT_BYTES = 48 * 1024;
   const VIDEO_HEADER_BYTES = 5;
@@ -90,6 +92,12 @@
     const onClosed = options.onClosed || (() => {});
     const onPeerScreen = options.onPeerScreen || (() => {});
     const onAudioSuspended = options.onAudioSuspended || (() => {});
+    // Standby: a group member whose LiveKit room connected joins the relay
+    // room only to notice members who fell back to the relay (onPeerActive),
+    // so the whole group can move there. It opens no audio, plays nobody and
+    // sends nothing after its hello.
+    const standby = !!options.standby;
+    const onPeerActive = options.onPeerActive || (() => {});
     let socket = null;
     let context = null;
     let ready = false;
@@ -389,9 +397,19 @@
       onPeers([...peers.keys()]);
     }
 
+    // A member carrying the call over the relay says so when it joins and
+    // whenever someone joins after it (see standby below).
+    function announceActive() {
+      if (!standby) sendFrame(KIND_ACTIVE, new Uint8Array([1]), Infinity);
+    }
+
     function handleFrame(buffer) {
       const frame = parseRelayed(buffer);
       if (!frame || !frame.data.length) return;
+      if (standby) {
+        if (frame.peerId && [KIND_AUDIO, KIND_VIDEO, KIND_ACTIVE].includes(frame.kind)) onPeerActive(frame.peerId);
+        return;
+      }
       const peer = ensurePeer(frame.peerId);
       if (!peer) return;
       if (frame.kind === KIND_VIDEO) { handleVideoFragment(frame.peerId, peer, frame); return; }
@@ -412,25 +430,31 @@
     function handleText(raw) {
       let message;
       try { message = JSON.parse(raw); } catch { return; }
+      if (standby) return;
       if (message.type === "peer_joined") {
         ensurePeer(message.user_id);
+        announceActive();
         if (screen) screen.forceKey = true;
       }
       else if (message.type === "peer_left") removePeer(message.user_id);
     }
 
     async function connect() {
-      if (!supported()) {
+      if (!standby) {
+        if (!supported()) {
+          throw new Error("This WebView cannot relay calls through the server. Update the Microsoft Edge WebView2 Runtime.");
+        }
+        const ContextType = audioContextType();
+        context = new ContextType({ latencyHint: "interactive", sampleRate: SAMPLE_RATE });
+        context.onstatechange = () => {
+          if (audioRunning()) disarmGestures();
+          else if (!closed) void resumeAudio();
+        };
+        await context.audioWorklet.addModule(WORKLET_URL);
+        void resumeAudio();
+      } else if (typeof WebSocket !== "function") {
         throw new Error("This WebView cannot relay calls through the server. Update the Microsoft Edge WebView2 Runtime.");
       }
-      const ContextType = audioContextType();
-      context = new ContextType({ latencyHint: "interactive", sampleRate: SAMPLE_RATE });
-      context.onstatechange = () => {
-        if (audioRunning()) disarmGestures();
-        else if (!closed) void resumeAudio();
-      };
-      await context.audioWorklet.addModule(WORKLET_URL);
-      void resumeAudio();
       if (closed) throw new Error("The call ended.");
       return new Promise((resolve, reject) => {
         let settled = false;
@@ -451,8 +475,11 @@
           try { message = JSON.parse(event.data); } catch { return; }
           if (message.type === "ready") {
             ready = true;
-            for (const peerId of Array.isArray(message.peers) ? message.peers : []) ensurePeer(peerId);
-            onPeers([...peers.keys()]);
+            if (!standby) {
+              for (const peerId of Array.isArray(message.peers) ? message.peers : []) ensurePeer(peerId);
+              onPeers([...peers.keys()]);
+              announceActive();
+            }
             finish();
           } else if (message.type === "error") {
             finish(new Error(REFUSALS[message.code] || "The call relay refused the connection."));

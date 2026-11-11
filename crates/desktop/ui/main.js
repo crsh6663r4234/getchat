@@ -3763,7 +3763,7 @@
       isPeerMuted: accountId => isGroupPeerMuted(groupVoiceUiState.conversationId, accountId),
       getMembers: conversationId => request(`/v1/conversations/${encodeURIComponent(conversationId)}/members`),
       getToken: conversationId => request(`/v1/conversations/${encodeURIComponent(conversationId)}/voice-token`, { method: "POST" }),
-      ...(window.GhostChatServerMedia ? { createServerMedia } : {}),
+      ...(window.GhostChatServerMedia ? { createServerMedia, watchServerMedia: options => createServerMedia({ ...options, standby: true }) } : {}),
       onChange: voice => { groupVoiceUiState = voice; if (!microphoneTestSession) renderAudioProcessing(voice.audioProcessing); renderVoiceControls(); },
       onAudioBlocked: () => toast("Call audio is still blocked by Windows or the audio device.", true),
       translate,

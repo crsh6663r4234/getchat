@@ -45,6 +45,10 @@
     let relaySending = false;
     let relayScreenStream = null;
     const RELAY_SCREEN_FPS = 5;
+    // While on LiveKit: a standby watch of the relay room (see followRelay).
+    let relayWatch = null;
+    let relayWatchTimer = null;
+    const RELAY_WATCH_RETRY_MS = 2_000;
 
     function relayAvailable() {
       return typeof api.createServerMedia === "function";
@@ -356,6 +360,66 @@
       publishState({ status: "connected", micMuted: true, micManuallyMuted: true, pushToTalkPressed: false, micAvailable: true, screenSharing: false, screenStarting: false, error: "", mediaPath: "server" });
     }
 
+    // Members can end up on different paths: one member's LiveKit did not
+    // connect within RELAY_FALLBACK_MS and it moved to the relay, another's
+    // did. Each would then hear only the members on its own path. A member
+    // on LiveKit therefore watches the relay room (standby: no audio, sends
+    // nothing) and follows the first member that carries the call there, so
+    // the whole group meets on the relay.
+    function closeRelayWatch() {
+      clearTimeout(relayWatchTimer); relayWatchTimer = null;
+      const watch = relayWatch;
+      relayWatch = null;
+      try { watch?.close(); } catch {}
+    }
+
+    function watchRelay(ticket, activeRoom, activeConversation) {
+      if (typeof api.watchServerMedia !== "function" || ticket !== joinGeneration || room !== activeRoom) return;
+      closeRelayWatch();
+      const stillWatching = () => relayWatch === watch && ticket === joinGeneration && room === activeRoom;
+      const retry = () => {
+        if (!stillWatching()) return;
+        relayWatch = null;
+        // Tunnels close idle sockets; reopen the watch while on LiveKit.
+        relayWatchTimer = setTimeout(() => { relayWatchTimer = null; watchRelay(ticket, activeRoom, activeConversation); }, RELAY_WATCH_RETRY_MS);
+      };
+      const watch = api.watchServerMedia({
+        conversationId: activeConversation.id,
+        onPeerActive: () => { if (stillWatching()) void followRelay(ticket, activeRoom, activeConversation); },
+        onClosed: retry,
+      });
+      relayWatch = watch;
+      // A refused or unreachable watch (an older server) is not retried.
+      Promise.resolve().then(() => watch.connect()).catch(() => { if (stillWatching()) relayWatch = null; });
+    }
+
+    async function followRelay(ticket, activeRoom, activeConversation) {
+      if (ticket !== joinGeneration || room !== activeRoom || relay) return;
+      closeRelayWatch();
+      // Detach first so the room's Disconnected handler does not end the call.
+      room = null;
+      const previousMicrophone = microphone;
+      microphone = null; microphoneTrack = null;
+      screenOperation = null;
+      api.onScreenRemoved?.();
+      for (const element of audioElements.values()) element.remove();
+      for (const screen of screenElements.values()) screen.tile.remove();
+      audioElements.clear(); screenElements.clear(); activeSpeakers.clear();
+      publishState({ status: "connecting", screenSharing: false, screenStarting: false });
+      try { await activeRoom.disconnect(); } catch {}
+      await previousMicrophone?.close();
+      if (ticket !== joinGeneration) return;
+      try {
+        const result = await joinRelay(ticket, activeConversation);
+        if (result?.cancelled || relay === null) return;
+        // A member who was talking keeps talking on the relay.
+        if (wantsMicrophone()) await setRelaySending(true);
+        publishState({ micMuted: !relaySending, micManuallyMuted, pushToTalkPressed, micAvailable: true });
+      } catch (error) {
+        console.debug("Could not follow the group to the server relay.", error);
+      }
+    }
+
     function withRelayDeadline(promise) {
       if (!relayAvailable()) return promise;
       return new Promise((resolve, reject) => {
@@ -439,6 +503,7 @@
         .on(E.Disconnected, () => {
           if (room !== activeRoom) return;
           joinGeneration++;
+          closeRelayWatch();
           void microphone?.close(); microphone = null; microphoneTrack = null;
           api.onScreenRemoved?.();
           for (const [sid, element] of audioElements) element.remove();
@@ -502,6 +567,7 @@
         // Only the shared processed track may publish microphone audio.
         if (room !== activeRoom) return { cancelled: true };
         publishState({ status: "connected", micMuted: true, micManuallyMuted: true, pushToTalkPressed: false, micAvailable, screenSharing: false, screenStarting: false, error: "", mediaPath: "livekit" });
+        watchRelay(ticket, activeRoom, nextConversation);
       } catch (error) {
         const superseded = ticket !== joinGeneration || (activeRoom && room !== activeRoom);
         if (activeRoom && room === activeRoom) room = null;
@@ -527,6 +593,7 @@
       await previousMicrophone?.close();
       api.onScreenRemoved?.();
       screenOperation = null;
+      closeRelayWatch();
       teardownRelay();
       // Clean up even if disconnect() rejects; the error still reaches the caller.
       try {
