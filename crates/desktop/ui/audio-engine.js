@@ -12,19 +12,26 @@
     return deepFilterModule;
   }
   async function open(settings, { onStatus = () => {} } = {}) {
-    let rawStream, context, source, processor, destination, closed = false;
+    let rawStream, context, source, processor, muteGain, destination, closed = false;
     let muted = true;
     const status = { engine: 'starting', echoCancellation: null, noiseSuppression: false, autoGainControl: null, warning: '', state: 'starting' };
     const emit = () => { if (!closed) onStatus({ ...status }); };
     const session = {
       stream: null, rawStream: null, status,
-      setMuted(value) { muted = !!value; session.stream?.getAudioTracks().forEach(track => { track.enabled = !muted && status.state === 'running'; }); },
+      setMuted(value) {
+        muted = !!value;
+        const enabled = !muted && status.state === 'running';
+        // Silence the graph as well as the outgoing track. This also protects
+        // local meters/recorders on browsers with delayed track mute propagation.
+        if (muteGain) muteGain.gain.value = enabled ? 1 : 0;
+        session.stream?.getAudioTracks().forEach(track => { track.enabled = enabled; });
+      },
       async close() {
         if (closed) return;
         closed = true;
         context?.removeEventListener('statechange', stateChanged);
         for (const stream of new Set([session.stream, rawStream])) stream?.getTracks().forEach(track => track.stop());
-        try { processor?.port.postMessage('close'); source?.disconnect(); processor?.disconnect(); } catch {}
+        try { processor?.port.postMessage('close'); source?.disconnect(); processor?.disconnect(); muteGain?.disconnect(); } catch {}
         if (context && context.state !== 'closed') await context.close().catch(() => {});
       },
     };
@@ -82,7 +89,8 @@
         });
         destination = context.createMediaStreamDestination();
         source = context.createMediaStreamSource(rawStream);
-        source.connect(processor); processor.connect(destination);
+        muteGain = context.createGain(); muteGain.gain.value = 0;
+        source.connect(processor); processor.connect(muteGain); muteGain.connect(destination);
         session.stream = destination.stream;
         status.engine = advanced ? 'deepfilter' : 'rnnoise'; status.noiseSuppression = true;
         processor.onprocessorerror = () => {
