@@ -38,12 +38,24 @@ Builds after 4.0.51 back up automatically: before applying a migration numbered 
 
 To go back: stop the service, move the current database and its `-wal` and `-shm` files aside, copy the `.bak` file to the `GHOSTCHAT_DATABASE` path, and start the older binary. Data written since the backup is lost. Run the same version on the server and the desktop apps.
 
+## Server self-update (Windows)
+
+The standalone `ghostchat-server-windows-x64.exe` of builds after 4.0.51 updates itself from the signed GitHub releases at startup and every 24 hours; [UPDATES.md](UPDATES.md#the-standalone-server-updates-itself) describes each step. What an operator needs to know:
+
+- It installs only a strictly newer release whose `.sig` matches the updater public key built into the server.
+- Before swapping, it writes `<GHOSTCHAT_DATABASE>.pre-update.bak` next to the database (replacing the one of the previous update); migrations of the new version still write their own `pre-<migration>.bak`.
+- The previous exe is kept as `<exe>.old` in the exe's folder until the new server has started and Windows releases the file; the download is staged there as `<exe>.new` and `<exe>.new.sig`. The exe's folder must be writable by the account that runs the server.
+- The old server starts the new one with the same arguments, environment and working directory and exits once the new one answers `GET /health` with its version. If it does not within two minutes, the old exe is restored and keeps serving.
+- Clients are disconnected for a few seconds during the swap and reconnect by themselves.
+- Set `GHOSTCHAT_AUTO_UPDATE=false` to turn it off, for example when a service manager restarts the server whenever it exits (the manager would start a second copy next to the one the updater started), or when you want to choose the moment of each upgrade.
+- 4.0.51 and older servers have no self-updater: replace the exe by hand once.
+
 ## Environment
 
-`GHOSTCHAT_BIND` defaults to `0.0.0.0:38241`; use `127.0.0.1:38241` when the HTTPS reverse proxy runs on the same host. `GHOSTCHAT_DATABASE` defaults to `ghostchat.sqlite` in the process working directory; use an absolute path for deployment. `GHOSTCHAT_STUN_URLS` is a comma-separated list and defaults to Google's public STUN example. `GHOSTCHAT_TURN_URLS` is an optional comma-separated coturn URL list. Set `GHOSTCHAT_TURN_SHARED_SECRET` only on the GhostChat server; authenticated clients receive user-scoped, 12-hour TURN credentials. `GHOSTCHAT_LIVEKIT_URL`, `GHOSTCHAT_LIVEKIT_API_KEY`, and `GHOSTCHAT_LIVEKIT_API_SECRET` optionally enable group voice; only the GhostChat server signs short-lived, membership-checked LiveKit tokens. Group media passes through the configured SFU and is not end-to-end encrypted. `RUST_LOG` configures server logging. Request bodies and logs do not include authentication tokens.
+`GHOSTCHAT_BIND` defaults to `0.0.0.0:38241`; use `127.0.0.1:38241` when the HTTPS reverse proxy runs on the same host. `GHOSTCHAT_DATABASE` defaults to `ghostchat.sqlite` in the process working directory; use an absolute path for deployment. `GHOSTCHAT_STUN_URLS` is a comma-separated list and defaults to Google's public STUN example. `GHOSTCHAT_TURN_URLS` is an optional comma-separated coturn URL list. Set `GHOSTCHAT_TURN_SHARED_SECRET` only on the GhostChat server; authenticated clients receive user-scoped, 12-hour TURN credentials. `GHOSTCHAT_LIVEKIT_URL`, `GHOSTCHAT_LIVEKIT_API_KEY`, and `GHOSTCHAT_LIVEKIT_API_SECRET` optionally enable group voice; only the GhostChat server signs short-lived, membership-checked LiveKit tokens. Group media passes through the configured SFU and is not end-to-end encrypted. `GHOSTCHAT_AUTO_UPDATE=false` turns off the Windows server's self-update (see above). `RUST_LOG` configures server logging. Request bodies and logs do not include authentication tokens.
 
 See [server.env.example](../server.env.example) for placeholders. Do not place real secrets in that file. The shared TURN secret is a server-only secret.
 
 ## Operational limits
 
-The server has health endpoint `GET /health`, SQLite WAL mode, versioned migrations, a five-second SQLite busy timeout, and graceful Ctrl+C shutdown. It does not include a TLS listener, clustered presence, replicated rate limits, scheduled backups (it only backs up before a migration and keeps the three newest of those), metrics, or an operations dashboard. Use one server process per database.
+The server has health endpoint `GET /health` (it reports `status`, `service` and, after 4.0.51, the server `version`; the desktop names that version when a feature needs a newer server), SQLite WAL mode, versioned migrations, a five-second SQLite busy timeout, and graceful Ctrl+C shutdown. It does not include a TLS listener, clustered presence, replicated rate limits, scheduled backups (it only backs up before a migration and keeps the three newest of those), metrics, or an operations dashboard. Use one server process per database.
