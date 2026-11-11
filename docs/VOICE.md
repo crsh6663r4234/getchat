@@ -53,4 +53,4 @@ On the relay path the desktop records the microphone, encodes it with Opus (WebC
 
 Relayed audio adds the latency of the path to the server and back (and through the tunnel), typically a little more than TURN. Each participant's upload is about 40 kb/s; the server forwards one copy to each other participant, so a large group call costs the server more upload bandwidth than a direct call.
 
-Screen sharing over the server relay is not available yet; on a relayed call the share button explains this.
+Screen sharing works on the relay path too: the shared screen is encoded with VP8 (WebCodecs) at a low frame rate (5 frames per second, bitrate capped by the selected quality profile, at most about 1.2 Mb/s) and relayed the same way, so it is equally not end-to-end encrypted. System audio is not relayed. Expect a softer, slower picture than over LiveKit; the sender skips frames instead of delaying the call audio when the connection is busy.
