@@ -34,8 +34,7 @@
         status: call?.status || (incoming ? "incoming" : "idle"),
         conversationId: call?.conversationId || incoming?.conversationId || "",
         peerId: call?.peerId || incoming?.peerId || "",
-        // The speech gate may briefly close an otherwise live microphone.
-        // Do not present that as a manual mute in the call UI.
+        // Report processing failures separately from the user's mute intent.
         micMuted: call ? (!call.localAudioTrack || call.audioSession?.status.state !== "running" || !!call.manualMute || (!!api.getSettings().pushToTalk && !call.pushToTalkPressed)) : false,
         micAvailable: !!call?.localAudioTrack && call?.audioSession?.status.state === "running",
         micManuallyMuted: !!call?.manualMute,

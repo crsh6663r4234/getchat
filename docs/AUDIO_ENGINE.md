@@ -1,4 +1,4 @@
-# Voice engine (4.0.51)
+# Voice engine (4.0.52)
 
 One pipeline serves direct calls, group calls and the microphone test:
 Selected microphone -> browser AEC/optional AGC -> RNNoise AudioWorklet ->
