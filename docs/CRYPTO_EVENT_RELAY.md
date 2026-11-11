@@ -1,6 +1,6 @@
-# Opaque crypto-event relay (4.0 foundation)
+# Opaque crypto-event relay
 
-This API is transport and persistence only. It does not encrypt, decrypt, authenticate protocol messages, or prove device identity. Do not send plaintext to it and assume the server cannot read it. The unreleased desktop uses it for experimental MLS setup events.
+This API is transport and persistence only. It does not encrypt, decrypt, authenticate protocol messages, or prove device identity. Do not send plaintext to it and assume the server cannot read it. The desktop uses it for experimental MLS setup events.
 
 All requests require the normal `Authorization: Bearer <session>` header. The caller must belong to the conversation. By default the server stores the URL-safe base64 payload as supplied and forwards it to current conversation members. A sender may set `recipient_user_id` to deliver an opaque event only to a current member. The desktop uses targeted Welcome delivery during MLS setup and targeted Commit delivery for additions to an existing encrypted group. The client protocol must authenticate and validate every event.
 
@@ -43,7 +43,7 @@ New events are sent to authenticated WebSocket recipients as:
 }
 ```
 
-The server learns conversation membership, sender, optional recipient, event size, ordering and timing. The server does not validate the opaque bytes as MLS. The unreleased desktop uses this API to deliver direct and group MLS setup events; encrypted text is stored as opaque ciphertext in the ordinary ordered message history. The client validates KeyPackages against the expected account/device credential and asks users to compare identity codes out of band. This is experimental: only one desktop MLS identity per account is supported, previous history and legacy attachments are not encrypted, device recovery is unavailable, and plaintext-to-encrypted migration is not implemented. New attachments in locked chats use a separate Windows client-side AES-GCM chunk stream; their manifest and key are sent inside an MLS-encrypted message.
+The server learns conversation membership, sender, optional recipient, event size, ordering and timing. The server does not validate the opaque bytes as MLS. The desktop uses this API to deliver direct and group MLS setup events; encrypted text is stored as opaque ciphertext in the ordinary ordered message history. The client validates KeyPackages against the expected account/device credential and asks users to compare identity codes out of band. This is experimental: only one desktop MLS identity per account is supported, previous history and legacy attachments are not encrypted, device recovery is unavailable, and plaintext-to-encrypted migration is not implemented. New attachments in locked chats use a separate Windows client-side AES-GCM chunk stream; their manifest and key are sent inside an MLS-encrypted message.
 
 ## Encrypted conversation lock
 
@@ -73,4 +73,4 @@ Self-leave requests use `POST /v1/conversations/{conversation_id}/crypto-members
 - `POST /v1/me/crypto/devices/{device_id}/key-packages` uploads `{ "package_ref": "<MLS hash reference>", "payload": "<URL-safe-base64>" }`. The device must belong to the caller and be active. Each active device can keep at most 100 unclaimed packages. Packages expire from the relay after 84 days, matching the current OpenMLS default lifetime; clients still must validate the MLS package's actual lifetime.
 - `POST /v1/users/{target_user_id}/crypto/key-package` claims one package from the target account's active devices. A claim is allowed for the caller's own account, a friend, or another member of a shared conversation. The JSON body is `{ "client_claim_id": "<stable UUID for this request>" }`. Reuse the same ID on retries; using it for a different target is rejected.
 
-Only public KeyPackage bytes are uploaded; private key material stays on the device. The server does not parse or verify the package, bind its MLS credential to the account/device record, or provide key transparency. The unreleased desktop validates the credential against the requested account/device and shows a fingerprint for manual out-of-band comparison, but this does not prevent a malicious server from substituting keys without an independent authenticated key-transparency channel.
+Only public KeyPackage bytes are uploaded; private key material stays on the device. The server does not parse or verify the package, bind its MLS credential to the account/device record, or provide key transparency. The desktop validates the credential against the requested account/device and shows a fingerprint for manual out-of-band comparison, but this does not prevent a malicious server from substituting keys without an independent authenticated key-transparency channel.

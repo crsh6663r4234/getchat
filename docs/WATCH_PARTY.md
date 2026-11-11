@@ -1,4 +1,4 @@
-# Watch Party (4.0.43)
+# Watch Party
 
 Available inside a connected one-to-one call. The old music playlist is removed.
 
@@ -18,7 +18,7 @@ server never downloads a source. Source controls are scoped to the current peer
 and direct conversation; sender membership, payload bounds and revision checks
 apply. End session clears the peer state. Ending the call clears local media.
 
-Update the VDS server to 4.0.43 for the watch_party signaling type. Group Watch
+The server must be 4.0.43 or newer for the watch_party signaling type. Group Watch
 Party and automatic file distribution are not implemented. Two-device video,
 buffering and real network behavior still need validation.
 
@@ -26,7 +26,8 @@ buffering and real network behavior still need validation.
 
 The new preparation dialog is an application-owned desktop interface with
 quality/system-sound choices. Capture still uses WebView2 getDisplayMedia and
-the configured LiveKit SFU, with direct compatibility fallback. This release
+the configured LiveKit SFU, or without one the call's own path (TURN or the
+server media relay). This release
 does **not** implement Windows Graphics Capture/DXGI or a native encoder. A
 native capture rewrite requires a separate capture/encoding/transport path.
 

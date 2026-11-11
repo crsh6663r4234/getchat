@@ -1,7 +1,8 @@
 # Windows VDS media setup
 
-GhostChat's HTTP server and Caddy can work while group voice remains disabled.
-Group voice requires a separately running LiveKit media server and these three
+Group calls work without LiveKit: the GhostChat server relays their media
+itself (see [VOICE.md](VOICE.md)). To route group calls and screen sharing
+through a separately running LiveKit media server instead, set these three
 settings in the **GhostChat server process**, not the desktop client:
 
 ```dotenv
@@ -50,8 +51,10 @@ Official references:
 
 ## Completion checks
 
-The current application checks only whether all three settings are configured
-before enabling group join. This is not a LiveKit health check. Confirm the
+The server reports LiveKit as available when all three settings are configured;
+this is not a LiveKit health check. If LiveKit has not connected about 8 seconds
+after joining, the desktop switches the group call to the server media relay,
+so a broken LiveKit setup shows up as calls that always use the relay. Confirm the
 media hostname has trusted TLS, then test two devices joining the same group,
 both audio directions, screen start/stop, refresh and reconnect. No working
 deployment or call test is implied by adding environment variables alone.

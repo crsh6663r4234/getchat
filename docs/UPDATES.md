@@ -14,7 +14,11 @@ The release workflow adds the same note to the generated release notes. [TROUBLE
 
 ## Back up before you update
 
-Updates cannot be undone by installing an older version: server migrations 0025 and later have no reverse migrations, an older server binary refuses to start on a database a newer one migrated, and an older desktop build cannot read the account-bound encrypted groups and text cache a newer one wrote. Restoring a backup taken before the update is the only way back. See "Upgrades are one-way" in [GHOSTCHAT_4_0_RELEASE_CANDIDATE.md](GHOSTCHAT_4_0_RELEASE_CANDIDATE.md) for why and for the restore steps.
+Updates cannot be undone by installing an older version: server migrations 0025 and later have no reverse migrations, an older server binary refuses to start on a database a newer one migrated, and an older desktop build cannot read the account-bound encrypted groups and text cache a newer one wrote. Restoring a backup taken before the update is the only way back:
+
+- SQLx stops when the database records migrations the binary does not know, so an older server cannot open a newer database.
+- An older desktop build cannot use a profile a newer one opened: the rebuilt text cache has columns it does not fill, and it cannot find MLS groups whose storage is bound to the account.
+- Several migrations rebuild tables (0027, 0029) or change keys and constraints, and the desktop re-keys stored groups to the account. Undoing the group binding would make every group readable to every account on the profile again, which is the defect the binding fixed, so it is not offered.
 
 Builds from 4.0.54 on take these backups automatically, next to the database they copy:
 
@@ -40,15 +44,20 @@ The update also applies any new database migrations, with the automatic `pre-<mi
 
 Servers on 4.0.53 and older (including 4.0.52 and 4.0.53) do not contain the self-updater: replace `ghostchat-server-windows-x64.exe` by hand once with 4.0.54 or newer. From then on the server keeps itself current.
 
+## Going back to an older build
+
+Stop the server (or quit GhostChat, including from the tray), keep the current database aside, delete its `-wal` and `-shm` files, copy the backup over the database file and start the older build. Data written since the backup is lost. On a PC, the `pre-<version>.bak` and `pre-account-binding.bak` files written by one upgrade hold the same pre-upgrade state: restore either one. The server keeps only the three newest `pre-<version>.bak` files per database; the single `pre-account-binding.bak` is never deleted automatically, so delete it once the upgrade is confirmed.
+
+A server backup is as sensitive as the server database. The desktop copy keeps the field encryption of the original (MLS state and cached texts stay encrypted with the local storage key in Windows Credential Manager, `GhostChat.MlsStorageKey`), while ids, public keys and timestamps are in the clear in both. Unlike the live database, a backup keeps whatever is later deleted until you delete the file.
+
 ## GitHub releases
 
 The source and release workflow are published at [crsh6663r4234/getchat](https://github.com/crsh6663r4234/getchat).
 
 1. In the repository's **Settings → Secrets and variables → Actions**, add a repository secret named `TAURI_SIGNING_PRIVATE_KEY`. Its value is the full contents of the local `crates/desktop/secrets/ghostchat-updater.key` file. Do not commit or share that file. The matching public key is already embedded in `crates/desktop/tauri.conf.json`.
 2. Increase the version in the workspace `Cargo.toml`, `Cargo.lock`, and `crates/desktop/tauri.conf.json`, then push the change to `main`. A matching `vX.Y.Z` release is created automatically.
-3. The release workflow builds and signs the Windows MSI, creates a GitHub Release, uploads Tauri's `latest.json` updater feed, and attaches a standalone Windows x64 server with its SHA-256 checksum and its updater signature (`ghostchat-server-windows-x64.exe.sig`, made with the same key as the MSI's), which the server's self-updater requires.
-4. Install the updater-enabled MSI. Existing 0.1.x installations do not contain the updater and cannot update themselves.
+3. The release workflow ("Release GhostChat") builds and signs the Windows MSI, creates and publishes a GitHub Release marked as latest, uploads Tauri's `latest.json` updater feed, and attaches a standalone Windows x64 server with its SHA-256 checksum and its updater signature (`ghostchat-server-windows-x64.exe.sig`, made with the same key as the MSI's), which the server's self-updater requires.
 
 For later releases, increment the version in the root `Cargo.toml`, `Cargo.lock`, and `crates/desktop/tauri.conf.json` before pushing to `main`. Keep the same signing key.
 
-Automatic in-app updates apply to the installed MSI. Portable executable builds must be downloaded again from the latest release.
+Automatic in-app updates apply to the installed MSI, the only desktop download the release publishes.

@@ -4,7 +4,7 @@
 
 - Install the Microsoft Edge WebView2 Runtime if it is missing.
 - Use the x64 Windows build on Windows 10 or Windows 11.
-- The app and MSI are unsigned. Windows may show a SmartScreen prompt.
+- Release MSIs are not Authenticode-signed unless the signing gate in [RELEASE_SECURITY.md](RELEASE_SECURITY.md) is configured. Windows may show a SmartScreen prompt.
 - If using the MSI, it installs the Microsoft WebView2 bootstrapper. If WebView2 is absent, complete its setup and then reopen GhostChat.
 - If starting from source, run the app from `crates/desktop` through the Tauri CLI or build the release executable. Keep the `ui` folder beside the source configuration when developing.
 
@@ -27,9 +27,13 @@ Both people must use the same server. Search at least two characters of the user
 
 Only the recovery key can restore the account. Recovery rotates existing sessions. GhostChat cannot reset the key.
 
-## Messages are not encrypted from the server
+## The server can read my messages
 
-That is expected. TLS encrypts network traffic when configured, but the server can read messages in its database. GhostChat does not implement end-to-end encryption.
+That is expected unless encryption is enabled for the chat. TLS encrypts network traffic when configured, but the server stores ordinary messages and files as plaintext. A direct or group chat can opt in to experimental MLS encryption (**Enable encryption** in the chat header); only messages and files sent after that are encrypted, and the implementation has not had an independent security review. Calls are never end-to-end encrypted. See [SECURITY.md](SECURITY.md).
+
+## A call stays at "connecting" or a feature asks for a newer server
+
+Without a reachable TURN or LiveKit server (for example behind a Cloudflare tunnel), calls need a server from 4.0.54 on, which relays call media itself. `GET /health` reports the server version. Update the server, or let a 4.0.54 or newer Windows server update itself (see [UPDATES.md](UPDATES.md#the-standalone-server-updates-itself)).
 
 ## Automatic update closes the app and nothing is installed
 

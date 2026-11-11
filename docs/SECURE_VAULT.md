@@ -1,6 +1,6 @@
-# Isolated SQLCipher vault (Phase 2 worktree)
+# Isolated SQLCipher vault (opt-in module, not used by the app)
 
-`secure_vault::open_or_create(path, passphrase, os_secret).await` returns a SQLx pool only after SQLCipher 4 is present, the encrypted schema can be authenticated and the internal vault identity matches. The caller owns OS credential provisioning and must opt in explicitly. This is a new isolated database, never a migration or an automatic replacement for `ghostchat.sqlite`.
+This module is compiled only with the `sqlcipher-vault` feature and the shipped app does not use it. `secure_vault::open_or_create(path, passphrase, os_secret).await` returns a SQLx pool only after SQLCipher 4 is present, the encrypted schema can be authenticated and the internal vault identity matches. The caller owns OS credential provisioning and must opt in explicitly. This is a new isolated database, never a migration or an automatic replacement for `ghostchat.sqlite`.
 
 The path must be absolute with an existing parent. The manifest is `<database>.vault.json`. Both files must exist together or both must be absent. Existing ordinary SQLite files, missing/incomplete manifests, unexpected KDF parameters, symlinks and orphan journal/WAL files fail closed. First creation uses exclusive `create_new` file reservations and synchronized writes. Interrupted creation is deliberately blocked; it is not silently repaired. This does not provide a fully durable multi-file filesystem transaction or protect against a privileged local attacker racing directory operations.
 

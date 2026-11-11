@@ -27,4 +27,4 @@ The release desktop app was launched and verified to expose a native `GhostChat`
 
 ## Limits
 
-These checks establish basic functionality for the implemented MVP; they do not constitute a security audit, penetration test, load test, multi-host deployment validation, or a guarantee of production readiness. The app is unsigned. For the implemented product scope and omitted capabilities, see [FEATURES.md](FEATURES.md) and [SECURITY.md](SECURITY.md).
+These checks establish basic functionality for the implemented MVP; they do not constitute a security audit, penetration test, load test, multi-host deployment validation, or a guarantee of production readiness. The app is unsigned. For the implemented product scope and omitted capabilities, see [FEATURES.md](../FEATURES.md) and [SECURITY.md](../SECURITY.md).

@@ -42,6 +42,6 @@ The installed Windows app checks for signed updates in Settings and on startup. 
 
 ## Current scope
 
-See [docs/FEATURES.md](docs/FEATURES.md) for the implementation checklist, [docs/SECURITY.md](docs/SECURITY.md) for data handling and security limits, and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for common setup issues. Test results are recorded in [docs/TEST_REPORT.md](docs/TEST_REPORT.md). Measured performance and its limits are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+See [docs/FEATURES.md](docs/FEATURES.md) for the implementation checklist, [docs/SECURITY.md](docs/SECURITY.md) for data handling and security limits, and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for common setup issues. Test results are recorded in [docs/TEST_REPORT.md](docs/archive/TEST_REPORT.md). Measured performance and its limits are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
-The planned major release scope and delivery stages are tracked in [docs/GHOSTCHAT_4_0_ROADMAP.md](docs/GHOSTCHAT_4_0_ROADMAP.md). The encrypted-event relay foundation is documented in [docs/CRYPTO_EVENT_RELAY.md](docs/CRYPTO_EVENT_RELAY.md); the unreleased direct and group encryption code uses this relay for MLS setup events and stores text ciphertext through the normal message history API.
+The planned major release scope and delivery stages are tracked in [docs/GHOSTCHAT_4_0_ROADMAP.md](docs/archive/GHOSTCHAT_4_0_ROADMAP.md). The encrypted-event relay foundation is documented in [docs/CRYPTO_EVENT_RELAY.md](docs/CRYPTO_EVENT_RELAY.md); the unreleased direct and group encryption code uses this relay for MLS setup events and stores text ciphertext through the normal message history API.
