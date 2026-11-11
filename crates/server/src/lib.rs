@@ -6620,6 +6620,45 @@ async fn sweep_unclaimed_encrypted_uploads(state: &AppState, now: i64) -> Result
     Ok(removed)
 }
 
+/// Deletes `<uuid>.upload` temp files in the attachment directory whose last
+/// write is more than a day before `now` (Unix seconds). Both upload routes
+/// write their temp file chunk by chunk and remove it on every error path, so
+/// such a file is only left when the process stopped mid-upload. Nothing
+/// tracks running uploads, so the modification time stands in: a running
+/// upload rewrites it with every chunk, and one that has not received a byte
+/// for a day is abandoned. Even then the open handle keeps writing to the
+/// unlinked file on Unix and the final rename fails, so that upload ends with
+/// an error and no blob, never with a truncated one.
+async fn sweep_stale_upload_temp_files(dir: &std::path::Path, now: i64) -> std::io::Result<u64> {
+    let mut entries = match tokio::fs::read_dir(dir).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    let cutoff = UNIX_EPOCH + Duration::from_secs((now - UNCLAIMED_UPLOAD_TTL_SECS).max(0) as u64);
+    let mut removed = 0;
+    while let Some(entry) = entries.next_entry().await? {
+        let name = entry.file_name();
+        let Some(stem) = name.to_str().and_then(|name| name.strip_suffix(".upload")) else {
+            continue;
+        };
+        // Exactly the name the upload routes give: a UUID in its usual form.
+        if Uuid::parse_str(stem).map(|id| id.to_string()).as_deref() != Ok(stem) {
+            continue;
+        }
+        let Ok(metadata) = tokio::fs::symlink_metadata(entry.path()).await else {
+            continue;
+        };
+        if !metadata.is_file() || !metadata.modified().is_ok_and(|time| time < cutoff) {
+            continue;
+        }
+        if tokio::fs::remove_file(entry.path()).await.is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 async fn run_unclaimed_upload_sweep(state: AppState) {
     loop {
         let now = SystemTime::now()
@@ -6631,6 +6670,12 @@ async fn run_unclaimed_upload_sweep(state: AppState) {
             .is_err()
         {
             tracing::warn!("Sweeping unclaimed encrypted uploads failed; retrying later");
+        }
+        if sweep_stale_upload_temp_files(&state.attachment_dir, now)
+            .await
+            .is_err()
+        {
+            tracing::warn!("Sweeping stale upload temp files failed; retrying later");
         }
         tokio::time::sleep(UNCLAIMED_UPLOAD_SWEEP_EVERY).await;
     }
@@ -8619,6 +8664,51 @@ mod tests {
             assert_eq!(rows(kept.clone()).await, 1);
             assert!(blob(kept).exists());
         }
+    }
+
+    #[tokio::test]
+    async fn the_sweep_deletes_only_stale_upload_temp_files() {
+        let app = TestApp::new().await;
+        let dir = app.state.attachment_dir.clone();
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str, idle_hours: u64| {
+            let path = dir.join(name);
+            std::fs::write(&path, b"partial").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(SystemTime::now() - Duration::from_secs(idle_hours * 3600))
+                .unwrap();
+            path
+        };
+        // Left behind by an upload interrupted before its cleanup ran.
+        let stale = file(&format!("{}.upload", Uuid::new_v4()), 25);
+        // Still being written: its last write is recent.
+        let running = file(&format!("{}.upload", Uuid::new_v4()), 1);
+        // Not the temp-file pattern, however old.
+        let blob = file(&format!("{}.blob", Uuid::new_v4()), 48);
+        let other = file("notes.upload", 48);
+        let suffixed = file(&format!("{}.upload.bak", Uuid::new_v4()), 48);
+        let nested = dir.join(format!("{}.upload", Uuid::new_v4()));
+        std::fs::create_dir(&nested).unwrap();
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert_eq!(sweep_stale_upload_temp_files(&dir, now).await.unwrap(), 1);
+        assert!(!stale.exists(), "the stale temp file is deleted");
+        for kept in [&running, &blob, &other, &suffixed, &nested] {
+            assert!(kept.exists(), "{} is kept", kept.display());
+        }
+        // A missing storage directory (nothing uploaded yet) is no error.
+        assert_eq!(
+            sweep_stale_upload_temp_files(&dir.join("missing"), now)
+                .await
+                .unwrap(),
+            0
+        );
     }
 
     #[tokio::test]
