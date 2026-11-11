@@ -1713,6 +1713,7 @@ pub async fn prepare_group_membership_update(
         &[],
         &[],
         peers,
+        &[],
         expected_commit_seq,
     )
     .await?
@@ -1736,6 +1737,7 @@ pub async fn prepare_group_removal_update(
         removed_member_ids,
         &[],
         &[],
+        &[],
         expected_commit_seq,
     )
     .await?
@@ -1747,12 +1749,37 @@ pub async fn prepare_group_removal_update(
 /// no such leaf is left. A pending membership update is returned as is.
 /// The local MLS roster must equal the server roster plus only recorded
 /// deleted accounts.
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn prepare_deleted_member_removal(
     db: &SqlitePool,
     user_id: &str,
     conversation_id: &str,
     expected_member_ids: &[String],
     deleted_member_ids: &[String],
+    expected_commit_seq: Option<i64>,
+) -> Result<Option<GroupMembershipUpdate>, String> {
+    prepare_deleted_member_removal_excluding(
+        db,
+        user_id,
+        conversation_id,
+        expected_member_ids,
+        deleted_member_ids,
+        &[],
+        expected_commit_seq,
+    )
+    .await
+}
+
+/// Like `prepare_deleted_member_removal`, but never stages the removal of a
+/// leaf in `excluded_member_ids` (deleted accounts whose removal the server
+/// refused), so the next deleted leaf is staged instead of the refused one.
+pub async fn prepare_deleted_member_removal_excluding(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    expected_member_ids: &[String],
+    deleted_member_ids: &[String],
+    excluded_member_ids: &[String],
     expected_commit_seq: Option<i64>,
 ) -> Result<Option<GroupMembershipUpdate>, String> {
     prepare_group_membership_change(
@@ -1764,6 +1791,7 @@ pub async fn prepare_deleted_member_removal(
         &[],
         deleted_member_ids,
         &[],
+        excluded_member_ids,
         expected_commit_seq,
     )
     .await
@@ -1779,6 +1807,7 @@ async fn prepare_group_membership_change(
     selected_member_ids: &[String],
     deleted_member_ids: &[String],
     peers: &[GroupPeerKeyPackage],
+    excluded_member_ids: &[String],
     expected_commit_seq: Option<i64>,
 ) -> Result<Option<GroupMembershipUpdate>, String> {
     let _operation = CRYPTO_OPERATION_LOCK.lock().await;
@@ -1799,6 +1828,10 @@ async fn prepare_group_membership_change(
         return Err("Unsupported encrypted membership operation.".into());
     }
     let deleted_member_ids = normalized_deleted_member_ids(deleted_member_ids)?;
+    let excluded_member_ids = excluded_member_ids
+        .iter()
+        .map(|member_id| normalized_uuid(member_id, "excluded group member"))
+        .collect::<Result<std::collections::HashSet<_>, _>>()?;
 
     let mut expected_member_ids = expected_member_ids
         .iter()
@@ -1940,8 +1973,11 @@ async fn prepare_group_membership_change(
             return Err("The local MLS group does not match the current server roster.".into());
         }
         if action == "remove_deleted" {
+            // A leaf whose removal the server refused is left to a later
+            // roster change; the next deleted leaf is staged instead.
             let mut leftover = actual_member_ids
                 .difference(&current_set)
+                .filter(|member_id| !excluded_member_ids.contains(*member_id))
                 .cloned()
                 .collect::<Vec<_>>();
             leftover.sort();
@@ -6337,6 +6373,113 @@ mod tests {
             group_fingerprint(&alice_db, &alice_id, &conversation_id)
                 .await
                 .unwrap()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_deleted_leaf_is_skipped_and_the_next_one_is_staged() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-skip-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let mut peers = Vec::new();
+        let mut peer_ids = Vec::new();
+        for name in ["bob", "carol", "dave"] {
+            let db = open_database(&root.join(format!("{name}.sqlite"))).await;
+            let id = Uuid::new_v4().to_string();
+            let device = prepare_device(&db, &id).await.unwrap();
+            peers.push(GroupPeerKeyPackage {
+                user_id: id.clone(),
+                device_id: device.device_id,
+                payload: device.payload,
+            });
+            peer_ids.push(id);
+        }
+        create_group(&alice_db, &alice_id, &conversation_id, &peers)
+            .await
+            .unwrap();
+        let mut remaining = vec![alice_id.clone(), peer_ids[0].clone()];
+        remaining.sort();
+        let mut deleted = vec![peer_ids[1].clone(), peer_ids[2].clone()];
+        deleted.sort();
+        let (first, second) = (deleted[0].clone(), deleted[1].clone());
+        let prepare = |excluded: Vec<String>| {
+            let (alice_db, alice_id, conversation_id, remaining, deleted) = (
+                alice_db.clone(),
+                alice_id.clone(),
+                conversation_id.clone(),
+                remaining.clone(),
+                deleted.clone(),
+            );
+            async move {
+                let update = prepare_deleted_member_removal_excluding(
+                    &alice_db,
+                    &alice_id,
+                    &conversation_id,
+                    &remaining,
+                    &deleted,
+                    &excluded,
+                    None,
+                )
+                .await
+                .unwrap();
+                if let Some(update) = &update {
+                    discard_group_membership_update(
+                        &alice_db,
+                        &alice_id,
+                        &conversation_id,
+                        &update.operation_id,
+                    )
+                    .await
+                    .unwrap();
+                }
+                update.map(|update| update.member_ids)
+            }
+        };
+        assert_eq!(
+            prepare(Vec::new()).await,
+            Some(vec![first.clone()]),
+            "without exclusions the first deleted leaf is staged"
+        );
+        assert_eq!(
+            prepare_deleted_member_removal(
+                &alice_db,
+                &alice_id,
+                &conversation_id,
+                &remaining,
+                &deleted,
+                None
+            )
+            .await
+            .unwrap()
+            .map(|update| update.member_ids),
+            Some(vec![first.clone()]),
+            "the plain call is unchanged"
+        );
+        discard_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &get_pending_group_membership_update(&alice_db, &alice_id, &conversation_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .operation_id,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            prepare(vec![first.clone()]).await,
+            Some(vec![second.clone()]),
+            "a refused deleted leaf is skipped and the next one is staged"
+        );
+        assert_eq!(
+            prepare(vec![second.clone(), first.clone()]).await,
+            None,
+            "nothing is staged when every deleted leaf was refused"
         );
     }
 

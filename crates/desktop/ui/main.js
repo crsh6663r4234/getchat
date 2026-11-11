@@ -1863,8 +1863,10 @@
       // without a sync that reached the end of the relay, the next one decides.
       const expectedCommitSeq = state.cryptoCommitSeq.get(conversationId);
       if (expectedCommitSeq === undefined) return;
+      // Refused targets are skipped, so the next deleted leaf is staged.
       const update = await invoke("crypto_prepare_deleted_member_removal", {
-        userId: state.user.id, conversationId, expectedMemberIds, deletedMemberIds, expectedCommitSeq,
+        userId: state.user.id, conversationId, expectedMemberIds, deletedMemberIds,
+        excludeMemberIds: [...refusedTargets()], expectedCommitSeq,
       });
       if (!update) { deletedLeafStaleRetries.delete(conversationId); return; }
       const target = update.memberIds?.[0] ?? "";

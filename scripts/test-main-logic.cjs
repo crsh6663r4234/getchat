@@ -510,8 +510,9 @@ async function deletedLeafHarness({ role = 'owner', deletedAt = '2000-01-01T00:0
       crypto_group_fingerprint: () => 'fp-group',
       crypto_get_event_cursor: () => 0,
       crypto_advance_event_cursor: args => args.sequence,
-      crypto_prepare_deleted_member_removal: () => {
-        const target = deleted.find(id => !gone.has(id));
+      crypto_prepare_deleted_member_removal: args => {
+        // Like the Rust side, leaves the caller excludes are never staged.
+        const target = deleted.find(id => !gone.has(id) && !(args.excludeMemberIds || []).includes(id));
         if (staged) return staged;
         if (!target) return false;
         prepared += 1;
@@ -614,6 +615,18 @@ test('a definitive refusal for one deleted member does not block the next one', 
   await app.again();
   await app.flush(() => app.removals().length > 1);
   assert.deepEqual(app.removals().map(item => item.url.split('/remove/')[1]), ['c1', 'c2']);
+});
+
+test('the refused deleted members are excluded when the next removal is prepared', async () => {
+  // The fake keeps offering C1 unless the caller excludes it.
+  const app = await deletedLeafHarness({ deleted: ['c1', 'c2'], removeReply: target => target === 'c1' ? { status: 403, error: 'refused' } : { status: 204 } });
+  await app.flush(() => app.discards().length > 0);
+  await app.again();
+  await app.flush(() => app.removals().length > 1);
+  assert.deepEqual(app.removals().map(item => item.url.split('/remove/')[1]), ['c1', 'c2'], 'C2 is staged and sent after C1 was refused');
+  const prepares = app.invokes.filter(item => item.command === 'crypto_prepare_deleted_member_removal');
+  assert.deepEqual([...prepares[0].args.excludeMemberIds], [], 'nothing is excluded before a refusal');
+  assert.deepEqual([...prepares.at(-1).args.excludeMemberIds], ['c1'], 'the refused target is passed to the prepare call');
 });
 
 test('an admin removes a deleted leaf after the owner\'s grace period', async () => {
