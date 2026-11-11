@@ -44,7 +44,7 @@
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYxMjY3RDk0QkQyMjNFMDAKUldRQVBpSzlsSDBtOGI5V3VCOFNTd1J6c1NuSU9PRUJVaFM4bVFXWC9IK29GQktXQmFUR05RQTEK",
       "endpoints": ["https://github.com/crsh6663r4234/getchat/releases/latest/download/latest.json"],
       "windows": {
-        "installMode": "quiet"
+        "installMode": "passive"
       }
     }
   }

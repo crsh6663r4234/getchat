@@ -30,3 +30,10 @@ Only the recovery key can restore the account. Recovery rotates existing session
 ## Messages are not encrypted from the server
 
 That is expected. TLS encrypts network traffic when configured, but the server can read messages in its database. GhostChat does not implement end-to-end encryption.
+
+## Automatic update closes the app and nothing is installed
+
+Builds 4.0.48 to 4.0.52-pre used the updater's `quiet` install mode. The MSI installs for all users and needs administrator rights, and `quiet` cannot show the Windows permission prompt, so the app closed for the update, the installer failed silently and the app did not start again. From 4.0.52 the updater uses `passive` mode: Windows shows the permission prompt and a progress bar, and the app restarts when the install finishes.
+
+An installed 4.0.48 to 4.0.51 still has the old setting, so it cannot update itself to 4.0.52. Install 4.0.52 once by hand from the GitHub release (`GhostChat_<version>_x64_en-US.msi`); later updates then install automatically.
+
