@@ -2888,6 +2888,106 @@ pub async fn encrypt_text(
     Ok(EncryptedApplicationMessage { payload })
 }
 
+/// Encrypts a queued message again for the group's current epoch. The server
+/// refused the earlier ciphertext because a membership commit was accepted
+/// after it was made (devices that applied the commit could not read it).
+/// The text comes from this account's own saved copy; the outbox keeps the
+/// new ciphertext under the same message id, so a later retry sends it.
+pub async fn reencrypt_text(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    client_message_id: &str,
+) -> Result<EncryptedApplicationMessage, String> {
+    let _operation = CRYPTO_OPERATION_LOCK.lock().await;
+    let user_id = normalized_uuid(user_id, "account")?;
+    let conversation_id = normalized_uuid(conversation_id, "conversation")?;
+    let client_message_id = normalized_uuid(client_message_id, "message")?;
+    prepare_crypto_storage(db).await?;
+    let _storage_account = StorageAccountScope::enter(&user_id);
+    adopt_legacy_group(db, &user_id, &conversation_id).await?;
+    let mut transaction = db
+        .begin()
+        .await
+        .map_err(|_| "GhostChat could not start local encryption.".to_string())?;
+    let public_key = sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT signing_public_key FROM ghostchat_crypto_identities WHERE user_id=?",
+    )
+    .bind(&user_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| "GhostChat could not load this device's encryption identity.".to_string())?
+    .ok_or_else(|| "Prepare this device for encryption in Settings first.".to_string())?;
+    let queued = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM ghostchat_crypto_application_outbox WHERE client_message_id=? AND user_id=? AND conversation_id=?)",
+    )
+    .bind(&client_message_id)
+    .bind(&user_id)
+    .bind(&conversation_id)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|_| "GhostChat could not load the encrypted application outbox.".to_string())?;
+    let cached = sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT encrypted_content FROM ghostchat_crypto_text_cache WHERE user_id=? AND conversation_id=? AND sender_id=? AND client_message_id=?",
+    )
+    .bind(&user_id)
+    .bind(&conversation_id)
+    .bind(&user_id)
+    .bind(&client_message_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(|_| "GhostChat could not load the encrypted local message cache.".to_string())?;
+    let (true, Some(cached)) = (queued != 0, cached) else {
+        return Err("This message is not waiting to be sent from this device.".into());
+    };
+    let content: String = EncryptedJsonCodec::from_slice(&cached)
+        .map_err(|_| "The local encrypted message cache could not be decrypted.".to_string())?;
+    let payload = {
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        let provider = DesktopMlsProvider {
+            crypto: RustCrypto::default(),
+            storage,
+        };
+        let signer = SignatureKeyPair::read(
+            provider.storage(),
+            &public_key,
+            MLS_CIPHERSUITE.signature_algorithm(),
+        )
+        .ok_or_else(|| {
+            "The saved encryption identity is missing or cannot be decrypted.".to_string()
+        })?;
+        let group_id = group_id_for_conversation(&conversation_id);
+        let mut group = MlsGroup::load(provider.storage(), &group_id)
+            .map_err(|_| "GhostChat could not load the encrypted conversation.".to_string())?
+            .ok_or_else(|| "Encryption has not been set up for this conversation.".to_string())?;
+        let message = group
+            .create_message(&provider, &signer, content.as_bytes())
+            .map_err(|_| "GhostChat could not encrypt this message.".to_string())?;
+        URL_SAFE_NO_PAD.encode(
+            message
+                .tls_serialize_detached()
+                .map_err(|_| "GhostChat could not serialize the encrypted message.".to_string())?,
+        )
+    };
+    let encrypted_payload = EncryptedJsonCodec::to_vec(&payload)
+        .map_err(|_| "GhostChat could not protect the application outbox.".to_string())?;
+    sqlx::query(
+        "UPDATE ghostchat_crypto_application_outbox SET encrypted_payload=? WHERE client_message_id=? AND user_id=? AND conversation_id=?",
+    )
+    .bind(encrypted_payload)
+    .bind(&client_message_id)
+    .bind(&user_id)
+    .bind(&conversation_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| "GhostChat could not save the encrypted application outbox.".to_string())?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| "GhostChat could not save the local encryption state.".to_string())?;
+    Ok(EncryptedApplicationMessage { payload })
+}
+
 pub async fn get_cached_sent_text(
     db: &SqlitePool,
     user_id: &str,
@@ -7139,6 +7239,151 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(applied.kind, "commit");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_message_refused_as_stale_is_encrypted_again_for_the_new_epoch() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-reencrypt-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let carol_db = open_database(&root.join("carol.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let carol_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut roster = vec![alice_id.clone(), bob_id.clone(), carol_id.clone()];
+        roster.sort();
+        let mut remaining = vec![alice_id.clone(), bob_id.clone()];
+        remaining.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let carol_device = prepare_device(&carol_db, &carol_id).await.unwrap();
+        let start = create_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &[
+                GroupPeerKeyPackage {
+                    user_id: bob_id.clone(),
+                    device_id: bob_device.device_id.clone(),
+                    payload: bob_device.payload.clone(),
+                },
+                GroupPeerKeyPackage {
+                    user_id: carol_id.clone(),
+                    device_id: carol_device.device_id.clone(),
+                    payload: carol_device.payload.clone(),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(1),
+            true,
+            &roster,
+            &start.welcome_payload,
+        )
+        .await
+        .unwrap();
+
+        // Bob encrypts while Alice's removal of Carol is accepted first.
+        let message_id = Uuid::new_v4().to_string();
+        let stale = encrypt_text(&bob_db, &bob_id, &conversation_id, &message_id, "hello")
+            .await
+            .unwrap();
+        let removal = prepare_group_removal_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &roster,
+            std::slice::from_ref(&carol_id),
+            None,
+        )
+        .await
+        .unwrap();
+        finalize_group_membership_update(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &removal.operation_id,
+        )
+        .await
+        .unwrap();
+        assert!(
+            process_crypto_event(
+                &alice_db,
+                &alice_id,
+                &conversation_id,
+                &bob_id,
+                Some(&message_id),
+                None,
+                true,
+                &remaining,
+                &stale.payload,
+            )
+            .await
+            .is_err(),
+            "the old-epoch ciphertext is unreadable after the commit"
+        );
+        // The server refuses it; Bob applies the commit and encrypts the
+        // same saved text again under the same message id.
+        process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(2),
+            true,
+            &remaining,
+            &removal.commit_payload,
+        )
+        .await
+        .unwrap();
+        let fresh = reencrypt_text(&bob_db, &bob_id, &conversation_id, &message_id)
+            .await
+            .unwrap();
+        assert_ne!(fresh.payload, stale.payload);
+        let read = process_crypto_event(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &bob_id,
+            Some(&message_id),
+            None,
+            true,
+            &remaining,
+            &fresh.payload,
+        )
+        .await
+        .expect("the re-encrypted message is readable in the new epoch");
+        assert_eq!(read.content.as_deref(), Some("hello"));
+        // A later retry sends the new ciphertext, not the stale one.
+        let retried = encrypt_text(&bob_db, &bob_id, &conversation_id, &message_id, "hello")
+            .await
+            .unwrap();
+        assert_eq!(retried.payload, fresh.payload);
+        // Only a message this account has queued can be encrypted again.
+        assert!(reencrypt_text(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &Uuid::new_v4().to_string()
+        )
+        .await
+        .is_err());
+        assert!(
+            reencrypt_text(&alice_db, &alice_id, &conversation_id, &message_id)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

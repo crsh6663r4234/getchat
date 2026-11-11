@@ -433,6 +433,22 @@ async fn crypto_encrypt_text(
 }
 
 #[tauri::command]
+async fn crypto_reencrypt_text(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    client_message_id: String,
+) -> Result<crypto::EncryptedApplicationMessage, String> {
+    crypto::reencrypt_text(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &client_message_id,
+    )
+    .await
+}
+
+#[tauri::command]
 async fn crypto_get_cached_sent_text(
     state: State<'_, DesktopState>,
     user_id: String,
@@ -887,6 +903,7 @@ fn main() {
             crypto_get_pending_bootstrap,
             crypto_clear_pending_bootstrap,
             crypto_encrypt_text,
+            crypto_reencrypt_text,
             crypto_get_cached_sent_text,
             crypto_get_cached_text_state,
             crypto_process_event,
