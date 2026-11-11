@@ -247,6 +247,7 @@
     "The encrypted group changed while this update was being prepared. Try again.": "Bu güncelleme hazırlanırken şifreli grup değişti. Tekrar dene.",
     "This device has not caught up with the encrypted group yet. Try again in a moment.": "Bu cihaz şifreli grubun son durumuna henüz yetişmedi. Birazdan tekrar dene.",
     "Windows Credential Manager could not be read. Your session was not removed; try again.": "Windows Kimlik Bilgisi Yöneticisi okunamadı. Oturumun silinmedi; tekrar dene.",
+    "Encrypted chats are paused because GhostChat could not write a safety copy of its local data before upgrading it. Free some disk space, then restart GhostChat.": "Yükseltmeden önce yerel verilerin güvenlik kopyası yazılamadığı için şifreli sohbetler duraklatıldı. Diskte yer aç, ardından GhostChat’i yeniden başlat.",
     "The update could not be installed.": "Güncelleme yüklenemedi.",
     "New friend request": "Yeni arkadaşlık isteği", "{name} sent you a friend request.": "{name} sana arkadaşlık isteği gönderdi."
   });
@@ -2163,6 +2164,8 @@
     state.cryptoSyncing.set(conversationId, task);
     return task;
   }
+  // The exact text of crypto::LOCAL_BACKUP_FAILED in the desktop crate.
+  const LOCAL_BACKUP_FAILED = "Encrypted chats are paused because GhostChat could not write a safety copy of its local data before upgrading it. Free some disk space, then restart GhostChat.";
   async function refreshCryptoConversation(conversation) {
     const button = $("#enableEncryptionButton"); const status = $("#cryptoConversationStatus");
     if (!["direct", "group"].includes(conversation?.kind) || !state.user || !invoke) {
@@ -2247,7 +2250,11 @@
       const canManage = state.cryptoCanManage.has(conversation.id);
       const complete = state.cryptoSetupComplete.has(conversation.id);
       button.classList.remove("hidden"); button.textContent = translate(locked ? (canManage && !complete ? "Continue encryption setup" : "Encrypted") : "Enable encryption"); button.disabled = locked && (!canManage || complete);
-      status.textContent = state.cryptoLocked.has(conversation.id)
+      // The desktop's one-time safety copy before an upgrade failed: no
+      // encrypted data was changed, and nothing here can fix it but disk space.
+      status.textContent = String(error?.message ?? error) === LOCAL_BACKUP_FAILED
+        ? translate(LOCAL_BACKUP_FAILED)
+        : state.cryptoLocked.has(conversation.id)
         ? translate("This conversation is locked for MLS encryption. Prepare this device in Settings to read new messages; ask the person who started setup for help if it still fails.")
         : (error.message || translate("Prepare this device for encryption in Settings first."));
       status.classList.remove("hidden"); status.classList.add("warning");

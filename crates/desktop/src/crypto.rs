@@ -5078,6 +5078,10 @@ mod tests {
             prepare_crypto_storage(&db).await.unwrap_err(),
             LOCAL_BACKUP_FAILED
         );
+        assert!(
+            include_str!("../ui/main.js").contains(LOCAL_BACKUP_FAILED),
+            "the UI recognizes and translates this exact text"
+        );
         assert_eq!(text_cache_layout(&db).await, (false, vec!["m-old".into()]));
         assert!(!root
             .join("ghostchat.sqlite.pre-account-binding.bak")

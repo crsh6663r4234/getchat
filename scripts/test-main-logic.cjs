@@ -403,6 +403,33 @@ test('a failed encrypted send that is queued for retry is not restored', async (
   assert.equal(app.$('#messageInput').value, '', 'restoring a queued message would let it be sent twice');
 });
 
+test('a safety copy that could not be written pauses encrypted chats with its own translated message', async () => {
+  // The exact text of crypto::LOCAL_BACKUP_FAILED; Tauri rejects with it as a string.
+  const failure = 'Encrypted chats are paused because GhostChat could not write a safety copy of its local data before upgrading it. Free some disk space, then restart GhostChat.';
+  const turkish = 'Yükseltmeden önce yerel verilerin güvenlik kopyası yazılamadığı için şifreli sohbetler duraklatıldı. Diskte yer aç, ardından GhostChat’i yeniden başlat.';
+  for (const [language, expected] of [['en', failure], ['tr', turkish]]) {
+    const base = 'https://a.example';
+    const conversation = { id: 'c1', kind: 'direct', peer_id: 'peer', display_name: 'Peer', username: 'peer' };
+    const app = harness({
+      storage: { 'ghostchat.server': base, 'ghostchat.language': language },
+      credentials: { [await serverKey(base)]: 'token-A' },
+      hooks: { crypto_has_direct_group: () => { throw failure; } },
+      fetchHandler: url => {
+        if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
+        if (url.endsWith('/v1/conversations')) return { body: [conversation] };
+        // A locked conversation would otherwise show the generic setup hint.
+        if (url.endsWith('/conversations/c1/crypto-lock')) return { body: { locked: true, setupComplete: true } };
+        return { body: [] };
+      },
+    });
+    await app.flush(() => app.sockets.length > 0);
+    app.voiceOptions.voice.onIncoming({ conversationId: 'c1' });
+    await app.flush(() => app.invokes.some(item => item.command === 'crypto_has_direct_group'));
+    await app.flush();
+    assert.equal(app.$('#cryptoConversationStatus').textContent, expected, `${language}: the status names the failed safety copy`);
+  }
+});
+
 test('an encrypted file message names its encrypted attachment for the server', async () => {
   const attachmentId = '0b3c9a52-6f1e-4c55-9d43-3f6d2f6c1a10';
   const app = await openChatAndFailSend({
