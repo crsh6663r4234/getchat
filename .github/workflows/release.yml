@@ -170,6 +170,8 @@ jobs:
 
           This release includes the Windows desktop installer and standalone server.
           Consult docs/RELEASE_SECURITY.md for signing scope and verification steps.
+
+          **Before updating.** Desktop app 4.0.48 to 4.0.53: the automatic update cannot install (the app closes and does not start again). Download GhostChat_4.0.54_x64_en-US.msi from the 4.0.54 release and install it once by hand, with GhostChat closed; later updates install automatically. Standalone server 4.0.53 and older: replace ghostchat-server-windows-x64.exe by hand once; from 4.0.54 on the server updates itself. See docs/UPDATES.md and docs/TROUBLESHOOTING.md.
           "@ | Set-Content -LiteralPath "target/release/RELEASE_NOTES.md" -Encoding utf8
           gh release view "$releaseTag" *> $null
           if ($LASTEXITCODE -ne 0) {

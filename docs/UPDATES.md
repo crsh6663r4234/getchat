@@ -4,6 +4,14 @@ The installed Windows app checks for updates when it starts, then every six hour
 
 Updates use Tauri's signed updater bundles. Keep the private signing key private and backed up: existing installations trust the public key embedded in the app, so replacing or losing the private key breaks future updates.
 
+## Before updating
+
+Copy this note into the release text of every release until no 4.0.53 or older installation is left:
+
+> **Before updating.** Desktop app 4.0.48 to 4.0.53: the automatic update cannot install (the app closes and does not start again). Download `GhostChat_4.0.54_x64_en-US.msi` from the 4.0.54 release and install it once by hand, with GhostChat closed; later updates install automatically. Standalone server 4.0.53 and older: replace `ghostchat-server-windows-x64.exe` by hand once; from 4.0.54 on the server updates itself. Back up the server database and each PC's `%APPDATA%\app.ghostchat.desktop\` folder first.
+
+The release workflow adds the same note to the generated release notes. [TROUBLESHOOTING.md](TROUBLESHOOTING.md#automatic-update-closes-the-app-and-nothing-is-installed) explains the cause.
+
 ## Back up before you update
 
 Updates cannot be undone by installing an older version: server migrations 0025 and later have no reverse migrations, an older server binary refuses to start on a database a newer one migrated, and an older desktop build cannot read the account-bound encrypted groups and text cache a newer one wrote. Restoring a backup taken before the update is the only way back. See "Upgrades are one-way" in [GHOSTCHAT_4_0_RELEASE_CANDIDATE.md](GHOSTCHAT_4_0_RELEASE_CANDIDATE.md) for why and for the restore steps.
