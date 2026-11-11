@@ -628,8 +628,10 @@ async fn distributed_admission(
 
 pub async fn serve(listener: tokio::net::TcpListener, state: AppState) -> std::io::Result<()> {
     let reconciler = tokio::spawn(media_revocation::run(state.clone()));
+    let upload_sweep = tokio::spawn(run_unclaimed_upload_sweep(state.clone()));
     let result = axum::serve(listener, router(state)).await;
     reconciler.abort();
+    upload_sweep.abort();
     result
 }
 
@@ -6538,6 +6540,62 @@ async fn delete_message(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// An encrypted upload no message has claimed within this time is abandoned.
+const UNCLAIMED_UPLOAD_TTL_SECS: i64 = 24 * 60 * 60;
+const UNCLAIMED_UPLOAD_SWEEP_EVERY: Duration = Duration::from_secs(60 * 60);
+
+/// Deletes encrypted uploads that no message claimed (row and blob), once
+/// they are older than a day as seen from `now` (Unix seconds). Only uploads
+/// made after migration 0026 qualify: before it an upload could not be
+/// linked, and an encrypted message the server cannot read may still point
+/// to it. `installed_on` has whole seconds, so a one-second margin keeps an
+/// upload from the second the migration ran out of the sweep. Without a
+/// record for 0026 the comparison is NULL and nothing is deleted.
+async fn sweep_unclaimed_encrypted_uploads(state: &AppState, now: i64) -> Result<u64, sqlx::Error> {
+    let candidates = sqlx::query_scalar::<_, String>(
+        "SELECT id FROM attachments WHERE encrypted=1 AND message_id IS NULL \
+         AND julianday(created_at) < julianday(?,'unixepoch') \
+         AND julianday(created_at) > (SELECT julianday(installed_on,'+1 second') FROM _sqlx_migrations WHERE version=26) \
+         LIMIT 500",
+    )
+    .bind(now - UNCLAIMED_UPLOAD_TTL_SECS)
+    .fetch_all(&state.db)
+    .await?;
+    let mut removed = 0;
+    for id in candidates {
+        // A message may have claimed it since the select.
+        let deleted = sqlx::query(
+            "DELETE FROM attachments WHERE id=? AND encrypted=1 AND message_id IS NULL",
+        )
+        .bind(&id)
+        .execute(&state.db)
+        .await?
+        .rows_affected();
+        if deleted == 1 {
+            let path = state.attachment_dir.join(format!("{id}.blob"));
+            let _ = tokio::fs::remove_file(path).await;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+async fn run_unclaimed_upload_sweep(state: AppState) {
+    loop {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        if sweep_unclaimed_encrypted_uploads(&state, now)
+            .await
+            .is_err()
+        {
+            tracing::warn!("Sweeping unclaimed encrypted uploads failed; retrying later");
+        }
+        tokio::time::sleep(UNCLAIMED_UPLOAD_SWEEP_EVERY).await;
+    }
+}
+
 async fn search_messages(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -8277,6 +8335,125 @@ mod tests {
             .unwrap();
         assert_eq!(rows, 0);
         assert!(blob(&bobs).exists(), "an unrelated upload is kept");
+    }
+
+    #[tokio::test]
+    async fn the_sweep_deletes_only_old_unclaimed_encrypted_uploads_made_after_0026() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let direct = app.direct(&alice, &bob).await;
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete) VALUES(?,?,1)",
+        )
+        .bind(&direct)
+        .bind(&alice.id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        let upload = || {
+            let attachment_id = Uuid::new_v4().to_string();
+            let request = app
+                .request(
+                    Method::POST,
+                    &format!(
+                        "/v1/conversations/{direct}/encrypted-attachments?attachment_id={attachment_id}&plain_size=0&chunk_size={ENCRYPTED_ATTACHMENT_CHUNK_BYTES}&chunk_count=1"
+                    ),
+                    &alice,
+                )
+                .body(vec![7u8; 16])
+                .send();
+            async move {
+                assert_eq!(request.await.unwrap().status(), StatusCode::OK);
+                attachment_id
+            }
+        };
+        let blob = |id: &str| app.state.attachment_dir.join(format!("{id}.blob"));
+        let rows = |id: String| {
+            let db = app.state.db.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>("SELECT count(*) FROM attachments WHERE id=?")
+                    .bind(id)
+                    .fetch_one(&db)
+                    .await
+                    .unwrap()
+            }
+        };
+        let age = |id: String, days: i64| {
+            let db = app.state.db.clone();
+            async move {
+                sqlx::query(
+                    "UPDATE attachments SET created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now',?) WHERE id=?",
+                )
+                .bind(format!("-{days} days"))
+                .bind(id)
+                .execute(&db)
+                .await
+                .unwrap();
+            }
+        };
+        // As on a server that has been running: 0026 was applied three days ago.
+        sqlx::query(
+            "UPDATE _sqlx_migrations SET installed_on=datetime('now','-3 days') WHERE version=26",
+        )
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+
+        let abandoned = upload().await;
+        age(abandoned.clone(), 2).await;
+        let young = upload().await;
+        let claimed = upload().await;
+        let status = app
+            .request(
+                Method::POST,
+                &format!("/v1/conversations/{direct}/messages"),
+                &alice,
+            )
+            .json(&serde_json::json!({
+                "client_message_id": Uuid::new_v4().to_string(),
+                "content": "e2e1:AAAA",
+                "attachment_ids": [claimed.clone()],
+            }))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::OK);
+        age(claimed.clone(), 2).await;
+        // Uploaded before 0026: an encrypted message the server cannot read
+        // may still point to it, so it is never swept.
+        let legacy = upload().await;
+        age(legacy.clone(), 4).await;
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let removed = sweep_unclaimed_encrypted_uploads(&app.state, now)
+            .await
+            .unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(rows(abandoned.clone()).await, 0);
+        assert!(!blob(&abandoned).exists(), "the abandoned blob is deleted");
+        for kept in [&young, &claimed, &legacy] {
+            assert_eq!(rows(kept.clone()).await, 1);
+            assert!(blob(kept).exists());
+        }
+
+        // Two days later the young upload is abandoned too; the claimed and
+        // the pre-0026 uploads still stay.
+        let removed = sweep_unclaimed_encrypted_uploads(&app.state, now + 2 * 86_400)
+            .await
+            .unwrap();
+        assert_eq!(removed, 1);
+        assert_eq!(rows(young.clone()).await, 0);
+        assert!(!blob(&young).exists());
+        for kept in [&claimed, &legacy] {
+            assert_eq!(rows(kept.clone()).await, 1);
+            assert!(blob(kept).exists());
+        }
     }
 
     #[tokio::test]
