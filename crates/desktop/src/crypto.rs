@@ -367,13 +367,21 @@ async fn text_cache_needs_rebuild(
 pub async fn open_local_database(path: &str) -> Result<SqlitePool, LocalDatabaseError> {
     let file = std::path::Path::new(path);
     if file.exists() && !account_binding_backup_path(file).exists() {
-        if let Err(error) = copy_profile_before_opening(file).await {
-            eprintln!("GhostChat could not copy its local database before upgrading it: {error}");
-            STARTUP_COPY_FAILED
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .get_or_insert_with(Default::default)
-                .insert(file.to_path_buf());
+        match copy_profile_before_opening(file).await {
+            Ok(Some(report)) => {
+                eprintln!("{}", report.describe(&account_binding_backup_path(file)))
+            }
+            Ok(None) => {}
+            Err(error) => {
+                eprintln!(
+                    "GhostChat could not copy its local database before upgrading it: {error}"
+                );
+                STARTUP_COPY_FAILED
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .get_or_insert_with(Default::default)
+                    .insert(file.to_path_buf());
+            }
         }
     }
     ghostchat_server::open_database(path)
@@ -426,16 +434,44 @@ pub fn startup_backup_failure_dialog(languages: &[String]) -> (&'static str, &'s
     }
 }
 
-async fn copy_profile_before_opening(file: &std::path::Path) -> Result<(), String> {
+/// What the startup copy wrote. It runs before the window can paint, so
+/// a large profile shows as a slow start; the log says why.
+struct StartupCopy {
+    bytes: u64,
+    elapsed: std::time::Duration,
+}
+
+impl StartupCopy {
+    fn describe(&self, backup: &std::path::Path) -> String {
+        format!(
+            "GhostChat copied its local database ({:.1} MB) to {} before upgrading it, in {:.1} s",
+            self.bytes as f64 / (1024.0 * 1024.0),
+            backup.display(),
+            self.elapsed.as_secs_f64()
+        )
+    }
+}
+
+/// Copies an earlier build's profile; `None` when the profile needs no copy.
+async fn copy_profile_before_opening(
+    file: &std::path::Path,
+) -> Result<Option<StartupCopy>, String> {
     use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions, Connection};
+    let started = std::time::Instant::now();
     let mut connection = SqliteConnectOptions::new()
         .filename(file)
         .connect()
         .await
         .map_err(|error| error.to_string())?;
+    let backup = account_binding_backup_path(file);
     let result = match text_cache_needs_rebuild(&mut connection).await {
-        Ok(true) => vacuum_copy(&mut connection, &account_binding_backup_path(file)).await,
-        Ok(false) => Ok(()),
+        Ok(true) => vacuum_copy(&mut connection, &backup).await.map(|()| {
+            Some(StartupCopy {
+                bytes: std::fs::metadata(&backup).map_or(0, |metadata| metadata.len()),
+                elapsed: started.elapsed(),
+            })
+        }),
+        Ok(false) => Ok(None),
         Err(error) => Err(error.to_string()),
     };
     let _ = connection.close().await;
@@ -5241,6 +5277,39 @@ mod tests {
                 "{name} holds the old cache"
             );
         }
+    }
+
+    /// The startup copy runs before any window can paint, so it reports what
+    /// it copied and how long it took for the startup log.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_startup_copy_reports_its_size_and_duration() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-copytime-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let path = root.join("ghostchat.sqlite");
+        earlier_build_profile(&path, 24).await;
+        let report = copy_profile_before_opening(&path)
+            .await
+            .unwrap()
+            .expect("an earlier build's profile is copied");
+        assert_eq!(
+            report.bytes,
+            std::fs::metadata(account_binding_backup_path(&path))
+                .unwrap()
+                .len()
+        );
+        assert!(report.bytes > 0);
+        assert!(report.elapsed < std::time::Duration::from_secs(60));
+        let message = report.describe(&account_binding_backup_path(&path));
+        assert!(message.contains("pre-account-binding.bak"), "{message}");
+        assert!(message.contains(" s"), "{message}");
+        let fresh = root.join("fresh.sqlite");
+        let db = open_local_database(&fresh.to_string_lossy()).await.unwrap();
+        db.close().await;
+        assert!(
+            copy_profile_before_opening(&fresh).await.unwrap().is_none(),
+            "a current profile is not copied"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
