@@ -1969,7 +1969,7 @@ dependencies = [
 
 [[package]]
 name = "ghostchat-desktop"
-version = "4.0.54"
+version = "4.0.55"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -2009,7 +2009,7 @@ dependencies = [
 
 [[package]]
 name = "ghostchat-server"
-version = "4.0.54"
+version = "4.0.55"
 dependencies = [
  "argon2",
  "axum",
