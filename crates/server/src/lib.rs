@@ -5519,7 +5519,13 @@ async fn send_message(
     }
     let id = Uuid::new_v4().to_string();
     let mut tx = state.db.begin().await.map_err(|_| ApiError::internal())?;
-    let inserted = sqlx::query("INSERT OR IGNORE INTO messages(id,conversation_id,sender_id,client_message_id,content,reply_to_id) VALUES(?,?,?,?,?,?)")
+    // A client id is deduplicated per sender, but another sender's message
+    // with the same client id in this conversation is refused: a reader that
+    // caches texts by client id must not show that message's text under this
+    // one. The check is part of the insert so no concurrent send slips past it.
+    // All parameters are numbered: sqlx binds a plain ? after a ?N to the
+    // wrong argument.
+    let inserted = sqlx::query("INSERT OR IGNORE INTO messages(id,conversation_id,sender_id,client_message_id,content,reply_to_id) SELECT ?1,?2,?3,?4,?5,?6 WHERE NOT EXISTS(SELECT 1 FROM messages WHERE conversation_id=?2 AND client_message_id=?4 AND sender_id<>?3)")
         .bind(&id).bind(&conversation_id).bind(&user.id).bind(&body.client_message_id).bind(content).bind(body.reply_to_id.as_deref()).execute(&mut *tx).await.map_err(|error| {
             if error.as_database_error().is_some_and(|database_error| database_error.message().contains("encrypted conversation only accepts MLS content")) {
                 ApiError::conflict("This encrypted conversation only accepts MLS-encrypted text messages.")
@@ -5548,7 +5554,8 @@ async fn send_message(
     }
     tx.commit().await.map_err(|_| ApiError::internal())?;
     let message = sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,u.avatar_data AS sender_avatar,m.client_message_id,m.content,m.created_at,m.edited_at,m.pinned_at,m.reply_to_id,(SELECT r.content FROM messages r WHERE r.id=m.reply_to_id) AS reply_to_content,(SELECT u.display_name FROM messages r JOIN users u ON u.id=r.sender_id WHERE r.id=m.reply_to_id) AS reply_to_sender FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? AND m.sender_id=? AND m.client_message_id=?")
-        .bind(&conversation_id).bind(&user.id).bind(&body.client_message_id).fetch_one(&state.db).await.map_err(|_| ApiError::internal())?;
+        .bind(&conversation_id).bind(&user.id).bind(&body.client_message_id).fetch_optional(&state.db).await.map_err(|_| ApiError::internal())?
+        .ok_or_else(|| ApiError::conflict("This message ID is already used in this conversation."))?;
     if inserted.rows_affected() > 0 {
         publish_message(&state, &conversation_id, &message).await?;
     }
@@ -7395,6 +7402,55 @@ mod tests {
         let group = app.group(&alice, &[&bob, &carol]).await;
         let response = app.upload(&alice, &group, vec![7u8; 512 * 1024]).await;
         assert_eq!(response.status(), reqwest::StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn message_client_id_of_another_sender_is_refused() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let direct = app.direct(&alice, &bob).await;
+        let elsewhere = app.direct(&bob, &carol).await;
+        let client_id = Uuid::new_v4().to_string();
+        let send = |user: &TestUser, conversation: &str, text: &str| {
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{conversation}/messages"),
+                user,
+            )
+            .json(&serde_json::json!({"client_message_id": client_id, "content": text}))
+            .send()
+        };
+        let count = || {
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE client_message_id=?")
+                .bind(&client_id)
+                .fetch_one(&app.state.db)
+        };
+
+        let first = send(&alice, &direct, "first").await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first: serde_json::Value = first.json().await.unwrap();
+
+        // Bob reuses Alice's client id in the same conversation: refused, so
+        // no reader can mistake his message for hers.
+        let status = send(&bob, &direct, "imposter").await.unwrap().status();
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(count().await.unwrap(), 1);
+
+        // Alice's retry still returns her existing row.
+        let retry = send(&alice, &direct, "retried").await.unwrap();
+        assert_eq!(retry.status(), StatusCode::OK);
+        let retry: serde_json::Value = retry.json().await.unwrap();
+        assert_eq!(retry["id"], first["id"]);
+        assert_eq!(retry["content"], "first");
+        assert_eq!(count().await.unwrap(), 1);
+
+        // The same client id in another conversation is unrelated.
+        let status = send(&bob, &elsewhere, "other").await.unwrap().status();
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(count().await.unwrap(), 2);
     }
 
     #[tokio::test]
