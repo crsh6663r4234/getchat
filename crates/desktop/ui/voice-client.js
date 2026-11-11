@@ -1,6 +1,8 @@
 (() => {
   function createVoiceClient(api) {
     let call = null;
+    let callGeneration = 0;
+    let starting = false;
     let incoming = null;
     let ringTimer = null;
     let latestState = { status: "idle" };
@@ -34,8 +36,8 @@
         peerId: call?.peerId || incoming?.peerId || "",
         // The speech gate may briefly close an otherwise live microphone.
         // Do not present that as a manual mute in the call UI.
-        micMuted: call ? (!call.localAudioTrack || !!call.manualMute || (!!api.getSettings().pushToTalk && !call.pushToTalkPressed)) : false,
-        micAvailable: !!call?.localAudioTrack,
+        micMuted: call ? (!call.localAudioTrack || call.audioSession?.status.state !== "running" || !!call.manualMute || (!!api.getSettings().pushToTalk && !call.pushToTalkPressed)) : false,
+        micAvailable: !!call?.localAudioTrack && call?.audioSession?.status.state === "running",
         micManuallyMuted: !!call?.manualMute,
         pushToTalkPressed: !!call?.pushToTalkPressed,
         micUnavailableReason: call?.micUnavailableReason || "",
@@ -52,7 +54,7 @@
         remoteAudioStream: call?.remoteAudioStream || null,
         remoteVideoStream: call?.remoteVideoStream || null,
         audioProcessing: call?.audioProcessing || null,
-        voiceGateOpen: call?.audioProcessor?.gateOpen !== false,
+        voiceGateOpen: true,
       };
       return latestState;
     }
@@ -84,138 +86,21 @@
       }
     }
 
-    function captureConstraints(settings, { fallback = false, includeDevice = true } = {}) {
-      const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};
-      const audio = {};
-      const set = (key, value) => { if (fallback || supported[key] !== false) audio[key] = value; };
-      // Ask for one mono, low-latency speech channel. The fallback keeps this
-      // usable on older WebView2 runtimes which do not understand every hint.
-      const appProcessing = !settings.nvidiaBroadcast;
-      set("echoCancellation", appProcessing && (fallback ? !!settings.echoCancellation : (settings.echoCancellation ? { ideal: "all" } : false)));
-      set("noiseSuppression", appProcessing && !!settings.noiseSuppression);
-      set("autoGainControl", appProcessing && !!settings.autoGainControl);
-      if (!fallback) {
-        set("channelCount", { ideal: 1 });
-        set("sampleRate", { ideal: 48_000 });
-        set("latency", { ideal: 0.01 });
-        if (settings.voiceIsolation && supported.voiceIsolation) set("voiceIsolation", true);
-      }
-      if (includeDevice && settings.microphoneId) audio.deviceId = { exact: settings.microphoneId };
-      return audio;
-    }
-
-    async function captureMicrophone(settings) {
-      if (!navigator.mediaDevices?.getUserMedia) throw new Error("Microphone capture is unavailable in this WebView. Update the Microsoft Edge WebView2 Runtime.");
-      const attempts = [
-        captureConstraints(settings),
-        captureConstraints(settings, { fallback: true }),
-        ...(settings.microphoneId ? [captureConstraints(settings, { fallback: true, includeDevice: false })] : []),
-      ];
-      let lastError;
-      for (const audio of attempts) {
-        try { return await navigator.mediaDevices.getUserMedia({ audio, video: false }); }
-        catch (error) {
-          lastError = error;
-          if (error?.name === "NotAllowedError" || error?.name === "PermissionDeniedError") throw error;
-        }
-      }
-      throw lastError;
-    }
-
     function syncOutgoingAudio(activeCall) {
-      const track = activeCall?.localAudioTrack;
-      if (!track) return;
       const settings = api.getSettings();
-      // The speech gate itself is a smooth gain stage. Keeping the RTP track
-      // alive prevents WebView2 from producing a click/pop every time quiet
-      // background sound crosses the gate threshold.
-      track.enabled = !activeCall.manualMute && (!settings.pushToTalk || !!activeCall.pushToTalkPressed);
-    }
-
-    function stopAudioProcessor(processor) {
-      if (!processor) return;
-      if (processor.frame) cancelAnimationFrame(processor.frame);
-      if (processor.timer) clearInterval(processor.timer);
-      try { processor.source?.disconnect(); processor.highPass?.disconnect(); processor.lowPass?.disconnect(); processor.compressor?.disconnect(); processor.gate?.disconnect(); processor.analyser?.disconnect(); } catch {}
-      try { processor.context?.close(); } catch {}
-    }
-
-    function createAudioProcessor(rawStream, activeCall) {
-      const rawTrack = rawStream?.getAudioTracks?.()[0];
-      if (!rawTrack) return { stream: null, processor: null, effective: null };
-      const effective = rawTrack.getSettings?.() || {};
-      if (api.getSettings().nvidiaBroadcast) return { stream: rawStream, processor: null, effective };
-      const AudioContextType = window.AudioContext || window.webkitAudioContext;
-      if (!AudioContextType) return { stream: rawStream, processor: null, effective };
-      try {
-        const context = new AudioContextType({ latencyHint: "interactive", sampleRate: 48_000 });
-        const source = context.createMediaStreamSource(rawStream);
-        const highPass = context.createBiquadFilter(); highPass.type = "highpass"; highPass.frequency.value = 75; highPass.Q.value = 0.7;
-        const lowPass = context.createBiquadFilter(); lowPass.type = "lowpass"; lowPass.frequency.value = 9_000; lowPass.Q.value = 0.7;
-        const compressor = context.createDynamicsCompressor();
-        compressor.threshold.value = -30; compressor.knee.value = 20; compressor.ratio.value = 4; compressor.attack.value = 0.003; compressor.release.value = 0.18;
-        const gate = context.createGain(); gate.gain.value = 1;
-        const analyser = context.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0.68;
-        const destination = context.createMediaStreamDestination();
-        // Detect speech before attenuation. Listening after the gate locks it
-        // closed: once silence is produced, new speech cannot reopen it.
-        source.connect(highPass); highPass.connect(lowPass); lowPass.connect(compressor); compressor.connect(gate); gate.connect(destination); compressor.connect(analyser);
-        const processor = { context, source, highPass, lowPass, compressor, gate, analyser, destination, gateOpen: true, noiseFloorDb: -68, frame: 0 };
-        const samples = new Float32Array(analyser.fftSize);
-        const spectrum = new Float32Array(analyser.frequencyBinCount);
-        const updateGate = () => {
-          if (call !== activeCall) return;
-          analyser.getFloatTimeDomainData(samples);
-          let energy = 0;
-          for (const sample of samples) energy += sample * sample;
-          const db = 20 * Math.log10(Math.max(Math.sqrt(energy / samples.length), 0.00001));
-          const sensitivity = Math.max(1, Math.min(100, Number(api.getSettings().voiceFocusSensitivity) || 36));
-          analyser.getFloatFrequencyData(spectrum);
-          const hzPerBin = context.sampleRate / analyser.fftSize;
-          const start = Math.max(1, Math.floor(120 / hzPerBin));
-          const end = Math.min(spectrum.length, Math.ceil(3_800 / hzPerBin));
-          let speechDb = -100;
-          for (let index = start; index < end; index++) speechDb = Math.max(speechDb, spectrum[index]);
-          const threshold = -65 + sensitivity * 0.22;
-          if (speechDb < threshold - 4) processor.noiseFloorDb = processor.noiseFloorDb * 0.97 + speechDb * 0.03;
-          const requiredSnr = Math.max(5, 13 - sensitivity * 0.075);
-          const isSpeech = db >= threshold && speechDb >= processor.noiseFloorDb + requiredSnr;
-          const now = performance.now();
-          if (isSpeech) processor.holdUntil = now + 460;
-          const shouldOpen = !api.getSettings().voiceFocus || now < (processor.holdUntil || 0);
-          if (processor.gateOpen !== shouldOpen) {
-            processor.gateOpen = shouldOpen;
-            // A short fade keeps speech natural while closing quickly enough
-            // that keyboard/fan noise is not sent between words.
-            // Keep a quiet floor so uncertain detection never deletes speech.
-            gate.gain.setTargetAtTime(shouldOpen ? 1 : 0.08, context.currentTime, shouldOpen ? 0.012 : 0.055);
-            notify();
-          }
-        };
-        void context.resume().catch(() => {});
-        updateGate();
-        processor.timer = setInterval(updateGate, 50);
-        return { stream: destination.stream, processor, effective };
-      } catch (error) {
-        console.debug("Speech processing graph was unavailable; using the WebRTC capture track.", error);
-        return { stream: rawStream, processor: null, effective };
-      }
+      activeCall.audioSession?.setMuted(!!activeCall.manualMute || (!!settings.pushToTalk && !activeCall.pushToTalkPressed));
     }
 
     async function tryCaptureMicrophone(settings) {
       try {
-        return { stream: await captureMicrophone(settings), error: "" };
+        if (!window.GhostChatAudio) throw new Error("The audio engine did not load. Restart GhostChat.");
+        let session;
+        session = await window.GhostChatAudio.open(settings, { onStatus(status) {
+          if (call?.audioSession === session && session) { call.audioProcessing = status; notify(); }
+        } });
+        return { session, stream: session.stream, error: "" };
       } catch (error) {
-        if (error?.name === "NotAllowedError" || error?.name === "PermissionDeniedError") {
-          return { stream: null, error: "Microphone permission was denied. You joined muted and can still listen; allow access to speak." };
-        }
-        if (error?.name === "NotFoundError" || error?.name === "OverconstrainedError") {
-          return { stream: null, error: "No microphone was found. You joined muted and can still listen." };
-        }
-        if (error?.name === "NotReadableError") {
-          return { stream: null, error: "The microphone is busy in another app. You joined muted and can still listen." };
-        }
-        return { stream: null, error: `${explainMediaError(error)} You joined muted and can still listen.` };
+        return { session: null, stream: null, error: explainMediaError(error) + " You joined muted and can still listen." };
       }
     }
 
@@ -517,76 +402,59 @@
       }
     }
 
-    async function attachMicrophone(activeCall, rawStream, { keepMuted = false } = {}) {
-      const previousStream = activeCall.localStream;
-      const previousRawStream = activeCall.rawStream;
-      const previousTrack = activeCall.localAudioTrack;
-      const previousProcessor = activeCall.audioProcessor;
-      let prepared = createAudioProcessor(rawStream, activeCall);
-      if (prepared.processor?.context.state !== undefined && prepared.processor.context.state !== "running") {
-        // A suspended AudioContext outputs silence. Retain browser microphone
-        // processing rather than publishing a silent synthetic track.
-        stopAudioProcessor(prepared.processor);
-        prepared = { stream: rawStream, processor: null, effective: rawStream?.getAudioTracks()[0]?.getSettings?.() || {} };
-      }
-      const stream = prepared.stream;
-      const track = stream?.getAudioTracks()[0] || null;
-      const transceiver = findAudioTransceiver(activeCall) || activeCall.pc.addTransceiver("audio", { direction: track ? "sendrecv" : "recvonly" });
+    async function attachMicrophone(activeCall, session, { keepMuted = false } = {}) {
+      if (call !== activeCall) { await session?.close(); return false; }
+      const previous = activeCall.audioSession;
+      const track = session?.stream.getAudioTracks()[0] || null;
+      const transceiver = findAudioTransceiver(activeCall) || activeCall.pc.addTransceiver("audio", { direction: "recvonly" });
       activeCall.audioTransceiver = transceiver;
+      session?.setMuted(true);
       try {
-        if (transceiver.sender.track !== track) await transceiver.sender.replaceTrack(track);
-      } catch (error) {
-        stopAudioProcessor(prepared.processor);
-        for (const stream of new Set([rawStream, prepared.stream])) {
-          if (stream && stream !== previousStream && stream !== previousRawStream) stream.getTracks().forEach(item => item.stop());
-        }
-        throw error;
-      }
-      stopAudioProcessor(previousProcessor);
-      activeCall.localStream = stream || null;
-      activeCall.rawStream = rawStream || null;
+        await transceiver.sender.replaceTrack(track);
+        if (call !== activeCall) { await session?.close(); return false; }
+      } catch (error) { await session?.close(); throw error; }
+      activeCall.audioSession = session;
+      activeCall.localStream = session?.stream || null;
+      activeCall.rawStream = session?.rawStream || null;
       activeCall.localAudioTrack = track;
-      activeCall.audioProcessor = prepared.processor;
-      activeCall.audioProcessing = rawStream ? {
-        echoCancellation: prepared.effective?.echoCancellation === true,
-        noiseSuppression: prepared.effective?.noiseSuppression === true,
-        autoGainControl: prepared.effective?.autoGainControl === true,
-        voiceIsolation: prepared.effective?.voiceIsolation === true,
-        voiceFocus: !!prepared.processor && !!api.getSettings().voiceFocus,
-      } : null;
-      if (track) {
-        const settings = api.getSettings();
-        activeCall.manualMute = !!keepMuted;
-        syncOutgoingAudio(activeCall);
-        transceiver.direction = "sendrecv";
-        track.onended = () => {
-          if (call !== activeCall || activeCall.localAudioTrack !== track) return;
-          activeCall.localAudioTrack = null;
-          activeCall.localStream = null;
-          activeCall.manualMute = true;
-          activeCall.micUnavailableReason = "The microphone disconnected. You are still in the call, muted.";
-          void transceiver.sender.replaceTrack(null).then(() => { transceiver.direction = "recvonly"; notify(); }).catch(notify);
-        };
-        activeCall.micUnavailableReason = "";
-      } else {
-        activeCall.manualMute = true;
-        activeCall.micUnavailableReason ||= "No microphone is available. You joined muted and can still listen.";
-        transceiver.direction = "recvonly";
-      }
-      if (previousTrack && previousTrack !== track) previousTrack.onended = null;
-      if (previousStream && previousStream !== stream) previousStream.getTracks().forEach(item => { item.onended = null; item.stop(); });
-      if (previousRawStream && previousRawStream !== rawStream) previousRawStream.getTracks().forEach(item => { item.onended = null; item.stop(); });
+      activeCall.audioProcessing = session?.status || null;
+      activeCall.manualMute = !track || (previous ? activeCall.manualMute : keepMuted);
+      transceiver.direction = track ? "sendrecv" : "recvonly";
+      if (track) activeCall.micUnavailableReason = "";
+      else activeCall.micUnavailableReason ||= "Microphone unavailable. You can still listen.";
+      syncOutgoingAudio(activeCall);
+      await previous?.close();
       notify();
+      return true;
+    }
+
+    function replaceMicrophone(settings, { unmute = false } = {}) {
+      const activeCall = call;
+      if (!activeCall) return Promise.resolve();
+      const task = (activeCall.audioSettingsTask || Promise.resolve()).catch(() => {}).then(async () => {
+        if (call !== activeCall) return;
+        const microphone = await tryCaptureMicrophone(settings);
+        if (call !== activeCall) { await microphone.session?.close(); return; }
+        if (!microphone.session) {
+          activeCall.micUnavailableReason = microphone.error;
+          notify();
+          throw new Error(microphone.error);
+        }
+        await attachMicrophone(activeCall, microphone.session, { keepMuted: unmute ? false : !!activeCall.manualMute });
+      });
+      activeCall.audioSettingsTask = task;
+      return task;
     }
 
     function closeCall({ notifyPeer = false, message = "" } = {}) {
+      callGeneration++; starting = false;
       clearTimeout(ringTimer);
       ringTimer = null;
       if (call && notifyPeer) {
         try { send(call.conversationId, call.peerId, "hangup", null); } catch {}
       }
       if (call) {
-        stopAudioProcessor(call.audioProcessor);
+        void call.audioSession?.close();
         stopShareMonitor(call);
         stopConnectionMonitor(call);
         void call.ghostShare?.leave?.();
@@ -693,11 +561,18 @@
     }
 
     async function start(conversation) {
-      if (call || incoming) throw new Error("Finish the current call before starting another one.");
+      if (call || incoming || starting) throw new Error("Finish the current call before starting another one.");
       if (!conversation?.id || !conversation?.peer_id) throw new Error("Open a private conversation before starting a call.");
       const settings = api.getSettings();
-      const configuration = await loadIceConfiguration(settings);
-      const microphone = await tryCaptureMicrophone(settings);
+      const generation = ++callGeneration;
+      starting = true;
+      let configuration, microphone;
+      try {
+        configuration = await loadIceConfiguration(settings);
+        if (generation !== callGeneration) return;
+        microphone = await tryCaptureMicrophone(settings);
+        if (generation !== callGeneration) { await microphone.session?.close(); return; }
+      } finally { if (generation === callGeneration) starting = false; }
       const activeCall = {
         conversationId: conversation.id,
         peerId: conversation.peer_id,
@@ -724,10 +599,11 @@
         activeCall.audioTransceiver = pc.addTransceiver("audio", { direction: microphone.stream ? "sendrecv" : "recvonly" });
         activeCall.videoTransceiver = pc.addTransceiver("video", { direction: "sendrecv" });
         await tuneScreenSender(activeCall.videoTransceiver.sender);
-        await attachMicrophone(activeCall, microphone.stream, { keepMuted: !microphone.stream });
+        if (!await attachMicrophone(activeCall, microphone.session, { keepMuted: !microphone.stream })) return;
         notify();
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
+        if (call !== activeCall) return;
         send(activeCall.conversationId, activeCall.peerId, "offer", {
           type: pc.localDescription.type,
           sdp: pc.localDescription.sdp,
@@ -737,16 +613,22 @@
           if (call === activeCall && activeCall.status === "calling") closeCall({ notifyPeer: true, message: "No answer yet. Try calling again later." });
         }, 45_000);
       } catch (error) {
-        closeCall();
+        if (call === activeCall) closeCall();
+        await microphone.session?.close();
         throw new Error(explainMediaError(error));
       }
     }
 
     async function accept() {
-      if (!incoming || call) return;
+      if (!incoming || call || starting) return;
       const request = incoming;
       const settings = api.getSettings();
-      const configuration = await loadIceConfiguration(settings);
+      const generation = ++callGeneration;
+      starting = true;
+      let configuration;
+      try { configuration = await loadIceConfiguration(settings); }
+      finally { if (generation === callGeneration) starting = false; }
+      if (generation !== callGeneration || incoming !== request) return;
       const activeCall = {
         conversationId: request.conversationId,
         peerId: request.peerId,
@@ -780,11 +662,13 @@
         }
         for (const candidate of activeCall.pendingRemoteIce.splice(0)) await pc.addIceCandidate(candidate);
         const microphone = await tryCaptureMicrophone(settings);
+        if (call !== activeCall) { await microphone.session?.close(); return; }
         activeCall.micUnavailableReason = microphone.error;
         activeCall.audioTransceiver = findAudioTransceiver(activeCall) || pc.addTransceiver("audio", { direction: "recvonly" });
-        await attachMicrophone(activeCall, microphone.stream, { keepMuted: !microphone.stream });
+        if (!await attachMicrophone(activeCall, microphone.session, { keepMuted: !microphone.stream })) return;
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
+        if (call !== activeCall) return;
         send(activeCall.conversationId, activeCall.peerId, "answer", {
           type: pc.localDescription.type,
           sdp: pc.localDescription.sdp,
@@ -792,7 +676,7 @@
         activeCall.initialNegotiation = false;
         flushLocalIce(activeCall);
       } catch (error) {
-        closeCall({ notifyPeer: true });
+        if (call === activeCall) closeCall({ notifyPeer: true });
         throw new Error(explainMediaError(error));
       }
     }
@@ -818,6 +702,7 @@
         const answer = await pc.createAnswer();
         activeCall.signalReady = false;
         await pc.setLocalDescription(answer);
+        if (call !== activeCall) return;
         send(activeCall.conversationId, activeCall.peerId, "answer", {
           type: pc.localDescription.type,
           sdp: pc.localDescription.sdp,
@@ -1021,59 +906,22 @@
 
     async function toggleMicrophone() {
       if (!call) return;
-      const settings = api.getSettings();
-      if (!call.localAudioTrack) {
-        const microphone = await tryCaptureMicrophone(settings);
-        if (!microphone.stream) {
-          call.micUnavailableReason = microphone.error || "No microphone is available. You can still listen to the call.";
-          notify();
-          throw new Error(call.micUnavailableReason);
-        }
-        await attachMicrophone(call, microphone.stream, { keepMuted: false });
-        return;
+      if (!call.localAudioTrack || call.audioSession?.status.state === "failed") {
+        return replaceMicrophone(api.getSettings(), { unmute: true });
       }
-      if (settings.pushToTalk) {
-        call.manualMute = !call.manualMute;
-      } else {
-        call.manualMute = !call.manualMute;
-      }
+      call.manualMute = !call.manualMute;
       syncOutgoingAudio(call);
       notify();
     }
 
-    async function setMicrophoneDevice(deviceId) {
-      if (!call) return;
-      const currentTrack = call.localAudioTrack;
-      const keepMuted = currentTrack ? !!call.manualMute : true;
-      const microphone = await tryCaptureMicrophone({ ...api.getSettings(), microphoneId: deviceId || "" });
-      if (!microphone.stream) {
-        call.micUnavailableReason = microphone.error || "The selected microphone is unavailable. You are still in the call, muted.";
-        notify();
-        throw new Error(call.micUnavailableReason);
-      }
-      await attachMicrophone(call, microphone.stream, { keepMuted });
+    function setMicrophoneDevice(deviceId) {
+      return replaceMicrophone({ ...api.getSettings(), microphoneId: deviceId || "" });
     }
 
-    // Media-processing constraints are selected when a capture track is made.
-    // Replacing the active track makes saved settings take effect mid-call.
     async function applyAudioSettings() {
       if (!call?.localAudioTrack) { notify(); return; }
-      const activeCall = call;
-      const previous = activeCall.audioSettingsTask || Promise.resolve();
-      const task = previous.catch(() => {}).then(async () => {
-        if (call !== activeCall) return;
-        const microphone = await tryCaptureMicrophone(api.getSettings());
-        if (call !== activeCall) { microphone.stream?.getTracks().forEach(track => track.stop()); return; }
-        if (!microphone.stream) {
-          activeCall.micUnavailableReason = microphone.error || "The microphone could not apply the new audio settings.";
-          notify();
-          throw new Error(activeCall.micUnavailableReason);
-        }
-        await attachMicrophone(activeCall, microphone.stream, { keepMuted: !!activeCall.manualMute });
-      });
-      activeCall.audioSettingsTask = task;
-      try { await task; }
-      finally { if (activeCall.audioSettingsTask === task) activeCall.audioSettingsTask = null; }
+      syncOutgoingAudio(call);
+      await replaceMicrophone(api.getSettings());
     }
 
     function setPushToTalk(active) {

@@ -58,7 +58,21 @@ jobs:
           $config.plugins.updater.endpoints = @("https://github.com/$env:RELEASE_REPOSITORY/releases/latest/download/latest.json")
           $config | ConvertTo-Json -Depth 100 | Set-Content -Encoding utf8 $configPath
 
-      - name: Build standalone Windows server
+      - name: Verify voice engine and relay policy
+        # Audio routing must pass before producing any update artifacts.
+        shell: pwsh
+        run: |
+          node scripts/test-audio-routing.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Audio routing regression." }
+          node scripts/test-media-relay.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Media relay regression." }
+          npm install --prefix "$env:RUNNER_TEMP/ghostchat-audio-tests" --ignore-scripts --no-audit --no-fund playwright@1.56.1
+          if ($LASTEXITCODE -ne 0) { throw "Could not install audio test tooling." }
+          $env:NODE_PATH = "$env:RUNNER_TEMP/ghostchat-audio-tests/node_modules"
+          node scripts/test-audio-browser.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Real AudioWorklet test failed." }
+
+      - name: Build standalone Windows server binary
         shell: pwsh
         run: cargo build --release --locked --package ghostchat-server
 

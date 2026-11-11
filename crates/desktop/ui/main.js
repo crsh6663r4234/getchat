@@ -87,6 +87,11 @@
   let watchPartyBuffering = null;
   const localWatchPrefix = "https://local.watch.ghostchat.invalid/";
   const trText = {
+    "Echo cancellation could not be verified on this device.": "Bu cihazda yankı engelleme doğrulanamadı.",
+    "Automatic level could not be verified on this device.": "Bu cihazda otomatik seviye doğrulanamadı.",
+    "Audio processing paused. Reconnect your microphone.": "Ses işleme durakladı. Mikrofonu yeniden bağla.",
+    "Noise suppression stopped. Reconnect your microphone.": "Gürültü temizleme durdu. Mikrofonu yeniden bağla.",
+    "The microphone disconnected. Reconnect it to speak.": "Mikrofon bağlantısı kesildi. Konuşmak için yeniden bağla.",
     "Create account": "Hesap oluştur", "Recover": "Kurtar", "Name": "Ad", "Display name": "Görünen ad", "Profile picture": "Profil fotoğrafı", "Choose": "Seç", "Create anonymous account": "Anonim hesap oluştur", "Recover account": "Hesabı kurtar", "Recovery key": "Kurtarma anahtarı", "Your recovery key": "Kurtarma anahtarın", "Copy key": "Anahtarı kopyala", "Save backup": "Yedek kaydet", "Continue to GhostChat": "GhostChat'e devam et", "Messages": "Mesajlar", "Friends": "Arkadaşlar", "Find people": "Kişi bul", "Search messages": "Mesajlarda ara", "Settings": "Ayarlar", "Profile": "Profil", "Connection": "Bağlantı", "Appearance": "Görünüm", "Notifications": "Bildirimler", "Voice and screen sharing": "Sesli sohbet ve ekran paylaşımı", "Updates": "Güncellemeler", "Privacy and data": "Gizlilik ve veriler", "Theme": "Tema", "Text size": "Yazı boyutu", "Dark": "Koyu", "Light": "Açık", "Compact": "Küçük", "Default": "Varsayılan", "Large": "Büyük", "Windows notifications": "Windows bildirimleri", "Send test notification": "Test bildirimi gönder", "Microphone": "Mikrofon", "Speaker": "Hoparlör", "System default": "Sistem varsayılanı", "Refresh audio devices": "Ses aygıtlarını yenile", "Echo cancellation": "Yankı engelleme", "Noise suppression": "Gürültü azaltma", "Automatic microphone gain": "Otomatik mikrofon seviyesi", "Push to talk (hold Space)": "Bas-konuş (Boşluk tuşunu basılı tut)", "Share system audio with screen": "Ekranla sistem sesini paylaş", "Save settings": "Ayarları kaydet", "Check now": "Şimdi kontrol et", "Install and restart": "Yükle ve yeniden başlat", "Save profile": "Profili kaydet", "Remove photo": "Fotoğrafı kaldır", "Your quiet corner": "Sana özel alan", "A little more room to talk.": "Rahatça konuşabileceğin bir alan.", "Find someone by username, send a friend request, then start a private conversation. Your account does not need an email or phone number.": "Etiketiyle kişi bul, arkadaşlık isteği gönder ve özel sohbete başla. Hesap için e-posta veya telefon gerekmez.", "View friends": "Arkadaşları gör", "Search": "Ara", "Search by username or user ID. GhostChat does not publish a public directory.": "Kullanıcı etiketiyle veya kullanıcı kimliğiyle ara. GhostChat herkese açık bir rehber yayınlamaz.", "No conversations yet. Find a friend to start a chat.": "Henüz sohbet yok. Sohbet başlatmak için arkadaş ekle.", "No pending requests.": "Bekleyen istek yok.", "Your friends": "Arkadaşların", "Requests": "İstekler", "DIRECT MESSAGES": "ÖZEL MESAJLAR", "No friends yet. Use Find people to add someone.": "Henüz arkadaşın yok. Kişi bul bölümünden arkadaş ekleyebilirsin.", "Manage requests and start a private conversation.": "İstekleri yönet ve özel sohbet başlat.", "All friends": "Tüm arkadaşlar", "Accept": "Kabul et", "Ignore": "Yoksay", "Message": "Mesaj", "Add friend": "Arkadaş ekle", "Request sent": "İstek gönderildi", "No friend requests right now.": "Şu anda arkadaşlık isteği yok.", "No matching messages.": "Eşleşen mesaj yok.", "Edited": "Düzenlendi", "Edit": "Düzenle", "Delete": "Sil", "Write a message…": "Mesaj yaz…", "Load earlier messages": "Önceki mesajları yükle", "Call": "Ara", "End call": "Aramayı bitir", "Settings saved.": "Ayarlar kaydedildi.", "Profile saved.": "Profil kaydedildi.", "Friend request accepted.": "Arkadaşlık isteği kabul edildi.", "Request removed.": "İstek kaldırıldı.", "Choose an image file.": "Bir resim dosyası seç.", "That photo is too detailed. Choose a smaller image.": "Fotoğraf çok detaylı. Daha küçük bir görsel seç.", "Could not use that photo.": "Fotoğraf kullanılamadı.", "Checking for updates": "Güncellemeler kontrol ediliyor", "Update required": "Güncelleme gerekli", "Downloading update": "Güncelleme indiriliyor", "Update failed": "Güncelleme başarısız", "Try again": "Yeniden dene", "Getting the latest version ready…": "En yeni sürüm hazırlanıyor…", "This app version is out of date.": "Bu uygulama sürümü güncel değil.", "Preparing the update…": "Güncelleme hazırlanıyor…"
   };
   Object.assign(trText, {
@@ -289,6 +294,9 @@
   let voiceUiState = { status: "idle" };
   let groupVoiceUiState = { status: "idle", participants: [] };
   let microphoneTestStream = null;
+  let microphoneTestSession = null;
+  let microphoneRecorders = [];
+  let microphoneRecordTimer = null;
   let microphoneTestContext = null;
   let microphoneTestFrame = 0;
   let microphoneTestGeneration = 0;
@@ -567,98 +575,119 @@
     voiceSpeakingFrame = requestAnimationFrame(tick);
   }
 
+  function renderAudioProcessing(processing) {
+    const node = $("#voiceProcessingStatus");
+    if (!processing) { node.textContent = tr() ? "Mikrofon testinde veya aramada gerçek filtre durumu burada görünür." : "Actual processing status appears during a mic test or call."; return; }
+    const engine = processing.engine === "rnnoise" ? "RNNoise" : processing.engine === "nvidia" ? "NVIDIA Broadcast" : (tr() ? "Gürültü filtresi kapalı" : "Noise filter off");
+    const actual = value => value === true ? (tr() ? "açık" : "on") : value === false ? (tr() ? "kapalı" : "off") : (tr() ? "doğrulanamadı" : "unverified");
+    node.textContent = engine + " · " + (tr() ? "Yankı: " : "Echo: ") + actual(processing.echoCancellation) + " · " + (tr() ? "Otomatik seviye: " : "Auto level: ") + actual(processing.autoGainControl);
+    if (processing.warning) node.textContent += " — " + translate(processing.warning);
+    node.classList.toggle("is-warning", !!processing.warning);
+  }
+
+  function clearMicrophoneClips() {
+    for (const player of [$("#voiceTestBefore"), $("#voiceTestAfter")]) {
+      player.pause();
+      if (player.src.startsWith("blob:")) URL.revokeObjectURL(player.src);
+      player.removeAttribute("src");
+    }
+    $("#voicePlayBefore").disabled = true; $("#voicePlayAfter").disabled = true;
+  }
+
   async function stopMicrophoneTest(statusKey = null) {
-    microphoneTestGeneration += 1;
+    microphoneTestGeneration++;
+    clearTimeout(microphoneRecordTimer);
+    for (const recorder of microphoneRecorders) if (recorder.state !== "inactive") recorder.stop();
+    microphoneRecorders = [];
     if (microphoneTestFrame) cancelAnimationFrame(microphoneTestFrame);
     microphoneTestFrame = 0;
-    microphoneTestStream?.getTracks().forEach(track => track.stop());
-    microphoneTestStream = null;
+    const session = microphoneTestSession; microphoneTestSession = null; microphoneTestStream = null;
+    await session?.close();
     if (microphoneTestContext && microphoneTestContext.state !== "closed") await microphoneTestContext.close().catch(() => {});
     microphoneTestContext = null;
-    const button = $("#voiceMicTestButton");
-    if (button) {
-      button.disabled = false;
-      button.setAttribute("aria-pressed", "false");
-      button.textContent = translate("Test microphone");
+    clearMicrophoneClips();
+    $("#voiceRecordSample").disabled = true;
+    $("#voiceMicTestButton").disabled = false;
+    $("#voiceMicTestButton").setAttribute("aria-pressed", "false");
+    $("#voiceMicTestButton").textContent = translate("Test microphone");
+    for (const [meter, fill, label] of [["#voiceMicLevelMeter", "#voiceMicLevelFill", "#voiceMicLevelLabel"], ["#voiceOutputLevelMeter", "#voiceOutputLevelFill", "#voiceOutputLevelLabel"]]) {
+      $(meter).setAttribute("aria-valuenow", "0"); $(fill).style.setProperty("--level", "0"); $(label).textContent = "0%";
     }
-    const meter = $("#voiceMicLevelMeter");
-    const fill = $("#voiceMicLevelFill");
-    const label = $("#voiceMicLevelLabel");
-    if (meter) meter.setAttribute("aria-valuenow", "0");
-    if (fill) fill.style.setProperty("--level", "0");
-    if (label) label.textContent = "0%";
-    const status = $("#voiceMicTestStatus");
-    if (status) status.textContent = translate(statusKey || "Press test and speak into your microphone.");
+    $("#voiceMicTestStatus").textContent = translate(statusKey || "Press test and speak into your microphone.");
   }
 
   async function toggleMicrophoneTest() {
-    if (microphoneTestStream) {
-      await stopMicrophoneTest("Microphone test stopped.");
-      return;
+    if (microphoneTestStream) { await stopMicrophoneTest("Microphone test stopped."); return; }
+    if (voiceUiState.status !== "idle" || groupVoiceUiState.status !== "idle") {
+      toast(tr() ? "Mikrofonu ayrı test etmek için önce aramayı bitir." : "End the call before testing the microphone separately.", true); return;
     }
-    const button = $("#voiceMicTestButton");
     const generation = ++microphoneTestGeneration;
-    button.disabled = true;
+    $("#voiceMicTestButton").disabled = true;
     try {
-      if (!navigator.mediaDevices?.getUserMedia) throw new Error("Microphone access is not available in this app context.");
-      const settings = voiceSettings();
-      const audio = {
-        echoCancellation: $("#voiceEchoCancellation").checked,
-        noiseSuppression: $("#voiceNoiseSuppression").checked,
-        autoGainControl: $("#voiceAutoGain").checked,
-      };
-      if (settings.microphoneId) audio.deviceId = { exact: settings.microphoneId };
-      const stream = await navigator.mediaDevices.getUserMedia({ audio, video: false });
-      if (generation !== microphoneTestGeneration || !$("#settingsDialog").open) {
-        stream.getTracks().forEach(track => track.stop());
-        return;
-      }
-      microphoneTestStream = stream;
-      const AudioContextType = window.AudioContext || window.webkitAudioContext;
-      if (!AudioContextType) throw new Error("Live microphone testing is not supported by this app runtime.");
-      microphoneTestContext = new AudioContextType();
+      const session = await window.GhostChatAudio.open(voiceSettings(), { onStatus: status => {
+        if (generation === microphoneTestGeneration) renderAudioProcessing(status);
+      } });
+      if (generation !== microphoneTestGeneration || !$("#settingsDialog").open) { await session.close(); return; }
+      microphoneTestSession = session; microphoneTestStream = session.stream;
+      session.setMuted(false);
+      microphoneTestContext = new AudioContext();
       await microphoneTestContext.resume();
-      const analyser = microphoneTestContext.createAnalyser();
-      analyser.fftSize = 512;
-      const source = microphoneTestContext.createMediaStreamSource(stream);
-      const silentOutput = microphoneTestContext.createGain();
-      silentOutput.gain.value = 0;
-      source.connect(analyser);
-      analyser.connect(silentOutput);
-      silentOutput.connect(microphoneTestContext.destination);
-      const samples = new Float32Array(analyser.fftSize);
-      let displayedLevel = 0;
-      const updateMeter = () => {
-        if (generation !== microphoneTestGeneration || !microphoneTestStream) return;
+      if (generation !== microphoneTestGeneration) return;
+      const input = microphoneTestContext.createAnalyser(), output = microphoneTestContext.createAnalyser();
+      input.fftSize = output.fftSize = 512;
+      microphoneTestContext.createMediaStreamSource(session.rawStream).connect(input);
+      microphoneTestContext.createMediaStreamSource(session.stream).connect(output);
+      const samples = new Float32Array(512);
+      const meter = (analyser, id) => {
         analyser.getFloatTimeDomainData(samples);
-        let sum = 0;
-        for (const sample of samples) sum += sample * sample;
-        const rms = Math.sqrt(sum / samples.length);
-        const decibels = 20 * Math.log10(Math.max(rms, 0.00001));
-        const target = Math.max(0, Math.min(100, Math.round((decibels + 60) * (100 / 60))));
-        displayedLevel = Math.round(displayedLevel + (target - displayedLevel) * 0.35);
-        $("#voiceMicLevelFill").style.setProperty("--level", String(displayedLevel / 100));
-        $("#voiceMicLevelLabel").textContent = `${displayedLevel}%`;
-        $("#voiceMicLevelMeter").setAttribute("aria-valuenow", String(displayedLevel));
-        $("#voiceMicTestStatus").textContent = translate(rms > 0.004 ? "Microphone is picking up sound." : "Speak into your microphone.");
-        microphoneTestFrame = requestAnimationFrame(updateMeter);
+        const rms = Math.sqrt(samples.reduce((sum, value) => sum + value * value, 0) / samples.length);
+        const level = Math.round(Math.max(0, Math.min(100, (20 * Math.log10(Math.max(rms, 0.00001)) + 60) / 60 * 100)));
+        $(id + "Fill").style.setProperty("--level", String(level / 100));
+        $(id + "Label").textContent = level + "%";
+        $(id + "Meter").setAttribute("aria-valuenow", String(level));
       };
-      button.disabled = false;
-      button.setAttribute("aria-pressed", "true");
-      button.textContent = translate("Stop microphone test");
-      $("#voiceMicTestStatus").textContent = translate("Speak into your microphone.");
-      stream.getAudioTracks().forEach(track => track.addEventListener("ended", () => {
-        if (generation === microphoneTestGeneration) void stopMicrophoneTest("Microphone test stopped.");
-      }, { once: true }));
-      updateMeter();
+      const tick = () => {
+        if (generation !== microphoneTestGeneration) return;
+        meter(input, "#voiceMicLevel"); meter(output, "#voiceOutputLevel");
+        microphoneTestFrame = requestAnimationFrame(tick);
+      };
+      $("#voiceMicTestButton").setAttribute("aria-pressed", "true");
+      $("#voiceMicTestButton").textContent = translate("Stop microphone test");
+      $("#voiceRecordSample").disabled = typeof MediaRecorder === "undefined";
+      $("#voiceMicTestStatus").textContent = tr() ? "Giriş ve gönderilecek ses ölçülüyor. Karşılaştırmak için 6 saniyelik örnek kaydet." : "Measuring input and outgoing audio. Record a 6-second sample to compare.";
+      tick();
     } catch (error) {
-      if (generation === microphoneTestGeneration) {
-        await stopMicrophoneTest();
-        toast(error.message || "Could not start microphone test.", true);
-      }
-    } finally {
-      if (generation === microphoneTestGeneration) button.disabled = false;
-    }
+      if (generation === microphoneTestGeneration) { await stopMicrophoneTest(); toast(error.message, true); }
+    } finally { if (generation === microphoneTestGeneration) $("#voiceMicTestButton").disabled = false; }
+  }
+
+  function recordMicrophoneSample() {
+    if (!microphoneTestSession || microphoneRecorders.length) return;
+    const generation = microphoneTestGeneration;
+    clearMicrophoneClips();
+    $("#voiceRecordSample").disabled = true;
+    $("#voiceMicTestStatus").textContent = tr() ? "6 saniye kaydediliyor… Konuş, sonra kısa süre sessiz kal." : "Recording 6 seconds… Speak, then pause briefly.";
+    try {
+      let complete = 0;
+      microphoneRecorders = [microphoneTestSession.rawStream, microphoneTestSession.stream].map((stream, index) => {
+        const recorder = new MediaRecorder(stream);
+        const chunks = [];
+        recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+        recorder.onstop = () => {
+          if (generation !== microphoneTestGeneration) return;
+          const player = index ? $("#voiceTestAfter") : $("#voiceTestBefore");
+          player.src = URL.createObjectURL(new Blob(chunks, { type: recorder.mimeType }));
+          $(index ? "#voicePlayAfter" : "#voicePlayBefore").disabled = false;
+          if (++complete === 2) {
+            microphoneRecorders = []; $("#voiceRecordSample").disabled = false;
+            $("#voiceMicTestStatus").textContent = tr() ? "Önce ve sonra kayıtlarını dinle. Kayıtlar gönderilmez; bu pencere kapanınca silinir." : "Compare before and after. Recordings stay on this device and are discarded when this panel closes.";
+          }
+        };
+        return recorder;
+      });
+      microphoneRecorders.forEach(recorder => recorder.start());
+      microphoneRecordTimer = setTimeout(() => microphoneRecorders.forEach(recorder => { if (recorder.state !== "inactive") recorder.stop(); }), 6000);
+    } catch (error) { void stopMicrophoneTest(); toast(error.message, true); }
   }
 
   function voiceSettings() {
@@ -669,8 +698,6 @@
       noiseSuppression: localStorage.getItem("ghostchat.voice.noise") !== "false",
       autoGainControl: localStorage.getItem("ghostchat.voice.gain") !== "false",
       nvidiaBroadcast: localStorage.getItem("ghostchat.voice.nvidiaBroadcast") === "true",
-      voiceFocus: localStorage.getItem("ghostchat.voice.focus") !== "false",
-      voiceFocusSensitivity: Number(localStorage.getItem("ghostchat.voice.focusSensitivity") || "36"),
       pushToTalk: localStorage.getItem("ghostchat.voice.ptt") === "true",
       shareSystemAudio: localStorage.getItem("ghostchat.voice.systemAudio") === "true",
       shareQuality: localStorage.getItem("ghostchat.share.quality") || "balanced",
@@ -688,8 +715,6 @@
     localStorage.setItem("ghostchat.voice.noise", String($("#voiceNoiseSuppression").checked));
     localStorage.setItem("ghostchat.voice.gain", String($("#voiceAutoGain").checked));
     localStorage.setItem("ghostchat.voice.nvidiaBroadcast", String($("#voiceNvidiaBroadcast").checked));
-    localStorage.setItem("ghostchat.voice.focus", String($("#voiceFocus").checked));
-    localStorage.setItem("ghostchat.voice.focusSensitivity", $("#voiceFocusSensitivity").value);
     localStorage.setItem("ghostchat.voice.ptt", String($("#voicePushToTalk").checked));
     localStorage.setItem("ghostchat.voice.systemAudio", String($("#voiceShareAudio").checked));
     localStorage.setItem("ghostchat.share.quality", $("#voiceShareQuality").value);
@@ -703,8 +728,6 @@
     $("#voiceNoiseSuppression").checked = settings.noiseSuppression;
     $("#voiceAutoGain").checked = settings.autoGainControl;
     $("#voiceNvidiaBroadcast").checked = settings.nvidiaBroadcast;
-    $("#voiceFocus").checked = settings.voiceFocus;
-    $("#voiceFocusSensitivity").value = String(Math.max(1, Math.min(100, settings.voiceFocusSensitivity || 36)));
     $("#voicePushToTalk").checked = settings.pushToTalk;
     $("#voiceShareAudio").checked = settings.shareSystemAudio;
     $("#voiceShareQuality").value = ["balanced", "detail", "motion", "saver"].includes(settings.shareQuality) ? settings.shareQuality : "balanced";
@@ -731,7 +754,7 @@
   function updateNvidiaBroadcastState({ available = !!nvidiaBroadcastDeviceId() } = {}) {
     const enabled = $("#voiceNvidiaBroadcast").checked;
     const status = $("#voiceNvidiaBroadcastStatus");
-    [$("#voiceEchoCancellation"), $("#voiceNoiseSuppression"), $("#voiceAutoGain"), $("#voiceFocus")].forEach(control => { control.disabled = enabled; });
+    [$("#voiceEchoCancellation"), $("#voiceNoiseSuppression"), $("#voiceAutoGain")].forEach(control => { control.disabled = enabled; });
     status.textContent = enabled && available
       ? (state.language === "tr" ? "NVIDIA Broadcast mikrofonu seçili. Çifte işlemeyi önlemek için GhostChat’in yerel filtreleri kapalı." : "NVIDIA Broadcast microphone is selected. GhostChat’s local filters are off to avoid double processing.")
       : enabled
@@ -3131,23 +3154,7 @@
 
   function onVoiceChange(voice) {
     voiceUiState = voice;
-    const processingStatus = $("#voiceProcessingStatus");
-    if (processingStatus) {
-      const processing = voice.audioProcessing;
-      if (!processing) {
-        processingStatus.textContent = translate("Processing is checked when a call starts.");
-      } else {
-        const enabled = [
-          processing.echoCancellation && translate("echo cancellation"),
-          processing.noiseSuppression && translate("noise suppression"),
-          processing.autoGainControl && translate("auto gain"),
-          processing.voiceFocus && translate("voice focus"),
-        ].filter(Boolean);
-        processingStatus.textContent = enabled.length
-          ? `${translate("Active:")} ${enabled.join(" · ")}.`
-          : translate("Your microphone is using the browser fallback. Check the selected device and Windows microphone effects.");
-      }
-    }
+    if (!microphoneTestSession) renderAudioProcessing(voice.audioProcessing);
     renderVoiceControls();
     syncVoiceSpeakingDetection(voice);
     const audio = $("#remoteAudio");
@@ -3246,7 +3253,7 @@
       isPeerMuted: accountId => isGroupPeerMuted(groupVoiceUiState.conversationId, accountId),
       getMembers: conversationId => request(`/v1/conversations/${encodeURIComponent(conversationId)}/members`),
       getToken: conversationId => request(`/v1/conversations/${encodeURIComponent(conversationId)}/voice-token`, { method: "POST" }),
-      onChange: voice => { groupVoiceUiState = voice; renderVoiceControls(); },
+      onChange: voice => { groupVoiceUiState = voice; if (!microphoneTestSession) renderAudioProcessing(voice.audioProcessing); renderVoiceControls(); },
       onAudioBlocked: () => toast("Call audio is still blocked by Windows or the audio device.", true),
       translate,
     });
@@ -3766,16 +3773,27 @@
   $("#refreshAudioDevices").onclick = refreshAudioDevices;
   $("#voiceRefreshDevices").onclick = () => void refreshAudioDevices();
   $("#voiceMicTestButton").onclick = () => void toggleMicrophoneTest();
-  for (const selector of ["#voiceEchoCancellation", "#voiceNoiseSuppression", "#voiceAutoGain", "#voiceFocus", "#voiceFocusSensitivity"]) {
+  $("#voiceRecordSample").onclick = recordMicrophoneSample;
+  for (const side of ["Before", "After"]) $("#voicePlay" + side).onclick = async () => {
+    const player = $("#voiceTest" + side);
+    $("#voiceTest" + (side === "Before" ? "After" : "Before")).pause();
+    player.currentTime = 0;
+    try { await player.play(); } catch (error) { toast(error.message, true); }
+  };
+  for (const selector of ["#voiceEchoCancellation", "#voiceNoiseSuppression", "#voiceAutoGain"]) {
     $(selector).onchange = async () => {
+      const testing = !!microphoneTestStream;
+      if (testing) await stopMicrophoneTest();
       persistVoiceSettings();
       const updates = await Promise.allSettled([voiceClient?.applyAudioSettings?.(), groupVoiceClient?.applyAudioSettings?.()]);
       const failed = updates.find(result => result.status === "rejected");
       if (failed) toast(failed.reason?.message || "Could not apply the audio processing change.", true);
-      else toast(translate("Audio processing applied."));
+      else if (testing) await toggleMicrophoneTest();
+      else toast(tr() ? "Ses tercihi kaydedildi." : "Audio preference saved.");
     };
   }
   $("#voiceNvidiaBroadcast").onchange = async event => {
+    await stopMicrophoneTest();
     const control = event.currentTarget;
     const enabled = control.checked;
     await refreshAudioDevices({ requestPermission: false, quiet: true });
@@ -3859,6 +3877,7 @@
   bindVoiceDeviceSelect("#voiceSpeakerSelect", "#voiceCallSpeakerSelect", "ghostchat.voice.speaker", "speaker");
   bindVoiceDeviceSelect("#voiceCallSpeakerSelect", "#voiceSpeakerSelect", "ghostchat.voice.speaker", "speaker");
   $("#voiceCallButton").onclick = () => {
+    void stopMicrophoneTest();
     if (state.active) {
       $("#voiceCallButton").disabled = true;
       const start = state.active.kind === "group" ? groupVoiceClient.join(state.active) : voiceClient.start(state.active);
@@ -3866,6 +3885,7 @@
     }
   };
   $("#voiceStageAccept").onclick = () => {
+    void stopMicrophoneTest();
     $("#voiceStageAccept").disabled = true;
     void voiceClient.accept().catch(error => toast(error.message, true)).finally(() => { $("#voiceStageAccept").disabled = false; renderVoiceControls(); });
   };
