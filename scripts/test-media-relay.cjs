@@ -39,6 +39,12 @@ function directFixture(config, { failShare = false, relayOnly = true, deferConfi
     clearTimeout: id => { if (timers[id - 1]) timers[id - 1].cleared = true; },
     setInterval: fn => { intervals.push({ fn, cleared: false }); return intervals.length; }, clearInterval: id => { if (intervals[id - 1]) intervals[id - 1].cleared = true; },
   };
+  window.GhostChatAudio = { open: async () => {
+    const stream = await context.navigator.mediaDevices.getUserMedia();
+    return { stream, rawStream: stream, status: { state: 'running' },
+      setMuted(value) { for (const track of stream.getAudioTracks()) track.enabled = !value; },
+      async close() { for (const track of stream.getTracks()) track.stop(); } };
+  } };
   vm.runInNewContext(fs.readFileSync(path.join(ui, 'voice-client.js'), 'utf8'), context);
   const client = window.GhostChatVoice.create({
     getSettings: () => { if (settingsFailures > 0) { settingsFailures--; throw new Error('settings unavailable'); } return { relayOnly, ...settings }; }, getIceConfiguration: async () => { if (deferConfig) await configGate; return config; },
@@ -594,7 +600,13 @@ async function run() {
         createElement: tag => { const element = { tag, dataset: {}, sinks: [], children: [], append(...items) { element.children.push(...items); }, async setSinkId(id) { element.sinks.push(id); }, play: async () => {}, pause() {}, load() {}, removeAttribute() {}, remove() { element.removed = true; } }; elements.push(element); return element; },
       },
     });
-    fixture.context.navigator.mediaDevices.getUserMedia = async constraints => { const mic = fakeMicrophone(); captures.push({ constraints, mic }); return mic; };
+    // The relay sends the audio engine's processed microphone.
+    fixture.window.GhostChatAudio = { open: async engineSettings => {
+      const mic = fakeMicrophone();
+      const session = { stream: mic, rawStream: mic, status: { state: 'running' }, muted: [], setMuted(value) { session.muted.push(value); }, async close() { session.closed = true; mic.track.stop(); } };
+      captures.push({ settings: engineSettings, mic, session });
+      return session;
+    } };
     if (connect) fixture.window.LivekitClient.Room.prototype.connect = connect;
     vm.runInNewContext(fs.readFileSync(path.join(ui, 'group-voice-client.js'), 'utf8'), fixture.context);
     const relay = fakeServerMedia();
@@ -640,12 +652,14 @@ async function run() {
     // Microphone: on, mute, device change.
     await fixture.group.toggleMicrophone();
     assert.equal(fixture.captures.length, 1);
-    assert.equal(media.inputs.at(-1), fixture.captures[0].mic);
+    assert.equal(media.inputs.at(-1), fixture.captures[0].mic, 'the engine output feeds the relay');
+    assert.equal(fixture.captures[0].session.muted.at(-1), false);
+    assert.equal(fixture.group.getState().audioProcessing.state, 'running', 'the engine status is shown on the relay path');
     assert.equal(media.sending.at(-1), true);
     assert.equal(fixture.group.getState().micMuted, false);
     await fixture.group.setMicrophoneDevice('mic-2');
     assert.equal(fixture.captures.length, 2);
-    assert.equal(fixture.captures[1].constraints.audio.deviceId, 'mic-2');
+    assert.equal(fixture.captures[1].settings.microphoneId, 'mic-2');
     assert.equal(media.inputs.at(-1), fixture.captures[1].mic, 'a new microphone feeds the relay');
     assert(fixture.captures[0].mic.track.stopped, 'the old microphone is released');
     await fixture.group.toggleMicrophone();
@@ -750,8 +764,8 @@ async function run() {
     assert.equal(changes.at(-1).status, 'idle', 'the idle state is published');
   }
 
-  // Changing the microphone while muted must still reach LiveKit: an unmute
-  // only reacquires the track when a device change is pending.
+  // A device picked before first unmute must reach the shared engine,
+  // without allowing LiveKit to capture an unprocessed microphone.
   {
     const fixture = livekitFixture();
     vm.runInNewContext(fs.readFileSync(path.join(ui, 'group-voice-client.js'), 'utf8'), fixture.context);
@@ -762,7 +776,14 @@ async function run() {
     });
     await group.join({ id: 'group' });
     await group.setMicrophoneDevice('next-mic');
-    assert.deepEqual(fixture.rooms[0].switches, [['audioinput', 'next-mic']], 'a muted group member still switches microphone');
+    let selected;
+    fixture.window.GhostChatAudio = { open: async settings => {
+      selected = settings.microphoneId;
+      throw new Error('fixture capture unavailable');
+    } };
+    await assert.rejects(group.toggleMicrophone(), /fixture capture unavailable/);
+    assert.equal(selected, 'next-mic', 'first unmute uses the selected device');
+    assert.equal(fixture.rooms[0].switches, undefined, 'SDK capture is never used');
     await group.leave();
   }
 

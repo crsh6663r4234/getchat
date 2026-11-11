@@ -21,6 +21,10 @@
 
   function create(api) {
     let room = null;
+    let microphone = null;
+    let microphoneTrack = null;
+    let selectedMicrophoneId;
+    let audioQueue = Promise.resolve();
     let conversation = null;
     let members = new Map();
     let activeSpeakers = new Set();
@@ -37,7 +41,7 @@
     // Server media relay session (when LiveKit is missing or unreachable).
     let relay = null;
     const relayPeers = new Set();
-    let relayMicStream = null;
+    let relayMicrophone = null;
     let relaySending = false;
     let relayScreenStream = null;
     const RELAY_SCREEN_FPS = 5;
@@ -98,7 +102,9 @@
     }
 
     function publishState(patch = {}) {
-      state = { ...state, ...patch, participants: participants() };
+      const mic = microphone || relayMicrophone;
+      state = { ...state, ...patch, audioProcessing: mic?.status || null, localAudioStream: mic?.stream || null, participants: participants() };
+      if (microphone && microphone.status.state !== 'running') { state.micAvailable = false; state.micMuted = true; }
       api.onChange({ ...state });
     }
 
@@ -256,8 +262,9 @@
       relaySending = false;
       relay?.setSending(false);
       relay?.setInputStream(null);
-      relayMicStream?.getTracks().forEach(track => track.stop());
-      relayMicStream = null;
+      const session = relayMicrophone;
+      relayMicrophone = null;
+      void session?.close();
     }
 
     function teardownRelay() {
@@ -271,36 +278,40 @@
       relayPeers.clear();
     }
 
-    async function captureRelayMicrophone(deviceId = null) {
-      const audio = captureOptions();
-      if (deviceId) audio.deviceId = deviceId;
-      return navigator.mediaDevices.getUserMedia({ audio, video: false });
+    // The relay sends the audio engine's processed microphone, like LiveKit.
+    async function openRelayMicrophone(deviceId) {
+      if (!window.GhostChatAudio) throw new Error("The audio engine did not load. Restart GhostChat.");
+      const settings = api.getSettings();
+      const microphoneId = deviceId ?? selectedMicrophoneId ?? settings.microphoneId;
+      return window.GhostChatAudio.open({ ...settings, microphoneId }, { onStatus() { if (relay) publishState(); } });
     }
 
-    // The capture stays open while muted (as LiveKit does), so unmute and
+    // The capture stays open while muted (as on LiveKit), so unmute and
     // push-to-talk start sending without a new device prompt or delay.
     async function setRelaySending(enabled) {
       const media = relay;
       if (!media) return;
-      if (enabled && !relayMicStream) {
-        const stream = await captureRelayMicrophone();
-        if (relay !== media) { stream.getTracks().forEach(track => track.stop()); return; }
-        relayMicStream = stream;
-        media.setInputStream(stream);
+      if (enabled && !relayMicrophone) {
+        const session = await openRelayMicrophone();
+        if (relay !== media) { await session.close(); return; }
+        relayMicrophone = session;
+        media.setInputStream(session.stream);
       }
-      relaySending = !!enabled && !!relayMicStream;
+      relaySending = !!enabled && !!relayMicrophone;
+      relayMicrophone?.setMuted(!relaySending);
       media.setSending(relaySending);
     }
 
-    async function replaceRelayMicrophone(deviceId = null) {
+    async function replaceRelayMicrophone(deviceId) {
       const media = relay;
-      if (!media || !relayMicStream) return;
-      const stream = await captureRelayMicrophone(deviceId);
-      if (relay !== media) { stream.getTracks().forEach(track => track.stop()); return; }
-      const previous = relayMicStream;
-      relayMicStream = stream;
-      media.setInputStream(stream);
-      previous.getTracks().forEach(track => track.stop());
+      if (!media || !relayMicrophone) return;
+      const session = await openRelayMicrophone(deviceId);
+      if (relay !== media) { await session.close(); return; }
+      const previous = relayMicrophone;
+      relayMicrophone = session;
+      session.setMuted(!relaySending);
+      media.setInputStream(session.stream);
+      await previous.close();
     }
 
     async function joinRelay(ticket, nextConversation) {
@@ -353,23 +364,59 @@
       });
     }
 
-    function captureOptions() {
-      const settings = api.getSettings();
-      const supported = navigator.mediaDevices?.getSupportedConstraints?.() || {};
-      const options = {
-        ...(settings.microphoneId ? { deviceId: settings.microphoneId } : {}),
-        echoCancellation: !settings.nvidiaBroadcast && !!settings.echoCancellation,
-        noiseSuppression: !settings.nvidiaBroadcast && !!settings.noiseSuppression,
-        autoGainControl: !settings.nvidiaBroadcast && !!settings.autoGainControl,
-      };
-      // Keep the SFU capture speech-shaped as well: mono avoids needless
-      // room noise bandwidth and the isolation hint is used when WebView2
-      // exposes it. LiveKit falls back to browser defaults when unsupported.
-      if (supported.channelCount) options.channelCount = { ideal: 1 };
-      if (supported.sampleRate) options.sampleRate = { ideal: 48_000 };
-      if (supported.latency) options.latency = { ideal: 0.01 };
-      if (settings.voiceIsolation && supported.voiceIsolation) options.voiceIsolation = true;
-      return options;
+    function wantsMicrophone() {
+      return !micManuallyMuted && (!api.getSettings().pushToTalk || pushToTalkPressed);
+    }
+
+    function queueAudio(activeRoom, operation) {
+      const task = audioQueue.catch(() => {}).then(async () => {
+        if (room !== activeRoom) return;
+        await operation();
+      });
+      audioQueue = task;
+      return task;
+    }
+
+    async function syncMicrophone(activeRoom) {
+      if (room !== activeRoom || !microphoneTrack) return;
+      const track = microphoneTrack;
+      if (wantsMicrophone()) await track.unmute();
+      else await track.mute();
+      if (room !== activeRoom || track !== microphoneTrack) return;
+      // The current intent wins even if a mute/PTT event arrived during await.
+      microphone.setMuted(!wantsMicrophone());
+      publishState({ micMuted: !wantsMicrophone(), micManuallyMuted, pushToTalkPressed, micAvailable: true });
+    }
+
+    async function prepareMicrophone(activeRoom, settings) {
+      if (!window.GhostChatAudio) throw new Error("The audio engine did not load. Restart GhostChat.");
+      let prepared;
+      prepared = await window.GhostChatAudio.open({ ...settings, microphoneId: selectedMicrophoneId ?? settings.microphoneId }, { onStatus() {
+        if (room === activeRoom && microphone === prepared) publishState();
+      } });
+      if (room !== activeRoom) { await prepared.close(); return; }
+      const previous = microphone;
+      let track = microphoneTrack;
+      try {
+        if (track) {
+          await track.replaceTrack(prepared.stream.getAudioTracks()[0], { userProvidedTrack: true });
+        } else {
+          track = new LK.LocalAudioTrack(prepared.stream.getAudioTracks()[0], undefined, true);
+          track.stopOnMute = false;
+          await track.mute();
+          await activeRoom.localParticipant.publishTrack(track, { source: LK.Track.Source.Microphone, dtx: true, red: true });
+        }
+        if (room !== activeRoom) {
+          try { await activeRoom.localParticipant.unpublishTrack(track); } catch {}
+          await prepared.close(); return;
+        }
+        microphone = prepared; microphoneTrack = track;
+        await previous?.close();
+        await syncMicrophone(activeRoom);
+      } catch (error) {
+        await prepared.close();
+        throw error;
+      }
     }
 
     function bindRoom(activeRoom) {
@@ -391,6 +438,8 @@
         .on(E.Reconnected, () => publishState({ status: "connected" }))
         .on(E.Disconnected, () => {
           if (room !== activeRoom) return;
+          joinGeneration++;
+          void microphone?.close(); microphone = null; microphoneTrack = null;
           api.onScreenRemoved?.();
           for (const [sid, element] of audioElements) element.remove();
           for (const screen of screenElements.values()) screen.tile.remove();
@@ -434,7 +483,6 @@
         activeRoom = new LK.Room({
           adaptiveStream: true,
           dynacast: true,
-          audioCaptureDefaults: captureOptions(),
           audioOutput: settings.speakerId ? { deviceId: settings.speakerId } : undefined,
         });
         room = activeRoom;
@@ -445,12 +493,13 @@
           rtcConfig: { iceTransportPolicy: "relay" },
           peerConnectionTimeout: 15_000,
         }));
-        if (room !== activeRoom) return { cancelled: true };
+        if (ticket !== joinGeneration || room !== activeRoom) { await activeRoom.disconnect(); return { cancelled: true }; }
         await activeRoom.startAudio().catch(() => {});
         let micAvailable = true;
         try { micAvailable = (await LK.Room.getLocalDevices("audioinput", false)).length > 0; } catch {}
+        if (ticket !== joinGeneration || room !== activeRoom) return { cancelled: true };
         // Joining a group never publishes the microphone automatically.
-        await activeRoom.localParticipant.setMicrophoneEnabled(false);
+        // Only the shared processed track may publish microphone audio.
         if (room !== activeRoom) return { cancelled: true };
         publishState({ status: "connected", micMuted: true, micManuallyMuted: true, pushToTalkPressed: false, micAvailable, screenSharing: false, screenStarting: false, error: "", mediaPath: "livekit" });
       } catch (error) {
@@ -471,9 +520,12 @@
 
     async function leave() {
       joinGeneration += 1;
-      api.onScreenRemoved?.();
       const activeRoom = room;
       room = null;
+      const previousMicrophone = microphone;
+      microphone = null; microphoneTrack = null;
+      await previousMicrophone?.close();
+      api.onScreenRemoved?.();
       screenOperation = null;
       teardownRelay();
       // Clean up even if disconnect() rejects; the error still reaches the caller.
@@ -511,23 +563,23 @@
         }
         return;
       }
-      if (!room) return;
-      if (api.getSettings().pushToTalk) {
-        micManuallyMuted = !micManuallyMuted;
-        if (micManuallyMuted && room.localParticipant.isMicrophoneEnabled) await room.localParticipant.setMicrophoneEnabled(false);
-        publishState({ micMuted: !room.localParticipant.isMicrophoneEnabled, micManuallyMuted });
-        return;
-      }
-      const enabled = !room.localParticipant.isMicrophoneEnabled;
-      try {
-        await room.localParticipant.setMicrophoneEnabled(enabled, captureOptions());
-        micManuallyMuted = !enabled;
-        publishState({ micMuted: !room.localParticipant.isMicrophoneEnabled, micManuallyMuted, micAvailable: true });
-      } catch (error) {
-        micManuallyMuted = true;
-        publishState({ micMuted: true, micManuallyMuted, micAvailable: false });
-        throw new Error(`Microphone stayed off: ${error.message || "device unavailable"}`);
-      }
+      const activeRoom = room;
+      if (!activeRoom) return;
+      micManuallyMuted = microphone && microphone.status.state !== 'running' ? false : !micManuallyMuted;
+      if (micManuallyMuted) microphone?.setMuted(true);
+      return queueAudio(activeRoom, async () => {
+        try {
+          if ((!microphone || microphone.status.state !== 'running') && !micManuallyMuted) await prepareMicrophone(activeRoom, api.getSettings());
+          else await syncMicrophone(activeRoom);
+          if (room === activeRoom) publishState({ micManuallyMuted, micMuted: !wantsMicrophone() });
+        } catch (error) {
+          if (room === activeRoom) {
+            micManuallyMuted = true; microphone?.setMuted(true);
+            publishState({ micMuted: true, micManuallyMuted, micAvailable: !!microphone, error: error.message });
+          }
+          throw error;
+        }
+      });
     }
 
     async function setPushToTalk(pressed) {
@@ -544,21 +596,11 @@
         }
         return;
       }
-      if (!room) return;
-      pushToTalkPressed = pressed;
-      const enabled = pressed && !micManuallyMuted;
-      try {
-        if (room.localParticipant.isMicrophoneEnabled !== enabled) {
-          await room.localParticipant.setMicrophoneEnabled(enabled, captureOptions());
-          publishState({ micMuted: !enabled, pushToTalkPressed, micManuallyMuted, micAvailable: true });
-        } else {
-          publishState({ pushToTalkPressed, micManuallyMuted });
-        }
-      } catch (error) {
-        micManuallyMuted = true;
-        publishState({ micMuted: true, micManuallyMuted, pushToTalkPressed: false, micAvailable: false });
-        throw new Error(`Microphone stayed off: ${error.message || "device unavailable"}`);
-      }
+      const activeRoom = room;
+      if (!activeRoom || !api.getSettings().pushToTalk) return;
+      pushToTalkPressed = !!pressed;
+      if (!pressed) microphone?.setMuted(true);
+      return queueAudio(activeRoom, () => syncMicrophone(activeRoom));
     }
 
     function screenShareOptions(enabled) {
@@ -625,23 +667,20 @@
       });
     }
 
-    // LiveKit records the device for an unpublished or muted microphone and
-    // reacquires it on unmute, so switch even while the microphone is off.
-    async function setMicrophoneDevice(deviceId) {
-      if (relay) { await replaceRelayMicrophone(deviceId || null); return; }
-      if (room && deviceId) await room.switchActiveDevice("audioinput", deviceId);
+    function setMicrophoneDevice(deviceId) {
+      selectedMicrophoneId = deviceId || "";
+      if (relay) return replaceRelayMicrophone(deviceId || "");
+      const activeRoom = room;
+      if (!activeRoom || !microphone) return Promise.resolve();
+      return queueAudio(activeRoom, () => prepareMicrophone(activeRoom, { ...api.getSettings(), microphoneId: deviceId || "" }));
     }
 
-    // LiveKit reads capture defaults while publishing the microphone. Re-publish
-    // an active track so the processing choices apply without leaving the room.
-    async function applyAudioSettings() {
-      if (relay) { await replaceRelayMicrophone(); publishState(); return; }
-      if (!room?.localParticipant.isMicrophoneEnabled) { publishState(); return; }
-      const settings = api.getSettings();
-      const shouldEnable = !settings.pushToTalk || (pushToTalkPressed && !micManuallyMuted);
-      await room.localParticipant.setMicrophoneEnabled(false);
-      if (shouldEnable) await room.localParticipant.setMicrophoneEnabled(true, captureOptions());
-      publishState({ micMuted: !shouldEnable, micManuallyMuted, pushToTalkPressed, micAvailable: true });
+    function applyAudioSettings() {
+      if (relay) return replaceRelayMicrophone().then(() => publishState());
+      const activeRoom = room;
+      if (!activeRoom || !microphone) { publishState(); return Promise.resolve(); }
+      if (!wantsMicrophone()) microphone.setMuted(true);
+      return queueAudio(activeRoom, () => prepareMicrophone(activeRoom, api.getSettings()));
     }
 
     async function setSpeakerDevice(deviceId) {

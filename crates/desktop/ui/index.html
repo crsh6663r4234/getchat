@@ -327,18 +327,26 @@
           <label><span data-en="Speaker" data-tr="Hoparlör">Speaker</span><select id="voiceSpeakerSelect"><option value="" data-en="System default" data-tr="Sistem varsayılanı">System default</option></select></label>
           <div class="dialog-actions"><button id="refreshAudioDevices" class="button secondary" type="button" data-en="Refresh audio devices" data-tr="Ses aygıtlarını yenile">Refresh audio devices</button></div>
           <div class="voice-mic-test">
-            <div class="voice-mic-test-heading"><strong data-en="Microphone test" data-tr="Mikrofon testi">Microphone test</strong><span id="voiceMicLevelLabel">0%</span></div>
+            <div class="voice-mic-test-heading"><strong data-en="Microphone input" data-tr="Mikrofon girişi">Microphone input</strong><span id="voiceMicLevelLabel">0%</span></div>
             <div id="voiceMicLevelMeter" class="voice-mic-level-meter" role="meter" aria-label="Microphone input level" data-en-label="Microphone input level" data-tr-label="Mikrofon giriş seviyesi" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="voiceMicLevelFill"></span></div>
+            <div class="voice-mic-test-heading"><strong data-en="Outgoing audio" data-tr="Karşıya gönderilecek ses">Outgoing audio</strong><span id="voiceOutputLevelLabel">0%</span></div>
+            <div id="voiceOutputLevelMeter" class="voice-mic-level-meter" role="meter" aria-label="Outgoing audio level" data-en-label="Outgoing audio level" data-tr-label="Gönderilecek ses seviyesi" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span id="voiceOutputLevelFill"></span></div>
             <p id="voiceMicTestStatus" class="fine-print" aria-live="polite" data-en="Press test and speak into your microphone." data-tr="Testi başlatıp mikrofona konuş.">Press test and speak into your microphone.</p>
             <button id="voiceMicTestButton" class="button secondary" type="button" aria-pressed="false" data-en="Test microphone" data-tr="Mikrofonu dene">Test microphone</button>
+            <div class="dialog-actions">
+              <button id="voiceRecordSample" class="button secondary" type="button" disabled data-en="Record 6-second comparison" data-tr="6 saniyelik karşılaştırma kaydet">Record 6-second comparison</button>
+              <button id="voicePlayBefore" class="button secondary" type="button" disabled data-en="Before filter" data-tr="Filtre öncesini dinle">Before filter</button>
+              <button id="voicePlayAfter" class="button secondary" type="button" disabled data-en="After filter" data-tr="Filtre sonrasını dinle">After filter</button>
+            </div>
+            <audio id="voiceTestBefore" class="hidden"></audio><audio id="voiceTestAfter" class="hidden"></audio>
+            <p class="fine-print" data-en="Echo cancellation is already applied to the input. This comparison measures the additional noise filter. Headphones recommended." data-tr="Girişte yankı engelleme zaten uygulanır. Karşılaştırma ek gürültü filtresinin etkisini gösterir. Kulaklık önerilir.">Echo cancellation is already applied to the input. This comparison measures the additional noise filter. Headphones recommended.</p>
           </div>
           <label class="setting-row"><span data-en="Echo cancellation" data-tr="Yankı engelleme">Echo cancellation</span><input id="voiceEchoCancellation" type="checkbox" checked></label>
-          <label class="setting-row"><span data-en="Noise suppression" data-tr="Gürültü azaltma">Noise suppression</span><input id="voiceNoiseSuppression" type="checkbox" checked></label>
+          <label class="setting-row"><span><strong data-en="Noise suppression" data-tr="Gürültü azaltma">Noise suppression</strong><small data-en="Processes audio on this device, in direct and group calls." data-tr="Birebir ve grup aramalarında sesi cihazında temizler.">Processes audio on this device, in direct and group calls.</small></span><input id="voiceNoiseSuppression" type="checkbox" checked></label>
+          <label class="setting-row"><span><strong data-en="Noise filter" data-tr="Gürültü filtresi">Noise filter</strong><small data-en="DeepFilterNet uses more CPU. Compare a microphone sample before choosing it." data-tr="DeepFilterNet daha fazla işlemci kullanır. Seçmeden önce mikrofon kaydını karşılaştır.">DeepFilterNet uses more CPU. Compare a microphone sample before choosing it.</small></span><select id="voiceNoiseEngine" aria-label="Noise filter"><option value="rnnoise" data-en="Standard · RNNoise" data-tr="Standart · RNNoise">Standard · RNNoise</option><option value="deepfilter" data-en="Advanced · DeepFilterNet (experimental)" data-tr="Gelişmiş · DeepFilterNet (deneysel)">Advanced · DeepFilterNet (experimental)</option></select></label>
           <label class="setting-row"><span data-en="Automatic microphone gain" data-tr="Otomatik mikrofon seviyesi">Automatic microphone gain</span><input id="voiceAutoGain" type="checkbox" checked></label>
           <label class="setting-row nvidia-broadcast-row"><span><strong>NVIDIA Broadcast AI</strong><small data-en="Use RTX noise and room-echo removal when NVIDIA Broadcast is installed." data-tr="NVIDIA Broadcast kuruluysa RTX gürültü ve oda yankısı temizlemeyi kullanır.">Use RTX noise and room-echo removal when NVIDIA Broadcast is installed.</small></span><input id="voiceNvidiaBroadcast" type="checkbox"></label>
           <p id="voiceNvidiaBroadcastStatus" class="fine-print" aria-live="polite"></p>
-          <label class="setting-row"><span><strong data-en="Adaptive Clear Voice" data-tr="Adaptive Clear Voice">Adaptive Clear Voice</strong><small data-en="GPU-free speech focus for non-RTX systems." data-tr="RTX olmayan sistemler için GPU gerektirmeyen konuşma odağı.">GPU-free speech focus for non-RTX systems.</small></span><input id="voiceFocus" type="checkbox" checked></label>
-          <label><span data-en="Voice isolation strength" data-tr="Konuşma ayırma gücü">Voice isolation strength</span><input id="voiceFocusSensitivity" type="range" min="1" max="100" value="36"></label>
           <p id="voiceProcessingStatus" class="fine-print" aria-live="polite" data-en="Processing is checked when a call starts." data-tr="İşleme durumu arama başlayınca doğrulanır.">Processing is checked when a call starts.</p>
           <label class="setting-row"><span data-en="Push to talk (hold Space)" data-tr="Bas-konuş (Boşluk tuşunu basılı tut)">Push to talk (hold Space)</span><input id="voicePushToTalk" type="checkbox"></label>
           <label class="setting-row"><span data-en="Share system audio with screen" data-tr="Ekranla sistem sesini paylaş">Share system audio with screen</span><input id="voiceShareAudio" type="checkbox"></label>
@@ -401,6 +409,7 @@
 
   <script src="vendor/livekit-client.umd.js"></script>
   <script src="ghost-share-client.js"></script>
+  <script src="audio-engine.js"></script>
   <script src="server-media-client.js"></script>
   <script src="voice-client.js"></script>
   <script src="group-voice-client.js"></script>
