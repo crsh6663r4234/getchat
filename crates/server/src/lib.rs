@@ -689,13 +689,32 @@ async fn distributed_admission(
     next.run(request).await
 }
 
+/// The tasks every server runs next to its listener: the media revocation
+/// reconciler and the upload sweeps. Both `serve` (the desktop's built-in
+/// server) and `run_standalone` (the server exe) start them once; dropping
+/// the value stops them.
+struct BackgroundTasks(Vec<tokio::task::JoinHandle<()>>);
+
+impl BackgroundTasks {
+    fn spawn(state: &AppState) -> Self {
+        Self(vec![
+            tokio::spawn(media_revocation::run(state.clone())),
+            tokio::spawn(run_unclaimed_upload_sweep(state.clone())),
+        ])
+    }
+}
+
+impl Drop for BackgroundTasks {
+    fn drop(&mut self) {
+        for task in &self.0 {
+            task.abort();
+        }
+    }
+}
+
 pub async fn serve(listener: tokio::net::TcpListener, state: AppState) -> std::io::Result<()> {
-    let reconciler = tokio::spawn(media_revocation::run(state.clone()));
-    let upload_sweep = tokio::spawn(run_unclaimed_upload_sweep(state.clone()));
-    let result = axum::serve(listener, router(state)).await;
-    reconciler.abort();
-    upload_sweep.abort();
-    result
+    let _background = BackgroundTasks::spawn(&state);
+    axum::serve(listener, router(state)).await
 }
 
 fn session_hash(token: &str) -> String {
@@ -7089,6 +7108,8 @@ pub async fn run_standalone(
                 .join("ghostchat-attachments")
         });
     let state = build_state_with_attachment_dir(db.clone(), attachment_dir).await;
+    // Started once, outside the rebind loop of `serve_standalone`.
+    let _background = BackgroundTasks::spawn(&state);
     // `control` lives as long as this loop, so `wanted` never closes.
     let (control, mut signals) = self_update::ServeControl::new();
     if self_update {
@@ -7561,6 +7582,39 @@ mod tests {
         control.resume().await;
         assert!(answers(app.client.clone(), health.clone()).await);
         serving.abort();
+    }
+
+    /// The standalone exe goes through `run_standalone`, not `serve`; it must
+    /// run the same background tasks (upload sweeps, media revocation
+    /// reconciler), seen here by the sweep removing a stale temp file.
+    #[tokio::test]
+    async fn standalone_server_runs_the_background_sweeps() {
+        let dir = std::env::temp_dir().join(format!("ghostchat-standalone-{}", Uuid::new_v4()));
+        let attachments = dir.join("ghostchat-attachments");
+        std::fs::create_dir_all(&attachments).unwrap();
+        let stale = attachments.join(format!("{}.upload", Uuid::new_v4()));
+        std::fs::write(&stale, b"partial").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(SystemTime::now() - Duration::from_secs(25 * 3600))
+            .unwrap();
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let database = dir.join("ghostchat.sqlite").to_string_lossy().into_owned();
+        let serving = tokio::spawn(async move { run_standalone(addr, &database, false).await });
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        while stale.exists() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let swept = !stale.exists();
+        serving.abort();
+        let _ = serving.await;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(swept, "the standalone server never ran the upload sweep");
     }
 
     #[tokio::test]
