@@ -13,5 +13,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .unwrap_or_else(|_| "0.0.0.0:38241".into())
         .parse()?;
     let database = env::var("GHOSTCHAT_DATABASE").unwrap_or_else(|_| "ghostchat.sqlite".into());
-    ghostchat_server::bind_default(address, &database).await
+    // Only this standalone binary updates itself (Windows); the desktop's
+    // built-in server calls `ghostchat_server::serve` and never does.
+    let auto_update = env::var("GHOSTCHAT_AUTO_UPDATE").ok();
+    let self_update = ghostchat_server::self_update::enabled(auto_update.as_deref(), cfg!(windows));
+    if cfg!(windows) && !self_update {
+        tracing::info!("self-update: off (GHOSTCHAT_AUTO_UPDATE)");
+    }
+    ghostchat_server::run_standalone(address, &database, self_update).await
 }

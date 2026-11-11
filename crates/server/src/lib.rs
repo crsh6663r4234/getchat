@@ -46,6 +46,7 @@ pub mod device_proof;
 mod media_relay;
 mod media_revocation;
 pub mod ratelimit;
+pub mod self_update;
 
 const MESSAGE_LIMIT: usize = 4_000;
 const MAX_CRYPTO_PAYLOAD_BYTES: usize = 64 * 1024;
@@ -286,6 +287,31 @@ async fn backup_before_upgrade(
     tracing::info!(backup = %backup.display(), "wrote the pre-upgrade database backup");
     rotate_upgrade_backups(&backup);
     Ok(())
+}
+
+/// Writes `<database>.pre-update.bak` with `VACUUM INTO` before the
+/// standalone server's self-updater replaces the exe; the next one replaces
+/// it. Skips in-memory databases (`Ok(None)`).
+pub(crate) async fn backup_before_self_update(
+    pool: &SqlitePool,
+    path: &str,
+) -> Result<Option<PathBuf>, String> {
+    if path.is_empty() || path == ":memory:" || path.contains("mode=memory") {
+        return Ok(None);
+    }
+    let backup = PathBuf::from(format!("{path}.pre-update.bak"));
+    let partial = PathBuf::from(format!("{}.tmp", backup.display()));
+    if partial.exists() {
+        std::fs::remove_file(&partial).map_err(|e| e.to_string())?;
+    }
+    sqlx::query("VACUUM INTO ?")
+        .bind(partial.to_string_lossy().into_owned())
+        .execute(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    std::fs::rename(&partial, &backup).map_err(|e| e.to_string())?;
+    tracing::info!(backup = %backup.display(), "wrote the database backup before the self-update");
+    Ok(Some(backup))
 }
 
 /// How many `pre-<version>.bak` backups of one database are kept.
@@ -6995,6 +7021,21 @@ pub async fn bind_default(
     addr: SocketAddr,
     database_path: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    run_standalone(addr, database_path, false).await
+}
+
+/// How long in-flight requests may finish when the self-updater stops the
+/// listener; WebSockets keep running until this process exits.
+const SELF_UPDATE_DRAIN: Duration = Duration::from_secs(10);
+
+/// The standalone server (`main.rs`). With `self_update` it also runs the
+/// self-updater, which may stop the listener to swap the exe and start it
+/// again if the new exe fails (see `self_update`).
+pub async fn run_standalone(
+    addr: SocketAddr,
+    database_path: &str,
+    self_update: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let db = open_database(database_path).await?;
     let attachment_dir = env::var_os("GHOSTCHAT_ATTACHMENT_DIR")
         .map(PathBuf::from)
@@ -7004,15 +7045,83 @@ pub async fn bind_default(
                 .unwrap_or_else(|| std::path::Path::new("."))
                 .join("ghostchat-attachments")
         });
-    let state = build_state_with_attachment_dir(db, attachment_dir).await;
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(address = %listener.local_addr()?, "GhostChat server listening");
-    axum::serve(listener, router(state))
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await?;
-    Ok(())
+    let state = build_state_with_attachment_dir(db.clone(), attachment_dir).await;
+    // `control` lives as long as this loop, so `wanted` never closes.
+    let (control, mut signals) = self_update::ServeControl::new();
+    if self_update {
+        self_update::start(db, database_path.to_owned(), addr, control.clone());
+    }
+    let served = serve_standalone(addr, state, &mut signals).await;
+    drop(control);
+    served
+}
+
+/// Serves until Ctrl+C; releases the port while `signals.wanted` is false
+/// (the self-updater swapping the exe) and listens again when it is true.
+async fn serve_standalone(
+    addr: SocketAddr,
+    state: AppState,
+    signals: &mut self_update::ServeSignals,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut first_bind = true;
+    loop {
+        let _ = signals.wanted.wait_for(|wanted| *wanted).await;
+        let listener = if first_bind {
+            tokio::net::TcpListener::bind(addr).await?
+        } else {
+            bind_after_failed_update(addr).await?
+        };
+        first_bind = false;
+        tracing::info!(address = %listener.local_addr()?, "GhostChat server listening");
+        signals.listening.send_replace(true);
+        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+        let app = router(state.clone());
+        let mut server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async move {
+                    let _ = stop_rx.wait_for(|stop| *stop).await;
+                })
+                .await
+        });
+        let exiting = tokio::select! {
+            result = &mut server => {
+                result??;
+                return Ok(());
+            }
+            _ = tokio::signal::ctrl_c() => true,
+            _ = signals.wanted.wait_for(|wanted| !*wanted) => false,
+        };
+        stop_tx.send_replace(true);
+        if exiting {
+            server.await??;
+            return Ok(());
+        }
+        if tokio::time::timeout(SELF_UPDATE_DRAIN, &mut server)
+            .await
+            .is_err()
+        {
+            server.abort();
+            let _ = server.await;
+        }
+        signals.listening.send_replace(false);
+        tracing::info!("GhostChat server stopped listening for the self-update");
+    }
+}
+
+/// The new exe was stopped a moment ago, so its port may still be closing.
+async fn bind_after_failed_update(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
+    let mut attempt = 0;
+    loop {
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => return Ok(listener),
+            Err(error) if attempt < 30 => {
+                attempt += 1;
+                tracing::warn!(%error, "could not listen again yet; retrying");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -7369,6 +7478,36 @@ mod tests {
         assert_eq!(health["status"], "ok");
         assert_eq!(health["service"], "ghostchat");
         assert_eq!(health["version"], env!("CARGO_PKG_VERSION"));
+    }
+
+    #[tokio::test]
+    async fn standalone_server_releases_its_port_for_a_self_update_and_listens_again() {
+        let app = TestApp::new().await;
+        let addr = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap();
+        let (control, mut signals) = self_update::ServeControl::new();
+        let state = app.state.clone();
+        let serving =
+            tokio::spawn(async move { serve_standalone(addr, state, &mut signals).await });
+        let health = format!("http://{addr}/health");
+        let answers = |client: reqwest::Client, url: String| async move {
+            client
+                .get(url)
+                .send()
+                .await
+                .is_ok_and(|r| r.status().is_success())
+        };
+        control.listening().await;
+        assert!(answers(app.client.clone(), health.clone()).await);
+        control.stop().await;
+        // The port is free for the new exe.
+        drop(tokio::net::TcpListener::bind(addr).await.unwrap());
+        assert!(!answers(app.client.clone(), health.clone()).await);
+        control.resume().await;
+        assert!(answers(app.client.clone(), health.clone()).await);
+        serving.abort();
     }
 
     #[tokio::test]
@@ -9530,6 +9669,45 @@ mod tests {
             .collect();
         names.sort();
         names
+    }
+
+    #[tokio::test]
+    async fn self_update_backup_replaces_the_previous_one_with_current_data() {
+        let dir = std::env::temp_dir().join(format!("ghostchat-backup-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("db.sqlite");
+        let db = open_database(&path.to_string_lossy()).await.unwrap();
+        seed_user(&db, "u-first").await;
+        let written = backup_before_self_update(&db, &path.to_string_lossy())
+            .await
+            .unwrap();
+        assert_eq!(written, Some(dir.join("db.sqlite.pre-update.bak")));
+        seed_user(&db, "u-second").await;
+        backup_before_self_update(&db, &path.to_string_lossy())
+            .await
+            .unwrap();
+        db.close().await;
+        assert_eq!(backup_files(&dir), vec!["db.sqlite.pre-update.bak"]);
+        let backup = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(dir.join("db.sqlite.pre-update.bak"))
+                    .read_only(true),
+            )
+            .await
+            .unwrap();
+        let mut users = sqlx::query_scalar::<_, String>("SELECT id FROM users")
+            .fetch_all(&backup)
+            .await
+            .unwrap();
+        users.sort();
+        assert_eq!(users, vec!["u-first".to_string(), "u-second".to_string()]);
+        let memory = open_database(":memory:").await.unwrap();
+        assert_eq!(
+            backup_before_self_update(&memory, ":memory:").await,
+            Ok(None)
+        );
     }
 
     #[tokio::test]

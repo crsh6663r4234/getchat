@@ -16,6 +16,7 @@ argon2.workspace = true
 axum.workspace = true
 base64.workspace = true
 hmac = "0.12.1"
+minisign-verify = "0.3.0"
 futures-util = "0.3.31"
 rand.workspace = true
 redis = { version = "0.32.7", default-features = false, features = ["tokio-comp", "script", "cluster-async"] }
