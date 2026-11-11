@@ -4,11 +4,11 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
+use blahaj::{Share, Sharks};
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sharks::{Share, Sharks};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -189,6 +189,48 @@ pub fn recover(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Shares written by earlier builds (sharks 0.5) must still recover.
+    #[test]
+    fn shares_from_earlier_builds_still_recover() {
+        let shares: Vec<Share> = [
+            "ARwPkqMqfUz5nB1Z2VnkqgluMsqKCQ2XmT6QI1BYmB-2",
+            "ApS94sLQfYivVZhpD_ugs6K_yZhjaV7Yn6Wm_deMzCoL",
+            "A4mwc2X_BsNewI872q9KFrvA6UH9dUVYHoIsxZvJSiqd",
+        ]
+        .iter()
+        .map(|s| Share::try_from(B64.decode(s).unwrap().as_slice()).unwrap())
+        .collect();
+        let secret: Vec<u8> = (1..=32).collect();
+        assert_eq!(Sharks(3).recover(&shares).unwrap(), secret);
+    }
+
+    /// RUSTSEC-2024-0398: every polynomial coefficient must be drawn from
+    /// the whole field, zero included. With an RNG that only yields zeros
+    /// the polynomial is the constant secret, so every share equals it.
+    #[test]
+    fn split_coefficients_may_be_zero() {
+        struct Zeros;
+        impl RngCore for Zeros {
+            fn next_u32(&mut self) -> u32 {
+                0
+            }
+            fn next_u64(&mut self) -> u64 {
+                0
+            }
+            fn fill_bytes(&mut self, dest: &mut [u8]) {
+                dest.fill(0);
+            }
+            fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand::Error> {
+                dest.fill(0);
+                Ok(())
+            }
+        }
+        let secret: Vec<u8> = (1..=32).collect();
+        for share in Sharks(3).dealer_rng(&secret, &mut Zeros).take(5) {
+            assert_eq!(Vec::<u8>::from(&share)[1..], secret[..]);
+        }
+    }
+
     #[test]
     fn all_ten_subsets_restore_only_identity_and_reject_mixed_or_corrupt_shares() {
         let account = Uuid::new_v4().to_string();

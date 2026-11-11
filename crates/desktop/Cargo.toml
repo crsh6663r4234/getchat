@@ -26,7 +26,7 @@ base64.workspace = true
 aes-gcm = "0.10.3"
 argon2.workspace = true
 hkdf = "0.12.4"
-sharks = "0.5.0"
+blahaj = "0.6.0"
 ed25519-dalek = { version = "2.2.0", features = ["rand_core"] }
 libsqlite3-sys = { version = "0.30.1", optional = true, features = ["bundled-sqlcipher-vendored-openssl"] }
 hmac = "0.12.1"
