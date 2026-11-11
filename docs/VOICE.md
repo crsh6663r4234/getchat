@@ -36,3 +36,21 @@ When LiveKit is configured, a one-to-one call uses a separate short-lived **Ghos
 The desktop bundles the official `livekit-client` JavaScript SDK and its Apache-2.0 license. Production use still requires a reachable LiveKit deployment with trusted TLS and working WebRTC firewall rules. Do not claim group media is end-to-end encrypted. Group camera calls are not implemented.
 
 Without TURN or a reachable SFU, voice may work on some networks but is not guaranteed across restrictive NATs. One-to-one calls remain peer-to-peer; group calls are routed through LiveKit.
+
+## Calls through the GhostChat server (server media relay)
+
+TURN and LiveKit carry media over UDP (or TCP to their own ports). When the GhostChat server is reached only through an HTTP tunnel such as Cloudflare, those relays are unreachable and calls used to hang at "connecting". The server therefore also relays call audio itself, over an authenticated WebSocket (`/v1/media/ws`) on the same address the app already uses. `GET /v1/voice/ice` reports `"media_relay": true` on servers that offer it.
+
+Path selection, with no setting to change:
+
+- **No TURN configured** (direct calls) or **no LiveKit configured** (group calls): the call uses the server relay from the start.
+- **TURN or LiveKit configured**: it is tried first. If it has not connected about 8 seconds after the call was answered (or the group was joined), or it fails, the call switches to the server relay automatically. A call that connected through TURN or LiveKit never uses the relay.
+- **An older server without the relay**: calls behave as before (TURN or LiveKit is required).
+
+On the relay path the desktop records the microphone, encodes it with Opus (WebCodecs, 32 kb/s mono, 20 ms frames) and sends the frames to the server, which forwards them to the other participants of that call; each peer's audio is decoded and played through the normal call audio output, so the speaker device, volume and per-peer mute apply. Mute, push-to-talk and microphone changes work as on the other paths. The other caller never learns your network address, because neither side connects to the other directly. The server checks the same rights as call signaling: a direct call room admits only the two members of that conversation while neither blocks the other; a group room admits only current members. A block or a removal from the group stops that user's audio immediately in both directions. Each connection is limited to 64 KB per frame, 100 frames and 256 KB per second.
+
+**Privacy: relayed media passes through the GhostChat server and is not end-to-end encrypted**, exactly like TURN and LiveKit. The server operator can access the audio while it is relayed (it is encrypted in transit only by the HTTPS/WSS connection to the server or tunnel, and a tunnel provider such as Cloudflare terminates that TLS). The server does not store relayed media.
+
+Relayed audio adds the latency of the path to the server and back (and through the tunnel), typically a little more than TURN. Each participant's upload is about 40 kb/s; the server forwards one copy to each other participant, so a large group call costs the server more upload bandwidth than a direct call.
+
+Screen sharing over the server relay is not available yet; on a relayed call the share button explains this.
