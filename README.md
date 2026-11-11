@@ -1,47 +1,92 @@
 # GhostChat
 
-GhostChat is a lightweight Windows desktop chat client with a self-hostable Rust server. The current stable release remains 0.3.8. The unreleased 4.0 work adds group chats, file sharing, profile controls, tray behavior, and experimental opt-in MLS encryption for direct and group text. New attachments in verified MLS chats are encrypted on Windows; earlier messages and files remain plaintext. MLS attachments and messaging still need two-device validation and independent security review. Encrypted groups support experimental staged addition, removal, and owner-committed non-owner self-leave flows. See [docs/SECURITY.md](docs/SECURITY.md) before using it for sensitive conversations. Direct calls remain peer-to-peer; experimental group calls and screen sharing require a separately deployed LiveKit SFU and are not end-to-end encrypted. Group calling is not release-ready until deployment and member-removal behavior are validated.
+GhostChat is a Windows desktop chat app (Tauri 2) with a self-hostable Rust server. Current release: **4.0.54**.
 
-## Run the Windows app
+- Anonymous accounts: a display name and a recovery key, no email, phone number or password.
+- Direct and group chats with file sharing (up to 5 GB per file), replies, reactions, pins, search, invite links and a group planner (polls and events).
+- One-to-one and group voice calls with screen sharing, a local noise filter (RNNoise, or experimental DeepFilterNet) and Watch Party in one-to-one calls.
+- Optional, experimental MLS encryption for direct and group chats.
+- A built-in private server for one PC, or your own server for everyone, which updates itself.
 
-Run the `GhostChat-Setup-x64.msi` installer, or use the portable files. The app starts a private loopback server and stores its SQLite database in the current Windows account's application-data directory. Windows WebView2 Runtime is required; the MSI includes Microsoft's WebView2 bootstrapper.
+## Install
 
-The MSI and portable executables are unsigned. Windows may show an unfamiliar-app prompt. Portable use requires WebView2 Runtime to already be installed.
+Download `GhostChat_<version>_x64_en-US.msi` from the [latest GitHub release](https://github.com/crsh6663r4234/getchat/releases/latest) and run it. GhostChat needs Windows 10 or 11 (x64) and the Microsoft Edge WebView2 Runtime; the MSI installs WebView2 if it is missing. The MSI is not Authenticode-signed unless the signing gate in [docs/RELEASE_SECURITY.md](docs/RELEASE_SECURITY.md) is configured, so Windows may show a SmartScreen prompt.
 
-## Use it on two computers
+The installed app checks for signed updates at startup and every six hours, and from **Settings → Updates**.
 
-The local server is private to one device. For a temporary free demo from a Windows computer, see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#temporary-free-demo-from-a-windows-pc). For a stable deployment, place the standalone server on a host reachable by both devices behind an HTTPS reverse proxy, then open **Settings → Server address** in each client and enter the HTTPS address. Create a separate anonymous account on that server for each person.
+> **One-time manual update.** Desktop app 4.0.48 to 4.0.53: the automatic update cannot install (the app closes and does not start again). Install `GhostChat_4.0.54_x64_en-US.msi` from the 4.0.54 release once by hand, with GhostChat closed; later updates install automatically. Standalone server 4.0.53 and older: replace `ghostchat-server-windows-x64.exe` by hand once; from 4.0.54 on it updates itself. Back up the server database and each PC's `%APPDATA%\app.ghostchat.desktop\` folder first. Updates are one-way; see [docs/UPDATES.md](docs/UPDATES.md).
 
-The standalone backend defaults to `0.0.0.0:38241` so another device or reverse proxy can reach it. Set `GHOSTCHAT_BIND=127.0.0.1:38241` when the HTTPS reverse proxy runs on the same host. Set `GHOSTCHAT_DATABASE` to configure storage. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), [docs/VOICE.md](docs/VOICE.md), and the placeholder-only [server.env.example](server.env.example). Keep the raw backend port blocked from public traffic; expose the service through HTTPS with firewall rules and operational monitoring.
+Out of the box the app runs a private server on the PC (loopback only). To chat between computers, everyone sets the same server in **Settings → Server address**.
 
-## Anonymous account recovery
+## Run your own server on Windows
 
-Account creation asks only for a display name. GhostChat creates a unique random username tag, and you can optionally add a profile photo. It does not request an email, phone number, or conventional password. Save the recovery key when it is shown. The server stores a salted Argon2 verifier plus a lookup digest; it never stores the raw recovery key. Losing both the Windows session and recovery key can permanently lock you out.
+1. Download `ghostchat-server-windows-x64.exe` (and check it against its `.sha256`) from the same release.
+2. Put it in a folder writable by the account that runs it, set the environment variables you need, and start it.
+3. Expose it over HTTPS: a reverse proxy with TLS, or for a quick test a Cloudflare tunnel. `scripts/start-free-demo-server.ps1` downloads `cloudflared` (and the server, if none is running), checks their SHA-256 and opens a temporary `https://…trycloudflare.com` address; see [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#temporary-free-demo-from-a-windows-pc).
 
-Sessions are stored in Windows Credential Manager, scoped to the selected server. Logout revokes the active server session. Recovery rotates sessions. Account data can be exported from Settings, or permanently deleted after a second confirmation.
+| Variable | Purpose |
+| --- | --- |
+| `GHOSTCHAT_BIND` | Listen address, default `0.0.0.0:38241`; use `127.0.0.1:38241` when the proxy or tunnel runs on the same machine. Keep the raw port closed to the internet. |
+| `GHOSTCHAT_DATABASE` | SQLite file, default `ghostchat.sqlite` in the working directory; use an absolute path. |
+| `GHOSTCHAT_ATTACHMENT_DIR` | Uploaded files, default `ghostchat-attachments`. |
+| `GHOSTCHAT_TURN_URLS`, `GHOSTCHAT_TURN_SHARED_SECRET` | Optional coturn relay for one-to-one calls. |
+| `GHOSTCHAT_LIVEKIT_URL`, `GHOSTCHAT_LIVEKIT_API_KEY`, `GHOSTCHAT_LIVEKIT_API_SECRET` | Optional LiveKit SFU for group calls and screen sharing. |
+| `GHOSTCHAT_AUTO_UPDATE` | `false` turns off self-update. |
+| `RUST_LOG` | Log level. |
+
+[server.env.example](server.env.example) has placeholders; never commit real secrets.
+
+**Self-update.** From 4.0.54 on, the Windows server checks the GitHub releases at startup and every 24 hours, installs only a newer release whose signature matches the key built into it, backs up the database first (`<database>.pre-update.bak`), waits for relayed calls to end (at most 30 minutes) and rolls back if the new version does not start. Set `GHOSTCHAT_AUTO_UPDATE=false` if a service manager restarts the server when it exits, or to choose when to upgrade. The server also backs up the database before every schema migration. Run one server process per database. Details: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and [docs/UPDATES.md](docs/UPDATES.md).
+
+## Calls
+
+Calls never connect peer-to-peer, so callers do not learn each other's network address. One-to-one calls use TURN and group calls use LiveKit when the server has them configured. Without them, or when they cannot be reached within about 8 seconds (for example behind a Cloudflare tunnel), the GhostChat server relays the audio and screen video itself over its WebSocket. **No call path is end-to-end encrypted**: media is encrypted in transit, but TURN, LiveKit, the server relay and a tunnel that terminates TLS can access it. The server does not store call media. See [docs/VOICE.md](docs/VOICE.md).
+
+## Encryption status
+
+Chats are stored on the server as plaintext unless encryption is enabled for them. A direct or group chat can opt in to MLS encryption after the members compare identity codes; only messages and files sent after that are encrypted, and the server still sees who talks to whom and when. Planner data and calls are not end-to-end encrypted. The MLS implementation is **experimental**: it has automated tests but has not had real multi-device validation or an independent security review, so do not rely on it for sensitive conversations. See [docs/SECURITY.md](docs/SECURITY.md).
+
+Account data can be exported or deleted from Settings. Sessions are stored in Windows Credential Manager; losing both the session and the recovery key locks you out permanently.
 
 ## Build from source
 
-Requirements: Rust (MSVC target), Windows SDK, WebView2 Runtime, and the Rust crates listed in `Cargo.lock`.
+Requirements: Rust (MSVC toolchain), the Windows SDK and WebView2; Node.js for the UI tests. On Linux the desktop crate needs the GTK/WebKit development packages. No npm install is needed to build.
 
-```powershell
-cargo fmt --all -- --check
-cargo check --offline --workspace
-cargo test --offline -p ghostchat-server
+```bash
 cargo build --release -p ghostchat-server
 cargo build --release -p ghostchat-desktop
+# MSI, from crates/desktop with the Tauri CLI and WiX 3:
+tauri build --bundles msi
 ```
 
-The desktop is a Tauri 2 app with a small static HTML/CSS/JavaScript interface. The server uses Axum, WebSockets, Tokio, SQLx, and SQLite migrations. No npm install is needed.
+Checks that must stay green:
 
-The Windows MSI was built with Tauri CLI 2.12.3 and WiX 3.14. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the rebuild command.
+```bash
+cargo fmt --all -- --check
+cargo test --locked -p ghostchat-server
+cargo test --locked -p ghostchat-desktop
+for f in scripts/test-*.cjs; do node "$f"; done
+for f in crates/desktop/ui/*.js; do node --check "$f"; done
+git diff --check
+```
 
-## Updates
+`scripts/test-audio-browser.cjs` needs Playwright 1.56.1 (see [docs/AUDIO_ENGINE.md](docs/AUDIO_ENGINE.md)).
 
-The installed Windows app checks for signed updates in Settings and on startup. GitHub Releases publishing is configured in [docs/UPDATES.md](docs/UPDATES.md). It becomes live after the project has a GitHub repository and the updater signing secret is added.
+## Documentation
 
-## Current scope
+- [Deployment](docs/DEPLOYMENT.md), [updates](docs/UPDATES.md), [troubleshooting](docs/TROUBLESHOOTING.md)
+- [Voice and screen sharing](docs/VOICE.md), [voice engine](docs/AUDIO_ENGINE.md), [Watch Party](docs/WATCH_PARTY.md), [LiveKit on a Windows VDS](docs/WINDOWS_MEDIA_SETUP.md)
+- [Security and privacy](docs/SECURITY.md), [crypto-event relay API](docs/CRYPTO_EVENT_RELAY.md), [SQLCipher vault module](docs/SECURE_VAULT.md), [release signing](docs/RELEASE_SECURITY.md)
+- [Feature list](docs/FEATURES.md), [UI design system](docs/UI_DESIGN_SYSTEM.md), [performance](docs/PERFORMANCE.md)
+- Historical plans and reports: [docs/archive](docs/archive/README.md)
 
-See [docs/FEATURES.md](docs/FEATURES.md) for the implementation checklist, [docs/SECURITY.md](docs/SECURITY.md) for data handling and security limits, and [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for common setup issues. Test results are recorded in [docs/TEST_REPORT.md](docs/archive/TEST_REPORT.md). Measured performance and its limits are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+## Türkçe özet
 
-The planned major release scope and delivery stages are tracked in [docs/GHOSTCHAT_4_0_ROADMAP.md](docs/archive/GHOSTCHAT_4_0_ROADMAP.md). The encrypted-event relay foundation is documented in [docs/CRYPTO_EVENT_RELAY.md](docs/CRYPTO_EVENT_RELAY.md); the unreleased direct and group encryption code uses this relay for MLS setup events and stores text ciphertext through the normal message history API.
+GhostChat, Windows için bir masaüstü sohbet uygulaması (Tauri 2) ve kendi bilgisayarınızda çalıştırabileceğiniz bir Rust sunucusudur. Güncel sürüm **4.0.54**.
+
+- **Kurulum:** [GitHub sürümlerinden](https://github.com/crsh6663r4234/getchat/releases/latest) MSI dosyasını indirip çalıştırın. WebView2 gerekir; eksikse MSI kurar.
+- **Bir kerelik elle güncelleme:** 4.0.48–4.0.53 masaüstü sürümleri kendini güncelleyemez; 4.0.54 MSI'ını bir kez elle kurun. 4.0.53 ve daha eski sunucularda `ghostchat-server-windows-x64.exe` dosyasını bir kez elle değiştirin. Önce yedek alın; güncellemeler geri alınamaz.
+- **Kendi sunucunuz:** `ghostchat-server-windows-x64.exe` dosyasını çalıştırın, HTTPS ters vekil veya Cloudflare tüneli ile açın. 4.0.54'ten itibaren sunucu kendini imzalı sürümlerden günceller ve önce veritabanını yedekler; kapatmak için `GHOSTCHAT_AUTO_UPDATE=false`.
+- **Aramalar:** Hiçbir zaman doğrudan (eşten eşe) bağlanmaz. TURN ve LiveKit isteğe bağlıdır; yoksa veya ulaşılamıyorsa ses ve ekran görüntüsü GhostChat sunucusu üzerinden aktarılır. Aramalar uçtan uca şifreli **değildir**; sunucu yöneticisi aktarılan medyaya erişebilir.
+- **Şifreleme:** Sohbetler, şifreleme açılmadıkça sunucuda düz metin olarak durur. MLS şifrelemesi deneyseldir ve bağımsız güvenlik incelemesinden geçmemiştir.
+- **Kaynaktan derleme ve testler:** yukarıdaki "Build from source" bölümündeki komutlar.
