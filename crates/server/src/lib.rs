@@ -5428,6 +5428,13 @@ struct SendMessage {
     /// whose keys this e2e1 message carries; they are deleted with it.
     #[serde(default)]
     attachment_ids: Vec<String>,
+    /// The conversation's commit sequence the sender's device had applied
+    /// when it encrypted this message. Optional (older clients, direct
+    /// conversations); when given, a new message is refused once the
+    /// conversation has moved on, because devices that applied the newer
+    /// commit can no longer decrypt it.
+    #[serde(default)]
+    expected_commit_seq: Option<i64>,
 }
 
 async fn send_message(
@@ -5525,8 +5532,11 @@ async fn send_message(
     // one. The check is part of the insert so no concurrent send slips past it.
     // All parameters are numbered: sqlx binds a plain ? after a ?N to the
     // wrong argument.
-    let inserted = sqlx::query("INSERT OR IGNORE INTO messages(id,conversation_id,sender_id,client_message_id,content,reply_to_id) SELECT ?1,?2,?3,?4,?5,?6 WHERE NOT EXISTS(SELECT 1 FROM messages WHERE conversation_id=?2 AND client_message_id=?4 AND sender_id<>?3)")
-        .bind(&id).bind(&conversation_id).bind(&user.id).bind(&body.client_message_id).bind(content).bind(body.reply_to_id.as_deref()).execute(&mut *tx).await.map_err(|error| {
+    // The same insert refuses a message encrypted on a group state the
+    // conversation has left (?7, see SendMessage::expected_commit_seq): a
+    // membership commit accepted in between cannot slip past it either.
+    let inserted = sqlx::query("INSERT OR IGNORE INTO messages(id,conversation_id,sender_id,client_message_id,content,reply_to_id) SELECT ?1,?2,?3,?4,?5,?6 WHERE NOT EXISTS(SELECT 1 FROM messages WHERE conversation_id=?2 AND client_message_id=?4 AND sender_id<>?3) AND (?7 IS NULL OR NOT EXISTS(SELECT 1 FROM conversation_crypto_locks WHERE conversation_id=?2 AND commit_seq<>?7))")
+        .bind(&id).bind(&conversation_id).bind(&user.id).bind(&body.client_message_id).bind(content).bind(body.reply_to_id.as_deref()).bind(body.expected_commit_seq).execute(&mut *tx).await.map_err(|error| {
             if error.as_database_error().is_some_and(|database_error| database_error.message().contains("encrypted conversation only accepts MLS content")) {
                 ApiError::conflict("This encrypted conversation only accepts MLS-encrypted text messages.")
             } else {
@@ -5555,7 +5565,30 @@ async fn send_message(
     tx.commit().await.map_err(|_| ApiError::internal())?;
     let message = sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,u.avatar_data AS sender_avatar,m.client_message_id,m.content,m.created_at,m.edited_at,m.pinned_at,m.reply_to_id,(SELECT r.content FROM messages r WHERE r.id=m.reply_to_id) AS reply_to_content,(SELECT u.display_name FROM messages r JOIN users u ON u.id=r.sender_id WHERE r.id=m.reply_to_id) AS reply_to_sender FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? AND m.sender_id=? AND m.client_message_id=?")
         .bind(&conversation_id).bind(&user.id).bind(&body.client_message_id).fetch_optional(&state.db).await.map_err(|_| ApiError::internal())?
-        .ok_or_else(|| ApiError::conflict("This message ID is already used in this conversation."))?;
+        .ok_or_else(|| ApiError::conflict("This message ID is already used in this conversation."));
+    // Nothing was stored and the sender has no earlier row of this id (a
+    // retry of a stored message is answered above whatever it carries).
+    let message = match message {
+        Ok(message) => message,
+        Err(id_in_use) => {
+            let other_sender = sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM messages WHERE conversation_id=? AND client_message_id=? AND sender_id<>?)",
+            )
+            .bind(&conversation_id)
+            .bind(&body.client_message_id)
+            .bind(&user.id)
+            .fetch_one(&state.db)
+            .await
+            .map_err(|_| ApiError::internal())?;
+            if other_sender != 0 || body.expected_commit_seq.is_none() {
+                return Err(id_in_use);
+            }
+            return Err(ApiError::conflict(
+                "The encrypted group changed after this message was encrypted. Sync the group and send it again.",
+            )
+            .with_code("stale_commit_seq"));
+        }
+    };
     if inserted.rows_affected() > 0 {
         publish_message(&state, &conversation_id, &message).await?;
     }
@@ -7451,6 +7484,82 @@ mod tests {
         let status = send(&bob, &elsewhere, "other").await.unwrap().status();
         assert_eq!(status, StatusCode::OK);
         assert_eq!(count().await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_message_encrypted_before_an_accepted_commit_is_refused() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete,commit_seq) VALUES(?,?,1,4)",
+        )
+        .bind(&group)
+        .bind(&alice.id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+        let send = |client_id: &str, seq: Option<i64>| {
+            let mut body =
+                serde_json::json!({"client_message_id": client_id, "content": "e2e1:AAAA"});
+            if let Some(seq) = seq {
+                body["expected_commit_seq"] = seq.into();
+            }
+            app.request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/messages"),
+                &bob,
+            )
+            .json(&body)
+            .send()
+        };
+        let count = || {
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM messages WHERE conversation_id=?")
+                .bind(&group)
+                .fetch_one(&app.state.db)
+        };
+        // Encrypted on the group state the server is at: stored.
+        let first = Uuid::new_v4().to_string();
+        assert_eq!(
+            send(&first, Some(4)).await.unwrap().status(),
+            StatusCode::OK
+        );
+        // A membership commit is accepted. A message encrypted before it
+        // cannot be read by devices that applied it, so it is not stored and
+        // the sender is told to sync and encrypt again.
+        sqlx::query("UPDATE conversation_crypto_locks SET commit_seq=5 WHERE conversation_id=?")
+            .bind(&group)
+            .execute(&app.state.db)
+            .await
+            .unwrap();
+        let second = Uuid::new_v4().to_string();
+        let refused = send(&second, Some(4)).await.unwrap();
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        let body: serde_json::Value = refused.json().await.unwrap();
+        assert_eq!(body["code"], "stale_commit_seq", "{body}");
+        assert_eq!(count().await.unwrap(), 1);
+        // A retry of the message the server already stored still succeeds.
+        assert_eq!(
+            send(&first, Some(4)).await.unwrap().status(),
+            StatusCode::OK
+        );
+        // Encrypted again on the current state it is stored; a client that
+        // names no state (an older one) is served as before.
+        assert_eq!(
+            send(&second, Some(5)).await.unwrap().status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            send(&Uuid::new_v4().to_string(), None)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert_eq!(count().await.unwrap(), 3);
     }
 
     #[tokio::test]
