@@ -1,0 +1,31 @@
+# cargo-audit configuration. Every ignored advisory below was checked by
+# hand; see docs/SECURITY.md ("Dependency audit"). Re-check each entry when
+# the parent dependency it names is upgraded, and delete it once the fix
+# lands. Advisories whose vulnerable code GhostChat reaches are not listed.
+
+[advisories]
+ignore = [
+    # rsa 0.9 Marvin attack. Only in Cargo.lock: sqlx's default features use
+    # weak `sqlx-mysql?/...` entries, so Cargo locks sqlx-mysql (and rsa)
+    # although the mysql driver is never enabled. Nothing compiles it:
+    # `cargo tree -i rsa --target all -e all` prints nothing. The fixed rsa
+    # 0.10 would need a sqlx-mysql that does not exist for sqlx 0.8.
+    "RUSTSEC-2023-0071",
+    # libcrux-kem 0.0.9 panics on short hybrid keys / seeds. Only in
+    # Cargo.lock: hpke-rs 0.7 lists hpke-rs-libcrux behind its `libcrux`
+    # feature, which nothing enables (openmls_rust_crypto uses the
+    # `rustcrypto` backend); `cargo tree -i libcrux-kem --target all -e all`
+    # prints nothing. hpke-rs-libcrux 0.7.0 pins libcrux-kem =0.0.9, so it
+    # cannot be updated without a new openmls_rust_crypto.
+    "RUSTSEC-2026-0330",
+    "RUSTSEC-2026-0331",
+    # crypto-bigint 0.5.5 timing variability. Pulled in by elliptic-curve
+    # 0.13 for p256/p384/k256 in openmls_rust_crypto 0.6 and
+    # hpke-rs-rust-crypto 0.7 (their latest releases; the fix is
+    # crypto-bigint 0.7.6, which needs elliptic-curve 0.14). GhostChat uses
+    # only MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 (MLS_CIPHERSUITE in
+    # crates/desktop/src/crypto.rs): its secret keys are X25519/Ed25519
+    # (curve25519-dalek), so no secret value reaches crypto-bigint. At most
+    # a peer's NIST-curve signature is verified, which is public data.
+    "RUSTSEC-2026-0387",
+]

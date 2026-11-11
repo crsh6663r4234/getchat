@@ -35,4 +35,8 @@ The WebSocket accepts an initial token frame rather than putting credentials in 
 - Delete: account deletion removes that account, sessions, friend relationships, its conversations, and those messages from the active database. Copies in operator backups are not removed automatically.
 - Backup: stop the server cleanly, then copy the SQLite database and protect the copy as sensitive data. Do not copy a live WAL database without using a SQLite-aware backup procedure.
 
+## Dependency audit
+
+CI runs `cargo audit` on every push and pull request. Advisories the code cannot reach are listed in `.cargo/audit.toml`, each with the evidence: `rsa` and `libcrux-kem` are only in `Cargo.lock` (optional backends that are never compiled), and `crypto-bigint` 0.5 only serves NIST curves that GhostChat's X25519/Ed25519 MLS ciphersuite never uses with secret keys. One advisory is open: RUSTSEC-2026-0459, the bundled SQLite (`libsqlite3-sys` 0.30 through `sqlx` 0.8) can return stale memory when it opens a database together with a crafted `-wal` file. No `sqlx` release supports the fixed `libsqlite3-sys`; GhostChat only opens databases in its own data directory, so the risk applies only to someone who can already write there.
+
 This project has not had an independent security review or penetration test. Chats are not end-to-end encrypted unless encryption is enabled for them; the optional direct/group MLS encryption is experimental and has the limits listed above. Calls and screen sharing are never end-to-end encrypted.
