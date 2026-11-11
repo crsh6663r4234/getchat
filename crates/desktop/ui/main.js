@@ -1058,7 +1058,7 @@
     return body;
   }
   // The selected server's version from /health; null when it does not say
-  // (4.0.51 and older). Features an older server lacks are skipped, or the
+  // (4.0.53 and older; /health reports it from 4.0.54 on). Features an older server lacks are skipped, or the
   // user is told to update the server (serverUpdateText) instead of seeing a
   // generic error.
   async function readServerVersion() {

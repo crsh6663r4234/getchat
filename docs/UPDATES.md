@@ -16,16 +16,16 @@ The release workflow adds the same note to the generated release notes. [TROUBLE
 
 Updates cannot be undone by installing an older version: server migrations 0025 and later have no reverse migrations, an older server binary refuses to start on a database a newer one migrated, and an older desktop build cannot read the account-bound encrypted groups and text cache a newer one wrote. Restoring a backup taken before the update is the only way back. See "Upgrades are one-way" in [GHOSTCHAT_4_0_RELEASE_CANDIDATE.md](GHOSTCHAT_4_0_RELEASE_CANDIDATE.md) for why and for the restore steps.
 
-Builds after 4.0.51 take these backups automatically, next to the database they copy:
+Builds from 4.0.54 on take these backups automatically, next to the database they copy:
 
 - The server, and the desktop app's built-in server, write `<database>.pre-<first pending migration>.bak` (for example `ghostchat.sqlite.pre-0033.bak`) before applying a migration numbered 0025 or higher to a database that already holds data. They stop instead of migrating if the backup cannot be written, and keep the three newest of these backups per database.
 - The desktop app copies its local database once to `ghostchat.sqlite.pre-account-binding.bak` in `%APPDATA%\app.ghostchat.desktop\` at startup, before anything is migrated, when the profile was written by a build before the account binding. Both desktop backups of one upgrade hold the state before it. If the copy fails, encrypted chats stay paused with a message until a restart writes it.
 
-4.0.51 and earlier shipped without these backups: an installation already on 4.0.51 has passed migrations 0025-0032 and gets automatic backups only for later migrations. Before updating, still copy the server database (stop the service or use a SQLite-aware backup) and, on each PC, the `%APPDATA%\app.ghostchat.desktop\` folder with GhostChat closed.
+4.0.53 and earlier shipped without these backups: an installation already on 4.0.51, 4.0.52 or 4.0.53 has passed migrations 0025-0032 and gets automatic backups only for later migrations. Before updating, still copy the server database (stop the service or use a SQLite-aware backup) and, on each PC, the `%APPDATA%\app.ghostchat.desktop\` folder with GhostChat closed.
 
 ## The standalone server updates itself
 
-Builds after 4.0.51 of the standalone Windows server, `ghostchat-server-windows-x64.exe`, update themselves; the desktop app's built-in server never does (the desktop app has its own updater). At startup and every 24 hours the server reads `latest.json` of the latest GitHub release. Only a strictly higher version is installed, never an older or equal one. The server then:
+Builds from 4.0.54 on of the standalone Windows server, `ghostchat-server-windows-x64.exe`, update themselves; the desktop app's built-in server never does (the desktop app has its own updater). At startup and every 24 hours the server reads `latest.json` of the latest GitHub release. Only a strictly higher version is installed, never an older or equal one. The server then:
 
 1. downloads `ghostchat-server-windows-x64.exe` and its `.sig` next to the running exe (as `<exe>.new` and `<exe>.new.sig`) and checks the minisign signature with the updater public key built into the server, the same key the desktop updater uses for the MSI. A file whose signature does not match is deleted and nothing changes. The `.sha256` file is not trusted on its own.
 2. writes a copy of the database, `<GHOSTCHAT_DATABASE>.pre-update.bak` (for example `ghostchat.sqlite.pre-update.bak`), with SQLite `VACUUM INTO`, replacing the copy of the previous update. If it cannot be written, the update stops.
@@ -36,7 +36,7 @@ Every step is logged. Turn it off with `GHOSTCHAT_AUTO_UPDATE=false` (also `0`, 
 
 The update also applies any new database migrations, with the automatic `pre-<migration>.bak` backups described above.
 
-Servers on 4.0.51 and older do not contain the self-updater: replace `ghostchat-server-windows-x64.exe` by hand once with a newer release. From then on the server keeps itself current.
+Servers on 4.0.53 and older (including 4.0.52 and 4.0.53) do not contain the self-updater: replace `ghostchat-server-windows-x64.exe` by hand once with 4.0.54 or newer. From then on the server keeps itself current.
 
 ## GitHub releases
 
