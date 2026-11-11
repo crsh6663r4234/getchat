@@ -62,6 +62,12 @@ impl Rooms {
         self.epoch.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// Whether any call room has a participant (the self-updater defers a
+    /// swap while one does, because the rooms live in this process).
+    pub(super) fn any_active(&self) -> bool {
+        !self.lock().is_empty()
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Room>> {
         match self.rooms.lock() {
             Ok(guard) => guard,
@@ -384,6 +390,29 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_room_with_a_participant_counts_as_an_active_call() {
+        let rooms = Rooms::default();
+        assert!(!rooms.any_active());
+        let (outgoing, _queue) = mpsc::channel(1);
+        rooms
+            .lock()
+            .entry("conversation".into())
+            .or_default()
+            .participants
+            .insert(
+                "alice".into(),
+                Participant {
+                    connection: 1,
+                    revoked: Arc::new(AtomicBool::new(false)),
+                    outgoing,
+                },
+            );
+        assert!(rooms.any_active());
+        rooms.lock().clear();
+        assert!(!rooms.any_active());
+    }
 
     #[test]
     fn frame_budget_refuses_bursts_beyond_the_limits() {

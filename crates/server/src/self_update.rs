@@ -109,6 +109,9 @@ pub trait Files: Send + Sync {
 
 /// Stopping this server, starting the new exe and judging it.
 pub trait Swap: Send + Sync {
+    /// Returns once no call is relayed through this process (its rooms
+    /// would drop with the old process), or after [`CALL_DEFER_LIMIT`].
+    fn wait_for_no_calls(&self) -> impl Future<Output = ()> + Send;
     fn backup_database(&self) -> impl Future<Output = Result<(), String>> + Send;
     /// Stops accepting connections and releases the listening port.
     fn stop_serving(&self) -> impl Future<Output = ()> + Send;
@@ -205,6 +208,7 @@ pub async fn try_update<R: Releases, F: Files, S: Swap>(
         return Outcome::Rejected(reason);
     }
     tracing::info!(%latest, "self-update: the downloaded exe has a valid signature");
+    swap.wait_for_no_calls().await;
     if let Err(reason) = swap.backup_database().await {
         discard_download();
         tracing::warn!(%latest, %reason, "self-update: no database backup, not updating");
@@ -494,6 +498,38 @@ impl ServeControl {
     }
 }
 
+/// The longest a swap waits for relayed calls to end.
+pub const CALL_DEFER_LIMIT: Duration = Duration::from_secs(30 * 60);
+/// How often a waiting swap looks again.
+const CALL_DEFER_POLL: Duration = Duration::from_secs(15);
+
+/// Waits while `active` says a call room is open, looking every `poll`, for
+/// at most `limit`. Returns whether the calls ended (false: gave up).
+pub async fn wait_for_no_calls(active: impl Fn() -> bool, limit: Duration, poll: Duration) -> bool {
+    if !active() {
+        return true;
+    }
+    tracing::info!(
+        limit_minutes = limit.as_secs() / 60,
+        "self-update: a call is relayed through this server; waiting for it to end"
+    );
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            tracing::warn!("self-update: calls are still active; updating anyway");
+            return false;
+        }
+        tokio::time::sleep(poll.min(deadline - tokio::time::Instant::now())).await;
+        if !active() {
+            tracing::info!("self-update: no call is active any more; updating");
+            return true;
+        }
+    }
+}
+
+/// Whether a call room of this process's media relay is open.
+pub type CallsActive = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// How long a started server has to answer `/health` with its version
 /// (it may run database migrations first).
 pub const HEALTH_TIMEOUT: Duration = Duration::from_secs(120);
@@ -504,6 +540,7 @@ pub struct ProcessSwap {
     database_path: String,
     health_url: String,
     control: ServeControl,
+    calls_active: CallsActive,
     client: reqwest::Client,
     child: std::sync::Mutex<Option<std::process::Child>>,
 }
@@ -514,6 +551,7 @@ impl ProcessSwap {
         database_path: String,
         address: std::net::SocketAddr,
         control: ServeControl,
+        calls_active: CallsActive,
     ) -> Self {
         let host = match address.ip() {
             std::net::IpAddr::V4(ip) if ip.is_unspecified() => {
@@ -532,6 +570,7 @@ impl ProcessSwap {
                 std::net::SocketAddr::new(host, address.port())
             ),
             control,
+            calls_active,
             client: reqwest::Client::new(),
             child: std::sync::Mutex::new(None),
         }
@@ -566,6 +605,11 @@ impl ProcessSwap {
 }
 
 impl Swap for ProcessSwap {
+    async fn wait_for_no_calls(&self) {
+        let active = self.calls_active.clone();
+        wait_for_no_calls(move || active(), CALL_DEFER_LIMIT, CALL_DEFER_POLL).await;
+    }
+
     async fn backup_database(&self) -> Result<(), String> {
         crate::backup_before_self_update(&self.db, &self.database_path)
             .await
@@ -633,6 +677,7 @@ pub fn start(
     database_path: String,
     address: std::net::SocketAddr,
     control: ServeControl,
+    calls_active: CallsActive,
 ) {
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
@@ -653,7 +698,7 @@ pub fn start(
         exe = %exe.display(),
         "self-update: on (set GHOSTCHAT_AUTO_UPDATE=false to turn it off)"
     );
-    let swap = ProcessSwap::new(db, database_path, address, control.clone());
+    let swap = ProcessSwap::new(db, database_path, address, control.clone(), calls_active);
     tokio::spawn(async move {
         control.listening().await;
         let paths = SwapPaths::for_exe(&exe);
@@ -796,6 +841,9 @@ mod tests {
     }
 
     impl Swap for FakeSwap {
+        async fn wait_for_no_calls(&self) {
+            self.record("wait_for_no_calls".into());
+        }
         async fn backup_database(&self) -> Result<(), String> {
             self.record("backup".into());
             if self.backup_fails {
@@ -955,7 +1003,8 @@ mod tests {
         assert_eq!(
             swap.calls(),
             vec![
-                "backup".to_owned(),
+                "wait_for_no_calls".to_owned(),
+                "backup".into(),
                 "stop_serving".into(),
                 format!("start:{}", String::from_utf8_lossy(PAYLOAD)),
                 "healthy:9.9.9".into(),
@@ -985,7 +1034,8 @@ mod tests {
         assert_eq!(
             swap.calls(),
             vec![
-                "backup".to_owned(),
+                "wait_for_no_calls".to_owned(),
+                "backup".into(),
                 "stop_serving".into(),
                 format!("start:{}", String::from_utf8_lossy(PAYLOAD)),
                 "healthy:9.9.9".into(),
@@ -995,6 +1045,39 @@ mod tests {
         );
         assert_eq!(std::fs::read(&paths.exe).unwrap(), OLD_BUILD);
         assert_eq!(files_in(&paths), vec![SERVER_ASSET.to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn the_swap_waits_for_relayed_calls_to_end_but_not_forever() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let polls = AtomicUsize::new(0);
+        // Calls end after the third look: the wait returns then.
+        let ended = tokio::time::timeout(
+            Duration::from_secs(5),
+            wait_for_no_calls(
+                || polls.fetch_add(1, Ordering::SeqCst) < 3,
+                Duration::from_secs(60),
+                Duration::from_millis(5),
+            ),
+        )
+        .await;
+        assert_eq!(
+            ended,
+            Ok(true),
+            "the swap goes ahead once no call is active"
+        );
+        assert_eq!(polls.load(Ordering::SeqCst), 4);
+        // A call that never ends delays the swap only up to the limit.
+        let started = std::time::Instant::now();
+        let gave_up = wait_for_no_calls(
+            || true,
+            Duration::from_millis(100),
+            Duration::from_millis(5),
+        )
+        .await;
+        assert!(!gave_up);
+        assert!(started.elapsed() >= Duration::from_millis(100));
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     /// The old exe refuses to start on a database a newer one migrated, so
@@ -1016,7 +1099,8 @@ mod tests {
         assert_eq!(
             swap.calls(),
             vec![
-                "backup".to_owned(),
+                "wait_for_no_calls".to_owned(),
+                "backup".into(),
                 "stop_serving".into(),
                 format!("start:{}", String::from_utf8_lossy(PAYLOAD)),
                 "healthy:9.9.9".into(),
@@ -1038,7 +1122,11 @@ mod tests {
         };
         let outcome = attempt(&releases, &swap, &paths).await;
         assert!(matches!(outcome, Outcome::Rejected(_)), "{outcome:?}");
-        assert_eq!(swap.calls(), vec!["backup".to_owned()]);
+        assert_eq!(
+            swap.calls(),
+            vec!["wait_for_no_calls".to_owned(), "backup".into()],
+            "the swap waits for calls to end before the backup"
+        );
         assert_eq!(std::fs::read(&paths.exe).unwrap(), OLD_BUILD);
         assert_eq!(files_in(&paths), vec![SERVER_ASSET.to_owned()]);
     }

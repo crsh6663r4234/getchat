@@ -7113,7 +7113,14 @@ pub async fn run_standalone(
     // `control` lives as long as this loop, so `wanted` never closes.
     let (control, mut signals) = self_update::ServeControl::new();
     if self_update {
-        self_update::start(db, database_path.to_owned(), addr, control.clone());
+        let rooms = state.media_rooms.clone();
+        self_update::start(
+            db,
+            database_path.to_owned(),
+            addr,
+            control.clone(),
+            std::sync::Arc::new(move || rooms.any_active()),
+        );
     }
     let served = serve_standalone(addr, state, &mut signals).await;
     drop(control);
