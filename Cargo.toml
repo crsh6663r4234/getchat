@@ -1,5 +1,7 @@
 [workspace]
 members = ["crates/server", "crates/desktop"]
+# vendor/libsqlite3-sys is a [patch] source, not a member (no fmt/tests).
+exclude = ["vendor"]
 resolver = "2"
 
 [workspace.package]
@@ -22,3 +24,9 @@ tower-http = { version = "0.5.2", features = ["cors", "limit"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 uuid = { version = "1.28.0", features = ["v4", "serde"] }
+
+# RUSTSEC-2026-0459: libsqlite3-sys 0.30.1 (the only line sqlx 0.8 accepts)
+# with its bundled SQLite replaced by 3.54.1. See
+# vendor/libsqlite3-sys/GHOSTCHAT_PATCH.md before changing or removing this.
+[patch.crates-io]
+libsqlite3-sys = { path = "vendor/libsqlite3-sys" }

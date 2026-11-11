@@ -2,6 +2,17 @@
 # hand; see docs/SECURITY.md ("Dependency audit"). Re-check each entry when
 # the parent dependency it names is upgraded, and delete it once the fix
 # lands. Advisories whose vulnerable code GhostChat reaches are not listed.
+#
+# RUSTSEC-2026-0459 (libsqlite3-sys 0.30.1 / SQLite CVE-2026-119375) is FIXED,
+# not ignored: [patch.crates-io] in Cargo.toml builds libsqlite3-sys 0.30.1
+# from vendor/libsqlite3-sys with SQLite 3.54.1 (SQLCipher 4.20.0 on SQLite
+# 3.54.1 for the optional sqlcipher-vault feature); see
+# vendor/libsqlite3-sys/GHOSTCHAT_PATCH.md. The test
+# crates/server/tests/sqlite_version.rs (linked_sqlite_has_wal_stale_memory_fix)
+# proves the linked SQLite is >= 3.54.0. A patched path package has no
+# crates.io source in Cargo.lock, so cargo audit does not match the advisory
+# and it needs no entry here. Do not add one: if the patch is removed while
+# libsqlite3-sys is still < 0.39, cargo audit must fail again.
 
 [advisories]
 ignore = [

@@ -1,1 +1,4 @@
 crates/server/migrations/*.sql text eol=lf
+# Vendored upstream sources: keep bytes exact (GHOSTCHAT_PATCH.md hashes)
+# and do not apply whitespace checks to them.
+vendor/** -text -whitespace

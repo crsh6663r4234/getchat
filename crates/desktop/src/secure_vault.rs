@@ -319,6 +319,31 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    /// RUSTSEC-2026-0459: the vault's SQLCipher must be built on SQLite
+    /// 3.54.0 or newer (vendor/libsqlite3-sys/GHOSTCHAT_PATCH.md).
+    #[tokio::test]
+    async fn vault_sqlcipher_has_wal_stale_memory_fix() {
+        let directory =
+            std::env::temp_dir().join(format!("ghostchat-vault-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("vault.sqlite");
+        let pool = open_or_create(&path, b"test passphrase", &[9u8; 32])
+            .await
+            .unwrap();
+        let version: String = sqlx::query_scalar("select sqlite_version()")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        fs::remove_dir_all(directory).unwrap();
+        let mut parts = version.split('.').map(|p| p.parse::<u32>().unwrap());
+        let (major, minor) = (parts.next().unwrap(), parts.next().unwrap());
+        assert!(
+            (major, minor) >= (3, 54),
+            "vault SQLCipher is built on SQLite {version}, older than 3.54.0"
+        );
+    }
+
     #[tokio::test]
     async fn no_plaintext_migration_or_orphan_reinitialization() {
         let directory =
