@@ -378,6 +378,7 @@
       if (!activeCall?.screenStream) return;
       if (activeCall.stopScreenPromise) return activeCall.stopScreenPromise;
       const stream = activeCall.screenStream;
+      if (activeCall.screenTransport === "server") activeCall.serverMedia?.setScreenTrack(null);
       activeCall.screenStream = null;
       stopShareMonitor(activeCall);
       activeCall.screenQuality = null;
@@ -663,6 +664,11 @@
           // The peer's relay socket dropped; its client reconnects or hangs up.
           if (activeCall.everConnected) activeCall.status = "reconnecting";
           notify();
+        },
+        onPeerScreen: (peerId, stream) => {
+          if (call !== activeCall || activeCall.serverMedia !== media || peerId !== activeCall.peerId) return;
+          if (stream) setRemoteScreen(activeCall, stream);
+          else clearRemoteScreen(activeCall);
         },
         onClosed: () => {
           if (call !== activeCall || activeCall.serverMedia !== media) return;
@@ -1043,6 +1049,9 @@
     async function toggleScreenSharing() {
       if (!call || call.status === "calling") throw new Error("Wait until the call is connected before sharing your screen.");
       if (call.screenStarting) return;
+      // A relayed call shares through the same relay (the SFU is the part
+      // that was unreachable).
+      if (call.mediaPath === "server") return toggleRelayScreenShare(call);
       if (call.ghostShareAvailable) {
         const activeCall = call;
         try { return await toggleGhostShare(activeCall); }
@@ -1057,7 +1066,6 @@
       if (call.screenStream) {
         return stopDirectScreenShare(call);
       }
-      if (call.mediaPath === "server") throw new Error("Screen sharing is not available yet on calls relayed through the GhostChat server.");
       const settings = api.getSettings();
       const activeCall = call;
       if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("Screen capture is unavailable in this WebView. Update the Microsoft Edge WebView2 Runtime.");
@@ -1097,9 +1105,53 @@
       }
     }
 
+    // Screen sharing over the server media relay: low frame rate, the
+    // transport encodes it (server-media-client.js). System audio is not
+    // relayed.
+    const RELAY_SCREEN_FPS = 5;
+    async function toggleRelayScreenShare(activeCall) {
+      if (activeCall.screenStream) return stopDirectScreenShare(activeCall);
+      const media = activeCall.serverMedia;
+      if (!media?.setScreenTrack || activeCall.status !== "connected") throw new Error("Wait until the call is connected before sharing your screen.");
+      if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("Screen capture is unavailable in this WebView. Update the Microsoft Edge WebView2 Runtime.");
+      const settings = api.getSettings();
+      const profile = shareProfiles(settings)[0];
+      activeCall.screenStarting = true;
+      notify();
+      let stream = null;
+      try {
+        stream = await captureScreen(settings);
+        if (call !== activeCall || activeCall.serverMedia !== media) { stream.getTracks().forEach(track => track.stop()); return; }
+        for (const track of stream.getAudioTracks()) track.stop();
+        const track = stream.getVideoTracks()[0];
+        if (!track) throw new Error("The screen capture returned no picture.");
+        media.setScreenTrack(track, { frameRate: Math.min(RELAY_SCREEN_FPS, profile.frameRate), bitrate: Math.min(profile.maxBitrate, 1_200_000) });
+        activeCall.screenStream = stream;
+        activeCall.screenTransport = "server";
+        track.onended = () => {
+          if (call === activeCall && activeCall.screenStream === stream) {
+            void stopDirectScreenShare(activeCall).catch(error => console.debug("Could not stop the ended screen share.", error));
+          }
+        };
+        notify();
+      } catch (error) {
+        if (activeCall.screenStream !== stream) stream?.getTracks().forEach(track => track.stop());
+        if (error?.name === "NotAllowedError" || error?.name === "AbortError") return;
+        throw new Error(explainMediaError(error));
+      } finally {
+        if (call === activeCall) { activeCall.screenStarting = false; notify(); }
+      }
+    }
+
     async function refreshScreenSharing() {
       if (!call || !call.screenStream || call.status === "calling") throw new Error("Start sharing your screen before refreshing it.");
       if (call.screenStarting) return;
+      if (call.screenTransport === "server") {
+        const activeCall = call;
+        await stopDirectScreenShare(activeCall, { notifyPeer: false });
+        if (call === activeCall) await toggleRelayScreenShare(activeCall);
+        return;
+      }
       if (call.ghostShare) {
         const activeCall = call;
         activeCall.screenStarting = true;

@@ -39,6 +39,8 @@
     const relayPeers = new Set();
     let relayMicStream = null;
     let relaySending = false;
+    let relayScreenStream = null;
+    const RELAY_SCREEN_FPS = 5;
 
     function relayAvailable() {
       return typeof api.createServerMedia === "function";
@@ -48,14 +50,14 @@
       const local = {
         id: api.getUserId(), identity: api.getUserId(), name: api.getDisplayName(), avatar: api.getAvatar(),
         local: true, speaking: false, micMuted: !relaySending, micManuallyMuted, pushToTalkPressed,
-        screenSharing: false, mutedForYou: false,
+        screenSharing: !!relayScreenStream, mutedForYou: false,
       };
       return [local, ...[...relayPeers].map(id => {
         const profile = members.get(id);
         return {
           id, identity: id, name: profile?.display_name || "GhostChat member", avatar: profile?.avatar_data || null,
           local: false, speaking: false, micMuted: false, micManuallyMuted: false, pushToTalkPressed: false,
-          screenSharing: false, mutedForYou: mutedAccounts.has(id) || api.isPeerMuted(id),
+          screenSharing: screenElements.has(`relay:${id}`), mutedForYou: mutedAccounts.has(id) || api.isPeerMuted(id),
         };
       })];
     }
@@ -146,27 +148,30 @@
         audioElements.set(track.sid, element);
         void element.play().catch(() => api.onAudioBlocked());
       } else if (track.kind === LK.Track.Kind.Video && track.source === LK.Track.Source.ScreenShare) {
-        const tile = document.createElement("article");
-        tile.className = "group-screen-tile";
-        const title = document.createElement("span");
-        title.className = "screen-share-badge";
-        title.textContent = `${members.get(accountId)?.display_name || participant.name || "Member"} · ${api.translate("Screen share")}`;
-        const video = track.attach();
-        video.autoplay = true;
-        video.playsInline = true;
-        video.muted = true;
-        video.className = "group-screen-video";
-        const expand = document.createElement("button");
-        expand.className = "screen-expand-button";
-        expand.type = "button";
-        expand.textContent = api.translate("Expand");
-        expand.onclick = () => api.onScreenExpand?.(video.srcObject);
-        video.ondblclick = expand.onclick;
-        tile.append(title, video, expand);
-        document.querySelector("#groupVoiceMedia").append(tile);
-        screenElements.set(track.sid, { tile, video });
-        void video.play().catch(() => {});
+        mountScreenTile(track.sid, members.get(accountId)?.display_name || participant.name || "Member", track.attach());
       }
+    }
+
+    function mountScreenTile(key, name, video) {
+      const tile = document.createElement("article");
+      tile.className = "group-screen-tile";
+      const title = document.createElement("span");
+      title.className = "screen-share-badge";
+      title.textContent = `${name} · ${api.translate("Screen share")}`;
+      video.autoplay = true;
+      video.playsInline = true;
+      video.muted = true;
+      video.className = "group-screen-video";
+      const expand = document.createElement("button");
+      expand.className = "screen-expand-button";
+      expand.type = "button";
+      expand.textContent = api.translate("Expand");
+      expand.onclick = () => api.onScreenExpand?.(video.srcObject);
+      video.ondblclick = expand.onclick;
+      tile.append(title, video, expand);
+      document.querySelector("#groupVoiceMedia").append(tile);
+      screenElements.set(key, { tile, video });
+      void video.play().catch(() => {});
     }
 
     function addRelayAudio(accountId, stream) {
@@ -191,6 +196,62 @@
       audioElements.delete(`relay:${accountId}`);
     }
 
+    function addRelayScreen(accountId, stream) {
+      removeRelayScreen(accountId);
+      const video = document.createElement("video");
+      video.srcObject = stream;
+      mountScreenTile(`relay:${accountId}`, members.get(accountId)?.display_name || "Member", video);
+    }
+
+    function removeRelayScreen(accountId) {
+      const key = `relay:${accountId}`;
+      const screen = screenElements.get(key);
+      if (!screen) return;
+      api.onScreenRemoved?.(screen.video.srcObject);
+      try { screen.video.pause(); } catch {}
+      screen.video.srcObject = null;
+      screen.tile.remove();
+      screenElements.delete(key);
+    }
+
+    function stopRelayScreen() {
+      const stream = relayScreenStream;
+      relayScreenStream = null;
+      if (stream) relay?.setScreenTrack(null);
+      stream?.getTracks().forEach(track => { track.onended = null; track.stop(); });
+    }
+
+    async function toggleRelayScreen() {
+      const media = relay;
+      if (relayScreenStream) { stopRelayScreen(); publishState({ screenSharing: false }); return; }
+      if (!navigator.mediaDevices?.getDisplayMedia) throw new Error("Screen capture is unavailable in this WebView. Update the Microsoft Edge WebView2 Runtime.");
+      const options = screenShareOptions(true);
+      publishState({ screenStarting: true });
+      let stream = null;
+      try {
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          video: { width: { ideal: options.resolution.width }, height: { ideal: options.resolution.height }, frameRate: { ideal: RELAY_SCREEN_FPS } },
+          audio: false,
+        });
+        if (relay !== media) { stream.getTracks().forEach(track => track.stop()); return; }
+        const track = stream.getVideoTracks()[0];
+        if (!track) throw new Error("The screen capture returned no picture.");
+        media.setScreenTrack(track, { frameRate: RELAY_SCREEN_FPS, bitrate: Math.min(options.screenShareEncoding.maxBitrate, 1_200_000) });
+        relayScreenStream = stream;
+        track.onended = () => {
+          if (relayScreenStream !== stream) return;
+          stopRelayScreen();
+          publishState({ screenSharing: false });
+        };
+        publishState({ screenSharing: true, screenStarting: false });
+      } catch (error) {
+        if (relayScreenStream !== stream) stream?.getTracks().forEach(track => track.stop());
+        publishState({ screenStarting: false });
+        if (error?.name === "NotAllowedError" || error?.name === "AbortError") return;
+        throw error;
+      }
+    }
+
     function stopRelayMicrophone() {
       relaySending = false;
       relay?.setSending(false);
@@ -201,6 +262,8 @@
 
     function teardownRelay() {
       const active = relay;
+      stopRelayScreen();
+      for (const id of [...relayPeers]) removeRelayScreen(id);
       relay = null;
       stopRelayMicrophone();
       try { active?.close(); } catch {}
@@ -249,10 +312,16 @@
           addRelayAudio(accountId, stream);
           publishState();
         },
+        onPeerScreen: (accountId, stream) => {
+          if (relay !== media) return;
+          if (stream) addRelayScreen(accountId, stream); else removeRelayScreen(accountId);
+          publishState();
+        },
         onPeerLeft: accountId => {
           if (relay !== media) return;
           relayPeers.delete(accountId);
           removeRelayAudio(accountId);
+          removeRelayScreen(accountId);
           publishState();
         },
         onClosed: () => {
@@ -532,7 +601,7 @@
     }
 
     async function toggleScreenSharing() {
-      if (relay) throw new Error("Screen sharing is not available yet on group calls relayed through the GhostChat server.");
+      if (relay) return toggleRelayScreen();
       const activeRoom = room;
       if (!activeRoom) return;
       if (screenOperation) return screenOperation;
@@ -541,6 +610,11 @@
     }
 
     async function refreshScreenSharing() {
+      if (relay) {
+        if (!relayScreenStream) return;
+        stopRelayScreen();
+        return toggleRelayScreen();
+      }
       const activeRoom = room;
       if (!activeRoom?.localParticipant.isScreenShareEnabled) return;
       if (screenOperation) return screenOperation;

@@ -56,6 +56,7 @@ function fakeServerMedia({ connect = async () => {} } = {}) {
     const media = {
       options, inputs: [], sending: [], closed: false,
       connect: () => connect(media), setInputStream(stream) { media.inputs.push(stream); },
+      screens: [], setScreenTrack(track, options) { media.screens.push([track, options]); },
       setSending(value) { media.sending.push(value); }, close() { media.closed = true; },
       peers: () => new Set(), isConnected: () => !media.closed,
     };
@@ -63,6 +64,11 @@ function fakeServerMedia({ connect = async () => {} } = {}) {
     return media;
   };
   return { factory, instances };
+}
+
+function fakeScreen() {
+  const video = { kind: 'video', applyConstraints: async () => {}, stop() { video.stopped = true; } };
+  return { video, getTracks: () => [video], getVideoTracks: () => [video], getAudioTracks: () => [] };
 }
 
 function fakeMicrophone() {
@@ -216,6 +222,33 @@ async function run() {
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(fixture.client.getState().status, 'idle');
     assert.match(fixture.errors.at(-1), /not allowed to join/);
+  }
+  // Screen sharing on a relayed direct call goes through the relay too.
+  {
+    const relay = fakeServerMedia();
+    const shared = fakeScreen();
+    const fixture = directFixture(relayOnlyConfig, { serverMedia: relay.factory, screen: () => shared });
+    await fixture.client.start({ id: 'conversation', peer_id: 'b' });
+    await fixture.client.handleSignal(answerSignal);
+    const media = relay.instances[0];
+    media.options.onPeerStream('b', { id: 'relayed-b' });
+    await fixture.client.toggleScreenSharing();
+    assert.equal(media.screens.at(-1)[0], shared.video, 'the screen track is shared through the relay');
+    assert(media.screens.at(-1)[1].frameRate <= 8, 'relayed screen sharing uses a low frame rate');
+    assert.equal(fixture.client.getState().screenSharing, true);
+    assert.equal(fixture.client.getState().screenTransport, 'server');
+    assert.equal(fixture.counts().shareLeaves, 0, 'no SFU room is used on the relay path');
+    await fixture.client.toggleScreenSharing();
+    assert.equal(media.screens.at(-1)[0], null, 'stopping ends the relayed share');
+    assert(shared.video.stopped);
+    assert.equal(fixture.signals.at(-1).kind, 'screen_stopped');
+    assert.equal(fixture.client.getState().screenSharing, false);
+    const remote = { id: 'remote-screen', getVideoTracks: () => [], removeTrack() {} };
+    media.options.onPeerScreen('b', remote);
+    assert.equal(fixture.client.getState().remoteVideoStream, remote, 'the peer\'s relayed share is shown');
+    media.options.onPeerScreen('b', null);
+    assert.equal(fixture.client.getState().remoteVideoStream, null);
+    fixture.client.hangup();
   }
   // TURN configured but never connects: switch to the relay after about 8 s.
   const turnAndRelay = { ...turnConfig, media_relay: true };
@@ -558,7 +591,7 @@ async function run() {
       clearTimeout: id => { if (timers[id - 1]) timers[id - 1].cleared = true; },
       document: {
         querySelector: () => ({ append(element) { element.mounted = true; } }),
-        createElement: tag => { const element = { tag, dataset: {}, sinks: [], async setSinkId(id) { element.sinks.push(id); }, play: async () => {}, remove() { element.removed = true; } }; elements.push(element); return element; },
+        createElement: tag => { const element = { tag, dataset: {}, sinks: [], children: [], append(...items) { element.children.push(...items); }, async setSinkId(id) { element.sinks.push(id); }, play: async () => {}, pause() {}, load() {}, removeAttribute() {}, remove() { element.removed = true; } }; elements.push(element); return element; },
       },
     });
     fixture.context.navigator.mediaDevices.getUserMedia = async constraints => { const mic = fakeMicrophone(); captures.push({ constraints, mic }); return mic; };
@@ -574,7 +607,7 @@ async function run() {
       },
       getMembers: async () => [{ id: 'b', display_name: 'Bob' }, { id: 'c', display_name: 'Carol' }],
       getSettings: () => settings, getUserId: () => 'a', getDisplayName: () => 'Alice', getAvatar: () => null,
-      isPeerMuted: id => muted.has(id), onChange() {}, onAudioBlocked() {},
+      isPeerMuted: id => muted.has(id), onChange() {}, onAudioBlocked() {}, translate: text => text,
       createServerMedia: relay.factory,
     });
     return { ...fixture, group, relay, timers, elements, captures, settings };
@@ -618,7 +651,24 @@ async function run() {
     await fixture.group.toggleMicrophone();
     assert.equal(media.sending.at(-1), false, 'mute stops relayed audio');
     assert.equal(fixture.group.getState().micMuted, true);
-    await assert.rejects(fixture.group.toggleScreenSharing(), /not available yet/);
+    const shared = fakeScreen();
+    fixture.context.navigator.mediaDevices.getDisplayMedia = async () => shared;
+    await fixture.group.toggleScreenSharing();
+    assert.equal(media.screens.at(-1)[0], shared.video, 'a group share goes through the relay');
+    assert(media.screens.at(-1)[1].frameRate <= 8);
+    assert.equal(fixture.group.getState().screenSharing, true);
+    await fixture.group.toggleScreenSharing();
+    assert.equal(media.screens.at(-1)[0], null);
+    assert(shared.video.stopped);
+    assert.equal(fixture.group.getState().screenSharing, false);
+    media.options.onPeerScreen('b', { id: 'screen-b' });
+    const tile = fixture.elements.find(element => element.tag === 'article');
+    assert(tile?.mounted, 'a relayed group share gets a screen tile');
+    assert.equal(fixture.elements.find(element => element.tag === 'video').srcObject.id, 'screen-b');
+    assert.equal(fixture.group.getState().participants.find(row => row.id === 'b').screenSharing, true);
+    media.options.onPeerScreen('b', null);
+    assert(tile.removed, 'the tile goes when the share stops');
+    assert.equal(fixture.group.getState().participants.find(row => row.id === 'b').screenSharing, false);
     media.options.onPeerLeft('b');
     assert(audio.removed, 'a peer that left loses its audio element');
     await fixture.group.leave();
