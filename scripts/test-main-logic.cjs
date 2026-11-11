@@ -105,8 +105,8 @@ function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {}, sel
     const headers = options.headers instanceof Headers ? options.headers : new Headers(options.headers || {});
     fetches.push({ url: String(url), method: options.method || 'GET', authorization: headers.get('Authorization'), body: options.body });
     const reply = fetchHandler ? await fetchHandler(String(url), options) : undefined;
-    const { status = 200, body = [] } = reply || {};
-    return { ok: status >= 200 && status < 300, status, json: async () => body };
+    const { status = 200, body = [], html = false } = reply || {};
+    return { ok: status >= 200 && status < 300, status, json: async () => { if (html) throw new SyntaxError('Unexpected token <'); return body; } };
   }
   const voiceOptions = {};
   const voiceStub = name => options => { voiceOptions[name] = options; return stubClient(); };
@@ -468,10 +468,12 @@ test('the group owner removes a deleted account leaf and others tolerate it', as
   await app.flush(() => app.invokes.some(item => item.command === 'crypto_finalize_group_membership_update'));
 });
 
-async function deletedLeafHarness({ role = 'owner', deletedAt = '2000-01-01T00:00:00.000Z', removeStatus = 204, removeError = 'refused', serverNow = undefined, dateNow = null } = {}) {
+async function deletedLeafHarness({ role = 'owner', deletedAt = '2000-01-01T00:00:00.000Z', removeStatus = 204, removeError = 'refused', removeHtml = false, removeReply = null, skipRefused = false, deleted = ['carol'], serverNow = undefined, dateNow = null } = {}) {
   const base = 'https://a.example';
   const group = { id: 'g1', kind: 'group', display_name: 'Group' };
   let prepared = 0;
+  const gone = new Set();
+  let staged = null;
   const app = harness({
     storage: { 'ghostchat.server': base },
     credentials: { [await serverKey(base)]: 'token-A' },
@@ -482,21 +484,31 @@ async function deletedLeafHarness({ role = 'owner', deletedAt = '2000-01-01T00:0
       crypto_get_event_cursor: () => 0,
       crypto_advance_event_cursor: args => args.sequence,
       crypto_prepare_deleted_member_removal: () => {
+        const target = deleted.find(id => !gone.has(id));
+        if (staged) return staged;
+        if (!target) return false;
         prepared += 1;
-        return { operationId: `op-${prepared}`, action: 'remove_deleted', memberIds: ['carol'], expectedMemberIds: ['bob', 'me', 'olga'], commitPayload: 'commit', welcomePayload: '' };
+        return staged = { operationId: `op-${prepared}`, action: 'remove_deleted', memberIds: [target], expectedMemberIds: ['bob', 'me', 'olga'], commitPayload: 'commit', welcomePayload: '' };
       },
-      crypto_finalize_group_membership_update: () => 'fp-after',
+      crypto_get_pending_group_membership_update: () => staged,
+      crypto_discard_group_membership_update: () => { staged = null; return null; },
+      crypto_finalize_group_membership_update: () => { staged = null; return 'fp-after'; },
     },
     fetchHandler: (url, options) => {
       if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
       if (url.endsWith('/v1/conversations')) return { body: [group] };
-      if (url.endsWith('/conversations/g1/crypto-lock')) return { body: { locked: true, setupComplete: true, lockedBy: 'olga', deletedMemberIds: ['carol'], deletedMembers: [{ userId: 'carol', deletedAt, removalCommittedAt: null }], serverNow } };
+      if (url.endsWith('/conversations/g1/crypto-lock')) return { body: { locked: true, setupComplete: true, lockedBy: 'olga', deletedMemberIds: deleted, deletedMembers: deleted.map(userId => ({ userId, deletedAt, removalCommittedAt: null })), serverNow } };
       if (url.endsWith('/conversations/g1/members')) {
         return { body: role === 'owner'
           ? [{ id: 'me', role: 'owner', joined_seq: 1 }, { id: 'bob', role: 'member', joined_seq: 2 }]
           : [{ id: 'olga', role: 'owner', joined_seq: 1 }, { id: 'bob', role: 'admin', joined_seq: 2 }, { id: 'me', role: 'admin', joined_seq: 3 }] };
       }
-      if (options.method === 'POST' && url.includes('/crypto-membership/remove/')) return { status: removeStatus, body: removeStatus === 204 ? {} : { error: removeError } };
+      if (options.method === 'POST' && url.includes('/crypto-membership/remove/')) {
+        const target = decodeURIComponent(url.split('/crypto-membership/remove/')[1]);
+        const reply = removeReply ? removeReply(target) : { status: removeStatus, error: removeError, html: removeHtml };
+        if (reply.status === 204 || reply.status === 410 || (skipRefused && reply.status === 403)) gone.add(target);
+        return { status: reply.status, html: reply.html, body: reply.status === 204 ? {} : { error: reply.error } };
+      }
       return { body: [] };
     },
   });
@@ -507,6 +519,7 @@ async function deletedLeafHarness({ role = 'owner', deletedAt = '2000-01-01T00:0
   app.removals = () => app.fetches.filter(item => item.method === 'POST' && item.url.includes('/crypto-membership/remove/'));
   app.discards = () => app.invokes.filter(item => item.command === 'crypto_discard_group_membership_update');
   app.prepared = () => prepared;
+  app.again = async () => { app.voiceOptions.voice.onIncoming({ conversationId: 'g1' }); await app.flush(); };
   return app;
 }
 
@@ -525,6 +538,55 @@ test('a removal another owner/admin already committed counts as done', async () 
   assert.equal(app.removals().length, 1);
   assert.equal(app.prepared(), 1, 'no further removal is staged; the accepted commit arrives on the relay');
   assert.ok(!app.$('#toast').textContent.includes('refused'), 'no error is shown for an already removed leaf');
+});
+
+for (const status of [408, 425]) {
+  test(`a ${status} on a staged removal is transient: the update is kept and retried`, async () => {
+    const app = await deletedLeafHarness({ removeStatus: status, removeError: 'try later' });
+    await app.flush(() => app.removals().length > 0);
+    await app.flush();
+    assert.equal(app.discards().length, 0, 'the staged update is not discarded');
+    assert.ok(!app.$('#toast').textContent.includes('discarded'), 'no refusal is reported');
+    await app.again();
+    assert.ok(app.removals().length >= 2, 'the removal is tried again');
+  });
+}
+
+test('a 4xx without the app\'s JSON error shape (a proxy page) keeps the staged removal', async () => {
+  const app = await deletedLeafHarness({ removeStatus: 403, removeHtml: true });
+  await app.flush(() => app.removals().length > 0);
+  await app.flush();
+  assert.equal(app.discards().length, 0);
+  assert.ok(!app.$('#toast').textContent.includes('discarded'));
+  await app.again();
+  assert.ok(app.removals().length >= 2, 'it is retried');
+});
+
+test('a 403 with the app\'s JSON error discards the staged removal and reports it once', async () => {
+  const app = await deletedLeafHarness({ removeStatus: 403, removeError: 'Only an owner or admin may remove members.' });
+  await app.flush(() => app.discards().length > 0);
+  assert.equal(app.removals().length, 1);
+  assert.equal(app.$('#toast').classList.contains('error'), true);
+  await app.again();
+  assert.equal(app.removals().length, 1, 'the same refused target is not retried in a loop');
+});
+
+test('a 410 for one deleted member does not block the removal of the next one', async () => {
+  const app = await deletedLeafHarness({ deleted: ['c1', 'c2'], removeReply: target => target === 'c1' ? { status: 410, error: 'already removed' } : { status: 204 } });
+  await app.flush(() => app.removals().length > 0);
+  await app.flush();
+  await app.again();
+  await app.flush(() => app.removals().length > 1);
+  assert.deepEqual(app.removals().map(item => item.url.split('/remove/')[1]), ['c1', 'c2'], 'C2 is staged without a restart');
+});
+
+test('a definitive refusal for one deleted member does not block the next one', async () => {
+  // The staging side moves on to C2 once C1 is not offered again (here the fake drops it).
+  const app = await deletedLeafHarness({ deleted: ['c1', 'c2'], skipRefused: true, removeReply: target => target === 'c1' ? { status: 403, error: 'refused' } : { status: 204 } });
+  await app.flush(() => app.discards().length > 0);
+  await app.again();
+  await app.flush(() => app.removals().length > 1);
+  assert.deepEqual(app.removals().map(item => item.url.split('/remove/')[1]), ['c1', 'c2']);
 });
 
 test('an admin removes a deleted leaf after the owner\'s grace period', async () => {

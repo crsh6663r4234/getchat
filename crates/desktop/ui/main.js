@@ -1001,6 +1001,9 @@
       const error = new Error(body.error || `Request failed (${response.status}).`);
       error.status = response.status;
       if (typeof body.code === "string") error.code = body.code;
+      // Only this app's own JSON error answers carry an error string; a 4xx
+      // page from a proxy or gateway does not.
+      error.appError = typeof body.error === "string";
       throw error;
     }
     return body;
@@ -1842,10 +1845,18 @@
       if (remaining > 0) { scheduleDeletedLeafCheck(conversationId, remaining); return; }
     }
     const expectedMemberIds = members.map(member => member.id).sort();
-    // After a refusal (or a 410) the same removal is not staged again until
-    // the roster or the deleted list changes, so the error shows only once.
-    const attemptKey = `${expectedMemberIds.join(",")}|${deletedMemberIds.join(",")}`;
-    if (deletedLeafRefusals.get(conversationId) === attemptKey) return;
+    // After a refusal the same removal (same roster, same target leaf) is not
+    // staged again, so the error shows only once. A refusal of one deleted
+    // member does not hold back the removal of another.
+    const rosterKey = expectedMemberIds.join(",");
+    const refusedTargets = () => {
+      const entry = deletedLeafRefusals.get(conversationId);
+      return entry?.rosterKey === rosterKey ? entry.targets : new Set();
+    };
+    const refuseTarget = target => {
+      const targets = refusedTargets(); targets.add(target);
+      deletedLeafRefusals.set(conversationId, { rosterKey, targets });
+    };
     for (let attempt = 0; attempt < 16; attempt++) {
       // A commit is only built on a state this device knows it has applied:
       // without a sync that reached the end of the relay, the next one decides.
@@ -1855,6 +1866,12 @@
         userId: state.user.id, conversationId, expectedMemberIds, deletedMemberIds, expectedCommitSeq,
       });
       if (!update) { deletedLeafStaleRetries.delete(conversationId); return; }
+      const target = update.memberIds?.[0] ?? "";
+      if (refusedTargets().has(target)) {
+        // The prepare call staged it again; it is not sent a second time.
+        await invoke("crypto_discard_group_membership_update", { userId: state.user.id, conversationId, operationId: update.operationId });
+        return;
+      }
       const result = await publishGroupMembershipUpdate(conversation, update);
       if (result === "stale") {
         // Another manager's commit was accepted first. It reaches this device
@@ -1863,10 +1880,12 @@
         const retries = (deletedLeafStaleRetries.get(conversationId) || 0) + 1;
         deletedLeafStaleRetries.set(conversationId, retries);
         if (retries <= 3) scheduleDeletedLeafCheck(conversationId, 1000 * retries);
-        else deletedLeafRefusals.set(conversationId, attemptKey);
+        else refuseTarget(target);
         return;
       }
-      if (result === "already_removed" || result === "refused") { deletedLeafRefusals.set(conversationId, attemptKey); return; }
+      // Already removed (410): nothing is recorded; its commit arrives on the relay.
+      if (result === "already_removed") return;
+      if (result === "refused") { refuseTarget(target); return; }
       deletedLeafStaleRetries.delete(conversationId);
       if (update.action !== "remove_deleted") return;
     }
@@ -2356,7 +2375,10 @@
       // of retrying it forever. A deleted leaf already removed by another
       // owner/admin (410) counts as done; its commit arrives on the relay.
       const status = error?.status;
-      const definitive = !accepted && Number.isInteger(status) && status >= 400 && status < 500 && status !== 401 && status !== 429
+      // A request timeout (408), a too-early answer (425) and a 4xx without
+      // the app's JSON error shape (a reverse proxy's page) may pass on retry.
+      const definitive = !accepted && error?.appError === true && Number.isInteger(status) && status >= 400 && status < 500
+        && ![401, 408, 425, 429].includes(status)
         && ["add", "remove", "remove_deleted", "leave"].includes(pending.action);
       if (!definitive) throw error;
       await invoke("crypto_discard_group_membership_update", { userId: state.user.id, conversationId, operationId: pending.operationId });
