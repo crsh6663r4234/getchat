@@ -181,11 +181,91 @@ pub async fn open_database(path: &str) -> Result<SqlitePool, sqlx::Error> {
         .max_connections(8)
         .connect_with(options)
         .await?;
-    sqlx::migrate!("./migrations")
+    let migrator = sqlx::migrate!("./migrations");
+    backup_before_upgrade(&pool, path, &migrator).await?;
+    migrator
         .run(&pool)
         .await
         .map_err(|e| sqlx::Error::Migrate(Box::new(e)))?;
     Ok(pool)
+}
+
+/// Migrations from this version on cannot be run by an older server binary
+/// and have no reverse migration, so a backup is the only way back.
+const FIRST_ONE_WAY_MIGRATION: i64 = 25;
+
+/// Writes `<database>.pre-<first pending version>.bak` with `VACUUM INTO`
+/// before an upgrade that applies a one-way migration to a database that
+/// already holds data. Skips in-memory and brand-new databases and never
+/// overwrites an existing backup. A failure stops startup before migrating.
+async fn backup_before_upgrade(
+    pool: &SqlitePool,
+    path: &str,
+    migrator: &sqlx::migrate::Migrator,
+) -> Result<(), sqlx::Error> {
+    if path.is_empty() || path == ":memory:" || path.contains("mode=memory") {
+        return Ok(());
+    }
+    let has_history = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='_sqlx_migrations'",
+    )
+    .fetch_one(pool)
+    .await?
+        > 0;
+    if !has_history {
+        return Ok(());
+    }
+    let applied: std::collections::HashSet<i64> =
+        sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations")
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .collect();
+    if applied.is_empty() {
+        return Ok(());
+    }
+    let pending: Vec<i64> = migrator
+        .iter()
+        .filter(|migration| !migration.migration_type.is_down_migration())
+        .map(|migration| migration.version)
+        .filter(|version| !applied.contains(version))
+        .collect();
+    if !pending
+        .iter()
+        .any(|version| *version >= FIRST_ONE_WAY_MIGRATION)
+    {
+        return Ok(());
+    }
+    let first = pending.iter().copied().min().unwrap_or_default();
+    let backup = PathBuf::from(format!("{path}.pre-{first:04}.bak"));
+    if backup.exists() {
+        tracing::info!(backup = %backup.display(), "pre-upgrade backup already exists");
+        return Ok(());
+    }
+    let failed = |reason: String| {
+        sqlx::Error::Configuration(
+            format!(
+                "could not write the pre-upgrade backup {}: {reason}; the database was not migrated",
+                backup.display()
+            )
+            .into(),
+        )
+    };
+    // VACUUM INTO refuses an existing target, so a stale partial file from an
+    // interrupted attempt is removed first; the rename makes the final name
+    // appear only once the backup is complete.
+    let partial = PathBuf::from(format!("{}.tmp", backup.display()));
+    if partial.exists() {
+        std::fs::remove_file(&partial).map_err(|e| failed(e.to_string()))?;
+    }
+    sqlx::query("VACUUM INTO ?")
+        .bind(partial.to_string_lossy().into_owned())
+        .execute(pool)
+        .await
+        .map_err(|e| failed(e.to_string()))?;
+    std::fs::rename(&partial, &backup).map_err(|e| failed(e.to_string()))?;
+    tracing::info!(backup = %backup.display(), "wrote the pre-upgrade database backup");
+    Ok(())
 }
 
 pub async fn build_state(db: SqlitePool) -> AppState {
@@ -8630,6 +8710,119 @@ mod tests {
         .await
         .unwrap();
         pool
+    }
+
+    fn backup_files(dir: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".bak"))
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[tokio::test]
+    async fn upgrading_past_0025_writes_one_backup_of_the_old_database() {
+        let dir = std::env::temp_dir().join(format!("ghostchat-backup-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("db.sqlite");
+        let old = database_migrated_to(&path, 24).await;
+        seed_user(&old, "u-before").await;
+        old.close().await;
+
+        let db = open_database(&path.to_string_lossy()).await.unwrap();
+        db.close().await;
+        assert_eq!(backup_files(&dir), vec!["db.sqlite.pre-0025.bak"]);
+
+        // The backup is a plain SQLite database at the old level with the old data.
+        let backup = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(dir.join("db.sqlite.pre-0025.bak"))
+                    .read_only(true),
+            )
+            .await
+            .unwrap();
+        let integrity = sqlx::query_scalar::<_, String>("PRAGMA integrity_check")
+            .fetch_one(&backup)
+            .await
+            .unwrap();
+        assert_eq!(integrity, "ok");
+        let level = sqlx::query_scalar::<_, i64>("SELECT max(version) FROM _sqlx_migrations")
+            .fetch_one(&backup)
+            .await
+            .unwrap();
+        assert_eq!(level, 24);
+        let users = sqlx::query_scalar::<_, String>("SELECT id FROM users")
+            .fetch_all(&backup)
+            .await
+            .unwrap();
+        assert_eq!(users, vec!["u-before".to_string()]);
+        let target_column = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM pragma_table_info('crypto_membership_operations') WHERE name='target_id'",
+        )
+        .fetch_one(&backup)
+        .await
+        .unwrap();
+        assert_eq!(target_column, 0, "the backup must hold the pre-0025 schema");
+        backup.close().await;
+
+        // A second start has nothing pending and writes no second backup.
+        let again = open_database(&path.to_string_lossy()).await.unwrap();
+        again.close().await;
+        assert_eq!(backup_files(&dir), vec!["db.sqlite.pre-0025.bak"]);
+    }
+
+    #[tokio::test]
+    async fn a_fresh_database_gets_no_upgrade_backup() {
+        let dir = std::env::temp_dir().join(format!("ghostchat-backup-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = open_database(&dir.join("db.sqlite").to_string_lossy())
+            .await
+            .unwrap();
+        db.close().await;
+        assert!(backup_files(&dir).is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_existing_upgrade_backup_is_not_overwritten() {
+        let dir = std::env::temp_dir().join(format!("ghostchat-backup-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("db.sqlite");
+        database_migrated_to(&path, 26).await.close().await;
+        let existing = dir.join("db.sqlite.pre-0027.bak");
+        std::fs::write(&existing, b"earlier backup").unwrap();
+        open_database(&path.to_string_lossy())
+            .await
+            .unwrap()
+            .close()
+            .await;
+        assert_eq!(std::fs::read(&existing).unwrap(), b"earlier backup");
+        assert_eq!(backup_files(&dir), vec!["db.sqlite.pre-0027.bak"]);
+    }
+
+    #[tokio::test]
+    async fn an_upgrade_backup_that_cannot_be_written_stops_the_migration() {
+        let dir = std::env::temp_dir().join(format!("ghostchat-backup-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("db.sqlite");
+        database_migrated_to(&path, 24).await.close().await;
+        // A non-empty directory where the backup's temporary file must go.
+        std::fs::create_dir_all(dir.join("db.sqlite.pre-0025.bak.tmp/blocker")).unwrap();
+        let error = open_database(&path.to_string_lossy()).await.unwrap_err();
+        assert!(
+            error.to_string().contains("backup"),
+            "the error must name the backup: {error}"
+        );
+        let old = database_migrated_to(&path, 24).await;
+        let level = sqlx::query_scalar::<_, i64>("SELECT max(version) FROM _sqlx_migrations")
+            .fetch_one(&old)
+            .await
+            .unwrap();
+        assert_eq!(level, 24, "nothing may be migrated without a backup");
+        assert!(backup_files(&dir).is_empty());
     }
 
     async fn seed_user(pool: &SqlitePool, id: &str) {
