@@ -9446,6 +9446,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn media_relay_caps_the_call_rooms_one_user_holds_at_once() {
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let mut groups = Vec::new();
+        for _ in 0..5 {
+            groups.push(app.group(&alice, &[&bob, &carol]).await);
+        }
+        let mut open = Vec::new();
+        for group in &groups[..4] {
+            let (socket, reply) = MediaSocket::join(&app.base, &alice.token, group).await;
+            assert_eq!(reply["type"], "ready");
+            open.push(socket);
+        }
+        let (_, reply) = MediaSocket::join(&app.base, &alice.token, &groups[4]).await;
+        assert_eq!(
+            reply["code"], "too_many_rooms",
+            "a fifth room at once is refused"
+        );
+        // Another user is not affected, and rejoining a held room (a newer
+        // device replacing the older) is not a new room.
+        let (_, reply) = MediaSocket::join(&app.base, &bob.token, &groups[4]).await;
+        assert_eq!(reply["type"], "ready");
+        let (replacement, reply) = MediaSocket::join(&app.base, &alice.token, &groups[0]).await;
+        assert_eq!(reply["type"], "ready");
+        open[0] = replacement;
+        // Leaving a room frees its place.
+        drop(open.pop());
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let (_, reply) = MediaSocket::join(&app.base, &alice.token, &groups[4]).await;
+            if reply["type"] == "ready" {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "{reply}");
+            // Slow enough to stay under the join rate limit.
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+
+    #[tokio::test]
     async fn media_relay_forwards_frames_between_direct_and_group_members() {
         let app = TestApp::new().await;
         let alice = app.user("alice").await;

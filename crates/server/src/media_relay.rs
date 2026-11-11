@@ -29,6 +29,11 @@ const BYTE_RATE: f64 = 256.0 * 1024.0;
 const BYTE_BURST: f64 = 512.0 * 1024.0;
 const QUEUE_DEPTH: usize = 64;
 const RECHECK_EVERY: Duration = Duration::from_secs(5);
+/// Call rooms one user may hold at once (each socket rechecks its session
+/// and membership every few seconds and may queue frames).
+const MAX_ROOMS_PER_USER: usize = 4;
+/// Relay sockets this server holds at once.
+const MAX_PARTICIPANTS: usize = 512;
 
 #[derive(Clone, Default)]
 pub(super) struct Rooms {
@@ -74,6 +79,33 @@ impl Rooms {
             Err(poisoned) => poisoned.into_inner(),
         }
     }
+}
+
+/// Whether `user` may open a socket in the room of `conversation_id` given
+/// the open rooms: a refusal code, or None. Replacing the user's own socket
+/// in a room it already holds is never a new room.
+fn over_capacity(
+    rooms: &HashMap<String, Room>,
+    user: &str,
+    conversation_id: &str,
+    per_user: usize,
+    total: usize,
+) -> Option<&'static str> {
+    let rejoin = rooms
+        .get(conversation_id)
+        .is_some_and(|room| room.participants.contains_key(user));
+    if rejoin {
+        return None;
+    }
+    let held = rooms
+        .values()
+        .filter(|room| room.participants.contains_key(user))
+        .count();
+    if held >= per_user {
+        return Some("too_many_rooms");
+    }
+    let open: usize = rooms.values().map(|room| room.participants.len()).sum();
+    (open >= total).then_some("relay_full")
 }
 
 /// Token bucket over frames and bytes for one connection.
@@ -226,36 +258,51 @@ async fn session(mut socket: WebSocket, state: AppState) {
         .fetch_add(1, Ordering::SeqCst);
     let revoked = Arc::new(AtomicBool::new(false));
     let (outgoing, mut queue) = mpsc::channel::<WsMessage>(QUEUE_DEPTH);
-    let peers: Vec<String> = {
+    let joined: Result<Vec<String>, &'static str> = {
         let epoch = state.media_rooms.epoch.load(Ordering::SeqCst);
         let mut rooms = state.media_rooms.lock();
-        let room = rooms
-            .entry(conversation_id.clone())
-            .or_insert_with(|| Room {
-                checked_epoch: epoch,
-                participants: HashMap::new(),
-            });
-        // One connection per user and room: a newer device replaces the older.
-        if let Some(previous) = room.participants.insert(
-            user.id.clone(),
-            Participant {
-                connection,
-                revoked: revoked.clone(),
-                outgoing,
-            },
-        ) {
-            previous.revoke();
-        }
-        announce(
-            room,
+        if let Some(code) = over_capacity(
+            &rooms,
             &user.id,
-            serde_json::json!({"type": "peer_joined", "user_id": user.id}),
-        );
-        room.participants
-            .keys()
-            .filter(|id| *id != &user.id)
-            .cloned()
-            .collect()
+            &conversation_id,
+            MAX_ROOMS_PER_USER,
+            MAX_PARTICIPANTS,
+        ) {
+            Err(code)
+        } else {
+            let room = rooms
+                .entry(conversation_id.clone())
+                .or_insert_with(|| Room {
+                    checked_epoch: epoch,
+                    participants: HashMap::new(),
+                });
+            // One connection per user and room: a newer device replaces the older.
+            if let Some(previous) = room.participants.insert(
+                user.id.clone(),
+                Participant {
+                    connection,
+                    revoked: revoked.clone(),
+                    outgoing,
+                },
+            ) {
+                previous.revoke();
+            }
+            announce(
+                room,
+                &user.id,
+                serde_json::json!({"type": "peer_joined", "user_id": user.id}),
+            );
+            Ok(room
+                .participants
+                .keys()
+                .filter(|id| *id != &user.id)
+                .cloned()
+                .collect())
+        }
+    };
+    let peers = match joined {
+        Ok(peers) => peers,
+        Err(code) => return refuse(socket, code).await,
     };
     let ready = serde_json::json!({"type": "ready", "user_id": user.id, "peers": peers});
     if socket
@@ -390,6 +437,44 @@ async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_relay_caps_rooms_per_user_and_sockets_in_total() {
+        let rooms = Rooms::default();
+        let join = |conversation: &str, user: &str| {
+            let (outgoing, queue) = mpsc::channel(1);
+            std::mem::forget(queue);
+            rooms
+                .lock()
+                .entry(conversation.into())
+                .or_default()
+                .participants
+                .insert(
+                    user.into(),
+                    Participant {
+                        connection: 1,
+                        revoked: Arc::new(AtomicBool::new(false)),
+                        outgoing,
+                    },
+                );
+        };
+        join("one", "alice");
+        join("two", "alice");
+        join("two", "bob");
+        let check = |user: &str, room: &str, per_user, total| {
+            over_capacity(&rooms.lock(), user, room, per_user, total)
+        };
+        assert_eq!(check("alice", "three", 2, 100), Some("too_many_rooms"));
+        assert_eq!(
+            check("alice", "one", 2, 100),
+            None,
+            "rejoining is no new room"
+        );
+        assert_eq!(check("bob", "three", 2, 100), None);
+        assert_eq!(check("carol", "three", 2, 3), Some("relay_full"));
+        assert_eq!(check("alice", "two", 2, 3), None);
+        assert_eq!(check("carol", "three", 2, 4), None);
+    }
 
     #[test]
     fn a_room_with_a_participant_counts_as_an_active_call() {

@@ -43,6 +43,8 @@
     forbidden: "You are not allowed to join this call through the server relay.",
     rate_limited: "Too many call relay connections. Wait a minute and try again.",
     bad_request: "The call relay did not understand this client. Update GhostChat.",
+    too_many_rooms: "You are already in too many calls through the server relay. Leave one and try again.",
+    relay_full: "The call relay on the GhostChat server is full. Try again later.",
   };
 
   function supported() {

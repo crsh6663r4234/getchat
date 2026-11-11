@@ -218,6 +218,8 @@
     "You are not allowed to join this call through the server relay.": "Bu aramaya sunucu aktarıcısı üzerinden katılma iznin yok.",
     "Too many call relay connections. Wait a minute and try again.": "Çok fazla arama aktarıcısı bağlantısı var. Bir dakika bekle ve tekrar dene.",
     "The call relay did not understand this client. Update GhostChat.": "Arama aktarıcısı bu istemciyi anlamadı. GhostChat’i güncelle.",
+    "You are already in too many calls through the server relay. Leave one and try again.": "Sunucu aktarıcısı üzerinden zaten çok fazla aramadasın. Birinden çık ve tekrar dene.",
+    "The call relay on the GhostChat server is full. Try again later.": "GhostChat sunucusundaki arama aktarıcısı dolu. Daha sonra tekrar dene.",
     "The call relay refused the connection.": "Arama aktarıcısı bağlantıyı reddetti.",
     "This WebView cannot relay calls through the server. Update the Microsoft Edge WebView2 Runtime.": "Bu WebView aramaları sunucu üzerinden aktaramıyor. Microsoft Edge WebView2 Runtime’ı güncelle.",
     "Screen sharing through the server needs a newer Microsoft Edge WebView2 Runtime.": "Sunucu üzerinden ekran paylaşımı için daha yeni bir Microsoft Edge WebView2 Runtime gerekiyor.",
