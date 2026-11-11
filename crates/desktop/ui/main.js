@@ -66,7 +66,7 @@
     });
   }
   const askConfirm = options => askUser(options).then(value => value === true);
-  const state = { localBase: "", base: "", token: "", user: null, presence: new Map(), presenceMode: "online", presenceLoaded: false, pendingRecovery: "", recoveryKey: "", pendingGroupInviteCode: null, page: "messages", conversations: [], friends: [], pending: [], blockedUserIds: new Set(), attachmentObserver: null, attachmentObjectUrls: [], seenFriendRequestIds: new Set(), active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null, cryptoDevice: null, cryptoEnabled: new Set(), cryptoLocked: new Set(), cryptoSetupComplete: new Set(), cryptoCanManage: new Set(), cryptoPeerFingerprints: new Map(), cryptoSyncing: new Map(), cryptoMessageDecoding: new Map(), cryptoMemberIds: new Map(), cryptoDeletedMemberIds: new Map(), cryptoSetupGenerations: new Map(), cryptoCommitSeq: new Map(), cryptoMembershipPending: new Set(), cryptoMembershipOperations: new Map(), replyingTo: null, lastReadSequence: new Map(), typingUsers: new Map(), typingTimers: new Map(), typingActive: false, typingStopTimer: null, typingSentAt: 0, groupInviteCodes: new Map(), groupVoiceAvailable: null };
+  const state = { localBase: "", base: "", token: "", user: null, presence: new Map(), presenceMode: "online", presenceLoaded: false, pendingRecovery: "", recoveryKey: "", pendingGroupInviteCode: null, page: "messages", conversations: [], friends: [], pending: [], blockedUserIds: new Set(), attachmentObserver: null, attachmentObjectUrls: [], seenFriendRequestIds: new Set(), active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null, cryptoDevice: null, cryptoEnabled: new Set(), cryptoLocked: new Set(), cryptoSetupComplete: new Set(), cryptoCanManage: new Set(), cryptoPeerFingerprints: new Map(), cryptoSyncing: new Map(), cryptoMessageDecoding: new Map(), cryptoMemberIds: new Map(), cryptoDeletedMemberIds: new Map(), cryptoSetupGenerations: new Map(), cryptoCommitSeq: new Map(), cryptoMembershipPending: new Set(), cryptoMembershipOperations: new Map(), replyingTo: null, lastReadSequence: new Map(), typingUsers: new Map(), typingTimers: new Map(), typingActive: false, typingStopTimer: null, typingSentAt: 0, groupInviteCodes: new Map(), groupVoiceAvailable: null, serverVersion: null };
   function resetCryptoViewState() {
     state.cryptoEnabled.clear(); state.cryptoLocked.clear(); state.cryptoSetupComplete.clear(); state.cryptoCanManage.clear(); state.cryptoPeerFingerprints.clear(); state.cryptoMembershipPending.clear();
     state.cryptoSyncing.clear(); state.cryptoMessageDecoding.clear(); state.cryptoMemberIds.clear(); state.cryptoDeletedMemberIds.clear(); state.cryptoSetupGenerations.clear(); state.cryptoCommitSeq.clear(); state.cryptoMembershipOperations.clear();
@@ -1009,6 +1009,34 @@
     }
     return body;
   }
+  // The selected server's version from /health; null when it does not say
+  // (4.0.51 and older). Features an older server lacks are skipped, or the
+  // user is told to update the server (serverUpdateText) instead of seeing a
+  // generic error.
+  async function readServerVersion() {
+    const base = activeBase();
+    let version = null;
+    try {
+      const health = await request("/health");
+      if (typeof health?.version === "string" && /^\d+\.\d+\.\d+$/.test(health.version)) version = health.version;
+    } catch {}
+    if (activeBase() === base) state.serverVersion = version;
+    return version;
+  }
+  // Per feature: what the update unlocks, and the version to name when the
+  // server does not report one (the newest version without the feature).
+  const SERVER_UPDATE_TEXT = {
+    encryptedMembers: {
+      unknown: { en: "4.0.50 or older", tr: "4.0.50 veya daha eski bir sürüm" },
+      en: version => `This server runs GhostChat ${version}. Update the server to add or remove members of encrypted groups.`,
+      tr: version => `Bu sunucuda GhostChat ${version} çalışıyor. Şifreli gruplara üye eklemek veya çıkarmak için sunucuyu güncelle.`,
+    },
+  };
+  function serverUpdateText(feature) {
+    const text = SERVER_UPDATE_TEXT[feature];
+    const language = tr() ? "tr" : "en";
+    return text[language](state.serverVersion || text.unknown[language]);
+  }
   async function storeToken(token) {
     state.token = token;
     try { await invoke("credential_set", { serverKey: await serverKey(activeBase()), token }); }
@@ -1221,6 +1249,7 @@
     try { state.presenceLoaded = false; state.user = await request("/v1/me"); }
     catch { await clearToken(); state.user = null; show("authView"); return; }
     resetCryptoViewState();
+    state.serverVersion = null; void readServerVersion();
     show("appView"); updateIdentity(); setTheme(); seasonalIdentity(); setPage("messages");
     await refreshPresence(); await refreshBlockedUsers(); await refreshFriends(); await refreshConversations(); connectSocket(); void checkVoiceRelaySupport();
     await processPendingGroupInvites();
@@ -1795,10 +1824,14 @@
   // lock status is read before the events, and every listed page says the
   // count at its listing), and moved on by this device's own accepted
   // commit. No entry: not known, so no commit may be built. null: a server
-  // without the count.
+  // without the count (4.0.50 and older). Such a server would take two
+  // changes built on one group state and split the group, so a member
+  // change the user starts there is refused with a request to update the
+  // server; the automatic removal of a deleted account's leaf still runs.
   function knownCryptoCommitSeq(conversationId) {
     const commitSeq = state.cryptoCommitSeq.get(conversationId);
     if (commitSeq === undefined) throw new Error(translate("This device has not caught up with the encrypted group yet. Try again in a moment."));
+    if (commitSeq === null) throw new Error(serverUpdateText("encryptedMembers"));
     return commitSeq;
   }
   async function syncedCryptoCommitSeq(conversationId) {

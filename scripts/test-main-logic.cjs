@@ -683,14 +683,14 @@ test('an admin removes a deleted leaf after the owner\'s grace period', async ()
 
 // An encrypted group whose server counts accepted commits (commitSeq). The
 // lock, the relay pages and the answers to membership requests are scripted.
-async function commitFenceHarness({ lock, pages = [], replies = [], members = null, friends = [], selectAll = null, pending = null } = {}) {
+async function commitFenceHarness({ lock, pages = [], replies = [], members = null, friends = [], selectAll = null, pending = null, health = null, language = 'en' } = {}) {
   const base = 'https://a.example';
   const group = { id: 'g1', kind: 'group', display_name: 'Group' };
   const prepared = [];
   let staged = pending;
   let cursor = 0;
   const app = harness({
-    storage: { 'ghostchat.server': base },
+    storage: { 'ghostchat.server': base, 'ghostchat.language': language },
     credentials: { [await serverKey(base)]: 'token-A' },
     selectAll,
     hooks: {
@@ -720,6 +720,7 @@ async function commitFenceHarness({ lock, pages = [], replies = [], members = nu
       crypto_discard_group_membership_update: () => { staged = null; return null; },
     },
     fetchHandler: (url, options) => {
+      if (health && url.endsWith('/health')) return { body: health };
       if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
       if (url.endsWith('/v1/conversations')) return { body: [group] };
       if (url.endsWith('/v1/friends')) return { body: friends };
@@ -771,6 +772,48 @@ test('a server without a commit sequence still receives removals', async () => {
   await app.flush(() => app.membershipPosts().length > 0);
   assert.equal(app.prepared[0].expectedCommitSeq ?? null, null);
   assert.ok(!('expected_commit_seq' in JSON.parse(app.membershipPosts()[0].body)));
+});
+
+// A 4.0.50 server has no commit sequence, so it cannot keep two members'
+// changes built on one group state apart; 4.0.51 has it but no version in
+// /health; newer servers name their version there.
+test('adding a member on a server without a commit sequence asks to update the server, naming its version', async () => {
+  const friends = [{ id: 'dave', username: 'dave', display_name: 'Dave' }];
+  const lock = { locked: true, setupComplete: true, lockedBy: 'me' };
+  const cases = [
+    ['en', { status: 'ok', service: 'ghostchat' }, 'This server runs GhostChat 4.0.50 or older. Update the server to add or remove members of encrypted groups.'],
+    ['tr', { status: 'ok', service: 'ghostchat' }, 'Bu sunucuda GhostChat 4.0.50 veya daha eski bir sürüm çalışıyor. Şifreli gruplara üye eklemek veya çıkarmak için sunucuyu güncelle.'],
+    ['en', { status: 'ok', service: 'ghostchat', version: '4.0.50' }, 'This server runs GhostChat 4.0.50. Update the server to add or remove members of encrypted groups.'],
+  ];
+  for (const [language, health, expected] of cases) {
+    const app = await commitFenceHarness({
+      lock, friends, health, language,
+      selectAll: selector => (selector === '#groupInviteList input:checked' ? [{ value: 'dave' }] : []),
+    });
+    await app.flush(() => app.fetches.some(item => item.url.endsWith('/v1/friends')));
+    await app.flush();
+    assert.ok(app.fetches.some(item => item.url.endsWith('/health')), 'the server version is read from /health');
+    await app.$('#inviteGroupFriends').onclick({ currentTarget: app.$('#inviteGroupFriends') });
+    assert.equal(app.$('#groupManageStatus').textContent, expected, `${language}: the reason names the server version`);
+    assert.ok(!app.fetches.some(item => item.url.includes('/crypto/key-package')), 'no key package is claimed for a change that cannot be made');
+    assert.equal(app.membershipPosts().length, 0);
+  }
+});
+
+test('a server that reports its version and a commit sequence adds members as before', async () => {
+  const friends = [{ id: 'dave', username: 'dave', display_name: 'Dave' }];
+  const lock = { locked: true, setupComplete: true, lockedBy: 'me', deletedMemberIds: [], deletedMembers: [], setupGeneration: 0, commitSeq: 3 };
+  const app = await commitFenceHarness({
+    lock, friends, pages: [[relayEvent(1, 3)]], health: { status: 'ok', service: 'ghostchat', version: '4.0.52' },
+    selectAll: selector => (selector === '#groupInviteList input:checked' ? [{ value: 'dave' }] : []),
+  });
+  await app.flush(() => app.fetches.some(item => item.url.endsWith('/v1/friends')));
+  await app.flush();
+  const adding = app.$('#inviteGroupFriends').onclick({ currentTarget: app.$('#inviteGroupFriends') });
+  await app.flush(() => app.$('#appDecisionTitle').textContent === 'Member security codes');
+  app.$('#appDecisionConfirm').onclick();
+  await adding;
+  assert.equal(JSON.parse(app.membershipPosts()[0].body).crypto_update.expected_commit_seq, 3);
 });
 
 test('a commit refused as stale is dropped and staged again after the next sync', async () => {
