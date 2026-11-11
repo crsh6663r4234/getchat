@@ -430,6 +430,49 @@ test('a safety copy that could not be written pauses encrypted chats with its ow
   }
 });
 
+const SAFETY_COPY_FAILURE = 'Encrypted chats are paused because GhostChat could not write a safety copy of its local data before upgrading it. Free some disk space, then restart GhostChat.';
+const SAFETY_COPY_FAILURE_TR = 'Yükseltmeden önce yerel verilerin güvenlik kopyası yazılamadığı için şifreli sohbetler duraklatıldı. Diskte yer aç, ardından GhostChat’i yeniden başlat.';
+
+async function openTrustedEncryptedChat(language, hooks) {
+  const base = 'https://a.example';
+  const conversation = { id: 'c1', kind: 'direct', peer_id: 'peer', display_name: 'Peer', username: 'peer' };
+  const app = harness({
+    storage: { 'ghostchat.server': base, 'ghostchat.language': language, [`ghostchat.cryptoPeerTrusted.${base}.me.c1`]: 'fp-peer' },
+    credentials: { [await serverKey(base)]: 'token-A' },
+    hooks: { crypto_has_direct_group: () => true, crypto_direct_peer_fingerprint: () => 'fp-peer', ...hooks },
+    fetchHandler: url => {
+      if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
+      if (url.endsWith('/v1/conversations')) return { body: [conversation] };
+      if (url.endsWith('/conversations/c1/crypto-lock')) return { body: { locked: true, setupComplete: true } };
+      return { body: [] };
+    },
+  });
+  await app.flush(() => app.sockets.length > 0);
+  app.voiceOptions.voice.onIncoming({ conversationId: 'c1' });
+  await app.flush(() => app.invokes.some(item => item.command === 'crypto_has_direct_group'));
+  await app.flush();
+  return app;
+}
+
+test('a failed safety copy is named when an encrypted send fails', async () => {
+  for (const [language, expected] of [['en', SAFETY_COPY_FAILURE], ['tr', SAFETY_COPY_FAILURE_TR]]) {
+    const app = await openTrustedEncryptedChat(language, { crypto_encrypt_text: () => { throw SAFETY_COPY_FAILURE; } });
+    app.$('#messageInput').value = 'hello there';
+    const [submit] = app.$('#composer').__listeners.get('submit');
+    await submit({ preventDefault() {} });
+    assert.ok(app.invokes.some(item => item.command === 'crypto_encrypt_text'), 'the encrypted send was attempted');
+    assert.equal(app.$('#toast').textContent, expected, `${language}: the send failure names the safety copy`);
+  }
+});
+
+test('a failed safety copy is named when encrypted events cannot be synced', async () => {
+  for (const [language, expected] of [['en', SAFETY_COPY_FAILURE], ['tr', SAFETY_COPY_FAILURE_TR]]) {
+    const app = await openTrustedEncryptedChat(language, { crypto_get_event_cursor: () => { throw SAFETY_COPY_FAILURE; } });
+    assert.ok(app.invokes.some(item => item.command === 'crypto_get_event_cursor'), 'the sync was attempted');
+    assert.equal(app.$('#toast').textContent, expected, `${language}: the sync failure names the safety copy`);
+  }
+});
+
 test('an encrypted file message names its encrypted attachment for the server', async () => {
   const attachmentId = '0b3c9a52-6f1e-4c55-9d43-3f6d2f6c1a10';
   const app = await openChatAndFailSend({

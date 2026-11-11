@@ -2002,6 +2002,18 @@
       catch (error) { console.warn("An encrypted message could not be decoded before a membership update.", error); }
     }
   }
+  // The exact text of crypto::LOCAL_BACKUP_FAILED in the desktop crate.
+  const LOCAL_BACKUP_FAILED = "Encrypted chats are paused because GhostChat could not write a safety copy of its local data before upgrading it. Free some disk space, then restart GhostChat.";
+  function isLocalBackupFailure(error) {
+    return (typeof error === "string" ? error : error?.message) === LOCAL_BACKUP_FAILED;
+  }
+  // Text for a failed encrypted action: the desktop's failed safety copy gets
+  // its own translated message wherever it surfaces; any other error keeps
+  // its own message or the caller's fallback.
+  function cryptoErrorText(error, fallback) {
+    if (isLocalBackupFailure(error)) return translate(LOCAL_BACKUP_FAILED);
+    return error?.message || translate(fallback);
+  }
   async function syncCryptoEvents(conversationId) {
     if (!state.user || !invoke) return;
     if (!state.cryptoEnabled.has(conversationId) && !state.cryptoLocked.has(conversationId)) return;
@@ -2161,13 +2173,11 @@
         }
       }
     })().catch(error => {
-      if (state.active?.id === conversationId) toast(error.message || translate("Encryption could not be enabled for this conversation."), true);
+      if (state.active?.id === conversationId) toast(cryptoErrorText(error, "Encryption could not be enabled for this conversation."), true);
     }).finally(() => state.cryptoSyncing.delete(conversationId));
     state.cryptoSyncing.set(conversationId, task);
     return task;
   }
-  // The exact text of crypto::LOCAL_BACKUP_FAILED in the desktop crate.
-  const LOCAL_BACKUP_FAILED = "Encrypted chats are paused because GhostChat could not write a safety copy of its local data before upgrading it. Free some disk space, then restart GhostChat.";
   async function refreshCryptoConversation(conversation) {
     const button = $("#enableEncryptionButton"); const status = $("#cryptoConversationStatus");
     if (!["direct", "group"].includes(conversation?.kind) || !state.user || !invoke) {
@@ -2254,11 +2264,11 @@
       button.classList.remove("hidden"); button.textContent = translate(locked ? (canManage && !complete ? "Continue encryption setup" : "Encrypted") : "Enable encryption"); button.disabled = locked && (!canManage || complete);
       // The desktop's one-time safety copy before an upgrade failed: no
       // encrypted data was changed, and nothing here can fix it but disk space.
-      status.textContent = String(error?.message ?? error) === LOCAL_BACKUP_FAILED
-        ? translate(LOCAL_BACKUP_FAILED)
+      status.textContent = isLocalBackupFailure(error)
+        ? cryptoErrorText(error)
         : state.cryptoLocked.has(conversation.id)
         ? translate("This conversation is locked for MLS encryption. Prepare this device in Settings to read new messages; ask the person who started setup for help if it still fails.")
-        : (error.message || translate("Prepare this device for encryption in Settings first."));
+        : cryptoErrorText(error, "Prepare this device for encryption in Settings first.");
       status.classList.remove("hidden"); status.classList.add("warning");
     }
   }
@@ -2953,7 +2963,7 @@
         }
         await refreshConversations(); updateSeenBadge(); return true;
       } catch (error) {
-        toast(error.message || translate("The encrypted message is waiting to be sent. Try again when connected."), true);
+        toast(cryptoErrorText(error, "The encrypted message is waiting to be sent. Try again when connected."), true);
         return false;
       }
     }
