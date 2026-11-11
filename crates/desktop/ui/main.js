@@ -155,7 +155,8 @@
     "Messages cannot be edited in an encrypted group; send a new encrypted message instead.": "Şifreli gruptaki mesajlar düzenlenemez; değişikliği yeni bir şifreli mesajla gönder.",
   });
   Object.assign(trText, {
-    "Enable encryption": "Şifrelemeyi etkinleştir", "Encrypted": "Şifreli", "Setting up encryption…": "Şifreleme hazırlanıyor…", "Encrypted messages are ready.": "Şifreli mesajlar hazır.", "Encrypted conversation": "Şifreli sohbet", "File sharing is not encrypted in this conversation yet.": "Şifreli sohbetlerde yeni dosyalar şifrelenerek gönderilir; eski dosyalar şifresiz kalır.", "This direct message now uses MLS encryption. Messages sent before setup remain stored as plain text on the server; file sharing is not encrypted yet.": "Bu özel mesaj artık MLS ile şifreleniyor. Kurulumdan önce gönderilen mesajlar ve önceki dosyalar sunucuda düz metin olarak kalır; yeni dosyalar şifrelenerek gönderilir.", "Prepare this device for encryption in Settings first.": "Önce Ayarlar'dan bu cihazı şifrelemeye hazırla.", "Your friend needs to prepare an encryption device first.": "Arkadaşının önce bir şifreleme cihazı hazırlaması gerekiyor.", "The one-time key was used. Ask your friend to publish a fresh encryption key package in Settings.": "Tek kullanımlık anahtar kullanıldı. Arkadaşından Ayarlar'dan yeni bir şifreleme anahtarı yayımlamasını iste.", "Compare this security code with your friend through another trusted channel before continuing. Continue only if the codes match.": "Devam etmeden önce bu güvenlik kodunu başka, güvenilir bir kanaldan arkadaşınla karşılaştır. Yalnızca kodlar eşleşirse devam et.", "The encrypted identity is not verified. Compare this code with your friend before sending private messages.": "Şifreli kimlik doğrulanmadı. Özel mesaj göndermeden önce bu kodu arkadaşınla karşılaştır.", "Encrypted message": "Şifreli mesaj", "This message could not be decrypted on this device.": "Bu mesaj bu cihazda çözülemedi.", "Encryption could not be enabled for this conversation.": "Bu sohbet için şifreleme etkinleştirilemedi.", "The encrypted message is waiting to be sent. Try again when connected.": "Şifreli mesaj gönderilmeyi bekliyor. Bağlantı gelince tekrar dene."
+    "Enable encryption": "Şifrelemeyi etkinleştir", "Encrypted": "Şifreli", "Setting up encryption…": "Şifreleme hazırlanıyor…", "Encrypted messages are ready.": "Şifreli mesajlar hazır.", "Encrypted conversation": "Şifreli sohbet", "File sharing is not encrypted in this conversation yet.": "Şifreli sohbetlerde yeni dosyalar şifrelenerek gönderilir; eski dosyalar şifresiz kalır.", "This direct message now uses MLS encryption. Messages sent before setup remain stored as plain text on the server; file sharing is not encrypted yet.": "Bu özel mesaj artık MLS ile şifreleniyor. Kurulumdan önce gönderilen mesajlar ve önceki dosyalar sunucuda düz metin olarak kalır; yeni dosyalar şifrelenerek gönderilir.", "Prepare this device for encryption in Settings first.": "Önce Ayarlar'dan bu cihazı şifrelemeye hazırla.", "Your friend needs to prepare an encryption device first.": "Arkadaşının önce bir şifreleme cihazı hazırlaması gerekiyor.", "The one-time key was used. Ask your friend to publish a fresh encryption key package in Settings.": "Tek kullanımlık anahtar kullanıldı. Arkadaşından Ayarlar'dan yeni bir şifreleme anahtarı yayımlamasını iste.", "Compare this security code with your friend through another trusted channel before continuing. Continue only if the codes match.": "Devam etmeden önce bu güvenlik kodunu başka, güvenilir bir kanaldan arkadaşınla karşılaştır. Yalnızca kodlar eşleşirse devam et.", "The encrypted identity is not verified. Compare this code with your friend before sending private messages.": "Şifreli kimlik doğrulanmadı. Özel mesaj göndermeden önce bu kodu arkadaşınla karşılaştır.", "Encrypted message": "Şifreli mesaj", "This message could not be decrypted on this device.": "Bu mesaj bu cihazda çözülemedi.", "Encryption could not be enabled for this conversation.": "Bu sohbet için şifreleme etkinleştirilemedi.", "The encrypted message is waiting to be sent. Try again when connected.": "Şifreli mesaj gönderilmeyi bekliyor. Bağlantı gelince tekrar dene.",
+    "The server refused this message's ID twice, so it was not sent. Try sending it again.": "Sunucu bu mesajın kimliğini iki kez reddetti, bu yüzden mesaj gönderilmedi. Yeniden göndermeyi dene."
   });
   Object.assign(trText, {
     "The verified security code changed. Compare the old and current codes with everyone in this conversation through another trusted channel. Continue only if you expected this identity or membership change; canceling keeps new messages blocked.": "Doğrulanmış güvenlik kodu değişti. Eski ve yeni kodları bu sohbettekilerle başka, güvenilir bir kanaldan karşılaştır. Yalnızca bu kimlik veya üyelik değişikliğini bekliyorsan devam et; iptal edersen yeni mesajlar kapalı kalır.",
@@ -2973,13 +2974,33 @@
     updateJumpToLatest();
   }
   function encryptedMessagePendingKey(conversationId) { return `ghostchat.cryptoMessagePending.${state.base}.${state.user?.id || ""}.${conversationId}`; }
+  // The server answers 409 to a send for two reasons. A stale commit sequence
+  // carries code "stale_commit_seq" and is the encrypted group's own resync
+  // path. The same client message id used by another sender in the conversation
+  // has no code: it can never succeed under that id, so the message is sent
+  // again once under a new id instead of being retried.
+  function isClientIdCollision(error) {
+    return error?.status === 409 && error.appError === true && !error.code;
+  }
+  const CLIENT_ID_REFUSED = "The server refused this message's ID twice, so it was not sent. Try sending it again.";
   async function retryPendingEncryptedMessage(conversation) {
     const key = encryptedMessagePendingKey(conversation.id); const raw = localStorage.getItem(key);
     if (!raw) return true;
     const pending = JSON.parse(raw);
-    const sent = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/messages`, {
-      method: "POST", body: JSON.stringify({ client_message_id: pending.clientMessageId, content: `e2e1:${pending.payload}`, reply_to_id: null, attachment_ids: Array.isArray(pending.attachmentIds) ? pending.attachmentIds : [] }),
-    });
+    const attachmentIds = Array.isArray(pending.attachmentIds) ? pending.attachmentIds : [];
+    let sent;
+    try {
+      sent = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/messages`, {
+        method: "POST", body: JSON.stringify({ client_message_id: pending.clientMessageId, content: `e2e1:${pending.payload}`, reply_to_id: null, attachment_ids: attachmentIds }),
+      });
+    } catch (error) {
+      if (!isClientIdCollision(error)) throw error;
+      // Drop the entry first so the resend below cannot find it again.
+      localStorage.removeItem(key);
+      const plaintext = await invoke("crypto_get_cached_sent_text", { userId: state.user.id, conversationId: conversation.id, senderId: state.user.id, clientMessageId: pending.clientMessageId });
+      if (!plaintext) { toast(translate(CLIENT_ID_REFUSED), true); return true; }
+      return await sendMessage(plaintext, crypto.randomUUID(), null, conversation, attachmentIds, true) === true;
+    }
     localStorage.removeItem(key);
     const plaintext = await invoke("crypto_get_cached_sent_text", { userId: state.user.id, conversationId: conversation.id, senderId: state.user.id, clientMessageId: pending.clientMessageId });
     if (state.active?.id === conversation.id && plaintext) appendMessage({ ...sent, content: plaintext, encrypted: true });
@@ -2987,7 +3008,7 @@
   }
   // attachmentIds: encrypted uploads whose keys this encrypted message carries;
   // the server links them so deleting the message deletes them too.
-  async function sendMessage(content, clientId = crypto.randomUUID(), replyToId = null, targetConversation = state.active, attachmentIds = []) {
+  async function sendMessage(content, clientId = crypto.randomUUID(), replyToId = null, targetConversation = state.active, attachmentIds = [], idAlreadyReplaced = false) {
     if (!targetConversation || !content.trim()) return;
     if (state.cryptoMembershipPending.has(targetConversation.id)) {
       toast(translate("Pending encrypted membership update is being retried…"), true);
@@ -3008,13 +3029,26 @@
       try {
         const conversation = targetConversation;
         if (!await retryPendingEncryptedMessage(conversation)) return;
-        const encrypted = await invoke("crypto_encrypt_text", {
-          userId: state.user.id, conversationId: conversation.id, clientMessageId: clientId, content,
-        });
-        localStorage.setItem(encryptedMessagePendingKey(conversation.id), JSON.stringify({ clientMessageId: clientId, payload: encrypted.payload, attachmentIds }));
-        const message = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/messages`, {
-          method: "POST", body: JSON.stringify({ client_message_id: clientId, content: `e2e1:${encrypted.payload}`, reply_to_id: null, attachment_ids: attachmentIds }),
-        });
+        let message;
+        // A client id another sender already used is replaced once; refused
+        // again, the entry is dropped and the error shown (no retry loop).
+        for (let replaced = idAlreadyReplaced; ; replaced = true) {
+          const encrypted = await invoke("crypto_encrypt_text", {
+            userId: state.user.id, conversationId: conversation.id, clientMessageId: clientId, content,
+          });
+          localStorage.setItem(encryptedMessagePendingKey(conversation.id), JSON.stringify({ clientMessageId: clientId, payload: encrypted.payload, attachmentIds }));
+          try {
+            message = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/messages`, {
+              method: "POST", body: JSON.stringify({ client_message_id: clientId, content: `e2e1:${encrypted.payload}`, reply_to_id: null, attachment_ids: attachmentIds }),
+            });
+            break;
+          } catch (error) {
+            if (!isClientIdCollision(error)) throw error;
+            localStorage.removeItem(encryptedMessagePendingKey(conversation.id));
+            if (replaced) { toast(translate(CLIENT_ID_REFUSED), true); return false; }
+            clientId = crypto.randomUUID();
+          }
+        }
         localStorage.removeItem(encryptedMessagePendingKey(conversation.id));
         if (state.active?.id === conversation.id) {
           appendMessage({ ...message, content, encrypted: true });
@@ -3026,7 +3060,20 @@
         return false;
       }
     }
-    try { const message = await request(`/v1/conversations/${encodeURIComponent(targetConversation.id)}/messages`, { method: "POST", body: JSON.stringify({ client_message_id: clientId, content, reply_to_id: replyToId }) }); if (state.active?.id === targetConversation.id) { appendMessage(message); await refreshMessageReactions(); $("#messages").scrollTop = $("#messages").scrollHeight; } await refreshConversations(); updateSeenBadge(); return true; }
+    try {
+      let message;
+      for (let replaced = idAlreadyReplaced; ; replaced = true) {
+        try {
+          message = await request(`/v1/conversations/${encodeURIComponent(targetConversation.id)}/messages`, { method: "POST", body: JSON.stringify({ client_message_id: clientId, content, reply_to_id: replyToId }) });
+          break;
+        } catch (error) {
+          if (!isClientIdCollision(error)) throw error;
+          if (replaced) { toast(translate(CLIENT_ID_REFUSED), true); return false; }
+          clientId = crypto.randomUUID();
+        }
+      }
+      if (state.active?.id === targetConversation.id) { appendMessage(message); await refreshMessageReactions(); $("#messages").scrollTop = $("#messages").scrollHeight; } await refreshConversations(); updateSeenBadge(); return true;
+    }
     catch (error) { toast(error.message, true); }
   }
   async function editMessage(message) {

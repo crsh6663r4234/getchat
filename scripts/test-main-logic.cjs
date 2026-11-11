@@ -268,7 +268,7 @@ test('changing the server drops the previous server\'s presence, reply target an
   assert.ok(app.observerDisconnects.count > disconnectsBefore, 'attachment views (and their object URLs) from server A are released');
 });
 
-async function openChatAndFailSend({ encrypted = false, history = [], beforeSend = null, extraHooks = {} } = {}) {
+async function openChatAndFailSend({ encrypted = false, history = [], beforeSend = null, extraHooks = {}, startOnline = false, postReply = null } = {}) {
   let offline = false;
   const conversation = { id: 'c1', kind: 'direct', peer_id: 'peer', display_name: 'Peer', username: 'peer' };
   const base = 'https://a.example';
@@ -288,6 +288,8 @@ async function openChatAndFailSend({ encrypted = false, history = [], beforeSend
       if (offline && options.method === 'POST' && url.includes('/messages')) throw new TypeError('Failed to fetch');
       if (options.method === 'POST' && url.endsWith('/conversations/c1/messages')) {
         const sent = JSON.parse(options.body);
+        const scripted = postReply?.(sent);
+        if (scripted) return scripted;
         return { body: { sequence: 99, id: `s-${sent.client_message_id}`, conversation_id: 'c1', sender_id: 'me', sender_name: 'Me', client_message_id: sent.client_message_id, content: sent.content, reply_to_id: sent.reply_to_id, created_at: '2026-01-01T00:00:00Z' } };
       }
       if (url.includes('/conversations/c1/messages?')) return { body: history };
@@ -301,7 +303,7 @@ async function openChatAndFailSend({ encrypted = false, history = [], beforeSend
   // loadMessages() has no observable end; let its remaining awaits settle.
   await app.flush();
   if (beforeSend) beforeSend(app);
-  offline = true;
+  offline = !startOnline;
   app.$('#messageInput').value = 'hello there';
   const [submit] = app.$('#composer').__listeners.get('submit');
   await submit({ preventDefault() {} });
@@ -432,6 +434,66 @@ test('a safety copy that could not be written pauses encrypted chats with its ow
 
 const SAFETY_COPY_FAILURE = 'Encrypted chats are paused because GhostChat could not write a safety copy of its local data before upgrading it. Free some disk space, then restart GhostChat.';
 const SAFETY_COPY_FAILURE_TR = 'Yükseltmeden önce yerel verilerin güvenlik kopyası yazılamadığı için şifreli sohbetler duraklatıldı. Diskte yer aç, ardından GhostChat’i yeniden başlat.';
+
+const ID_IN_USE = { status: 409, body: { error: 'This message ID is already used in this conversation.' } };
+const STALE_COMMIT = { status: 409, body: { error: 'The encrypted group changed after this message was encrypted. Sync the group and send it again.', code: 'stale_commit_seq' } };
+function collisionChat({ encrypted, refusals, extraHooks = {} }) {
+  let refused = 0;
+  return openChatAndFailSend({
+    encrypted, startOnline: true, extraHooks,
+    postReply: () => (refused < refusals.length ? refusals[refused++] : undefined),
+  });
+}
+const messagePosts = app => app.fetches.filter(item => item.method === 'POST' && item.url.endsWith('/conversations/c1/messages')).map(item => JSON.parse(item.body));
+const PENDING_KEY = 'ghostchat.cryptoMessagePending.https://a.example.me.c1';
+
+test('a client message id another sender already used is replaced once and the message resent', async () => {
+  for (const encrypted of [false, true]) {
+    const app = await collisionChat({ encrypted, refusals: [ID_IN_USE] });
+    const posts = messagePosts(app);
+    assert.equal(posts.length, 2, `encrypted=${encrypted}: one refused send and exactly one resend`);
+    assert.notEqual(posts[1].client_message_id, posts[0].client_message_id, 'the resend carries a new client message id');
+    assert.ok(app.$('#toast').textContent === '' || !app.$('#toast').textContent.includes('already used'), 'a recovered collision shows no error');
+    assert.equal(app.store.get(PENDING_KEY) ?? null, null, 'nothing stays queued');
+    if (encrypted) {
+      const ids = app.invokes.filter(item => item.command === 'crypto_encrypt_text').map(item => item.args.clientMessageId);
+      assert.deepEqual(ids, [posts[0].client_message_id, posts[1].client_message_id], 'the text is encrypted again for the new id');
+    }
+  }
+});
+
+test('a client message id refused twice is reported and not retried again', async () => {
+  for (const encrypted of [false, true]) {
+    const app = await collisionChat({ encrypted, refusals: [ID_IN_USE, ID_IN_USE, ID_IN_USE, ID_IN_USE] });
+    assert.equal(messagePosts(app).length, 2, `encrypted=${encrypted}: no loop after the second refusal`);
+    assert.ok(app.$('#toast').textContent.length > 0, 'the user sees an error');
+    assert.equal(app.store.get(PENDING_KEY) ?? null, null, 'the outbox entry is removed');
+    await app.flush();
+    assert.equal(messagePosts(app).length, 2, 'still no further send');
+  }
+});
+
+test('a queued encrypted message whose client id is refused is sent again under a new id', async () => {
+  let refuseNext = false;
+  const app = await openChatAndFailSend({ encrypted: true, postReply: () => (refuseNext ? (refuseNext = false, ID_IN_USE) : undefined) });
+  const [queued] = messagePosts(app);
+  assert.ok(app.store.get(PENDING_KEY), 'the failed send is queued');
+  app.goOnline();
+  refuseNext = true;
+  app.$('#messageInput').value = 'next';
+  await app.submitComposer({ preventDefault() {} });
+  const posts = messagePosts(app);
+  assert.equal(posts[1].client_message_id, queued.client_message_id, 'the queue retry first uses its saved id');
+  assert.notEqual(posts[2].client_message_id, queued.client_message_id, 'the refused queued message is resent under a new id');
+  assert.equal(app.store.get(PENDING_KEY) ?? null, null);
+});
+
+test('a send refused as stale keeps its queued ciphertext for the existing resync path', async () => {
+  const app = await collisionChat({ encrypted: true, refusals: [STALE_COMMIT] });
+  assert.equal(messagePosts(app).length, 1, 'a stale commit sequence is not a client id collision: no regenerated id');
+  assert.ok(app.store.get(PENDING_KEY), 'the ciphertext stays queued');
+  assert.ok(app.$('#toast').textContent.includes('Sync the group'), 'the server message is shown');
+});
 
 async function openTrustedEncryptedChat(language, hooks) {
   const base = 'https://a.example';
