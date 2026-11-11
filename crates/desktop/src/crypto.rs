@@ -296,6 +296,43 @@ async fn prepare_crypto_storage(db: &SqlitePool) -> Result<(), String> {
     migrate_hash_reference_keys(db).await
 }
 
+/// Copies the local database once, to `<database>.pre-account-binding.bak`,
+/// before this build first rewrites data an earlier build cannot read again
+/// (the text-cache rebuild and the adoption of account-less MLS groups).
+/// `VACUUM INTO` on the open pool gives a consistent snapshot of the WAL
+/// database; the copy is written under a `.tmp` name and renamed when
+/// complete. An existing copy is kept, an in-memory database is skipped, and
+/// a failed copy is an error so the caller changes nothing. The rows keep the
+/// field encryption of the original (same storage key), so the copy needs no
+/// protection beyond the original's directory.
+async fn copy_before_account_binding(db: &SqlitePool) -> Result<(), String> {
+    let error = || {
+        "GhostChat could not back up its local encryption database before upgrading it; nothing was changed."
+            .to_string()
+    };
+    let Some(path) = migration_marker(db) else {
+        return Ok(());
+    };
+    let mut name = path.into_os_string();
+    name.push(".pre-account-binding.bak");
+    let backup = std::path::PathBuf::from(name);
+    if backup.exists() {
+        return Ok(());
+    }
+    let mut partial = backup.clone().into_os_string();
+    partial.push(".tmp");
+    let partial = std::path::PathBuf::from(partial);
+    if partial.exists() {
+        std::fs::remove_file(&partial).map_err(|_| error())?;
+    }
+    sqlx::query("VACUUM INTO ?")
+        .bind(partial.to_string_lossy().into_owned())
+        .execute(db)
+        .await
+        .map_err(|_| error())?;
+    std::fs::rename(&partial, &backup).map_err(|_| error())
+}
+
 /// The local plaintext cache is keyed like the server's message uniqueness:
 /// (account, conversation, sender, client message id). A sender-chosen id can
 /// therefore never answer for another sender's, conversation's or account's
@@ -304,6 +341,15 @@ async fn prepare_crypto_storage(db: &SqlitePool) -> Result<(), String> {
 /// readable; they are only read for their own conversation and never written.
 async fn prepare_text_cache(db: &SqlitePool) -> Result<(), String> {
     let error = || "GhostChat could not prepare its encrypted message cache.".to_string();
+    let old_layout = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM pragma_table_info('ghostchat_crypto_text_cache')",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|_| error())?;
+    if !old_layout.is_empty() && !old_layout.iter().any(|name| name == "sender_id") {
+        copy_before_account_binding(db).await?;
+    }
     let mut transaction = db.begin().await.map_err(|_| error())?;
     let legacy_columns = sqlx::query_scalar::<_, String>(
         "SELECT name FROM pragma_table_info('ghostchat_crypto_text_cache')",
@@ -677,6 +723,22 @@ async fn adopt_legacy_group(
             .unwrap_or(false)
     };
     if !owned {
+        return Ok(());
+    }
+    // VACUUM INTO cannot run inside a transaction: end this read-only one,
+    // take the copy, then check again under the same operation lock.
+    drop(transaction);
+    copy_before_account_binding(db).await?;
+    let mut transaction = db.begin().await.map_err(|_| error())?;
+    let (legacy_exists, scoped_exists) = sqlx::query_as::<_, (bool, bool)>(
+        "SELECT EXISTS(SELECT 1 FROM openmls_group_data WHERE group_id=?),EXISTS(SELECT 1 FROM openmls_group_data WHERE group_id=?)",
+    )
+    .bind(&legacy)
+    .bind(&scoped)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|_| error())?;
+    if !legacy_exists || scoped_exists {
         return Ok(());
     }
     for table in [
@@ -4007,6 +4069,105 @@ mod tests {
         );
     }
 
+    /// The one-time copies taken before the account binding, by file name.
+    fn binding_backups(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".bak"))
+            .collect();
+        names.sort();
+        names
+    }
+
+    async fn legacy_group_rows(db: &SqlitePool, conversation_id: &str) -> i64 {
+        let plaintext = serde_json::to_vec(&group_id_for_conversation(conversation_id)).unwrap();
+        let legacy = lookup_key_v1(&get_storage_key().unwrap(), &plaintext).unwrap();
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM openmls_group_data WHERE group_id=?")
+            .bind(legacy)
+            .fetch_one(db)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn adopting_a_legacy_group_copies_the_profile_once_and_not_without_a_copy() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-adopt-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let alice_db = open_database(&root.join("alice.sqlite")).await;
+        let bob_db = open_database(&root.join("bob.sqlite")).await;
+        let alice_id = Uuid::new_v4().to_string();
+        let bob_id = Uuid::new_v4().to_string();
+        let conversation_id = Uuid::new_v4().to_string();
+        let mut pair = vec![alice_id.clone(), bob_id.clone()];
+        pair.sort();
+        prepare_device(&alice_db, &alice_id).await.unwrap();
+        use_legacy_storage_layout(&bob_id, true);
+        let bob_device = prepare_device(&bob_db, &bob_id).await.unwrap();
+        let start = create_direct_group(
+            &alice_db,
+            &alice_id,
+            &conversation_id,
+            &bob_id,
+            &bob_device.device_id,
+            &bob_device.payload,
+        )
+        .await
+        .unwrap();
+        process_crypto_event(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            None,
+            Some(1),
+            false,
+            &pair,
+            &start.welcome_payload,
+        )
+        .await
+        .unwrap();
+        use_legacy_storage_layout(&bob_id, false);
+        assert!(
+            binding_backups(&root).is_empty(),
+            "a fresh profile gets no copy"
+        );
+        let legacy_rows = legacy_group_rows(&bob_db, &conversation_id).await;
+        assert!(legacy_rows > 0);
+
+        // A copy that cannot be written stops the adoption: nothing moves.
+        let blocker = root.join("bob.sqlite.pre-account-binding.bak.tmp");
+        std::fs::create_dir_all(blocker.join("blocker")).unwrap();
+        assert!(has_direct_group(&bob_db, &bob_id, &conversation_id)
+            .await
+            .is_err());
+        assert_eq!(
+            legacy_group_rows(&bob_db, &conversation_id).await,
+            legacy_rows
+        );
+        assert!(binding_backups(&root).is_empty());
+        std::fs::remove_dir_all(&blocker).unwrap();
+
+        assert!(has_direct_group(&bob_db, &bob_id, &conversation_id)
+            .await
+            .unwrap());
+        assert_eq!(legacy_group_rows(&bob_db, &conversation_id).await, 0);
+        assert!(has_direct_group(&bob_db, &bob_id, &conversation_id)
+            .await
+            .unwrap());
+        assert_eq!(
+            binding_backups(&root),
+            vec!["bob.sqlite.pre-account-binding.bak"]
+        );
+        let backup = open_database(&root.join("bob.sqlite.pre-account-binding.bak")).await;
+        assert_eq!(
+            legacy_group_rows(&backup, &conversation_id).await,
+            legacy_rows,
+            "the copy holds the group as the earlier build stored it"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn pending_bootstrap_works_on_a_fresh_profile_before_device_setup() {
         let root = std::env::temp_dir().join(format!("ghostchat-mls-fresh-{}", Uuid::new_v4()));
@@ -4199,6 +4360,80 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    async fn seed_legacy_text_cache(db: &SqlitePool, client_message_id: &str) {
+        sqlx::query("CREATE TABLE ghostchat_crypto_text_cache (client_message_id TEXT PRIMARY KEY NOT NULL, conversation_id TEXT NOT NULL, encrypted_content BLOB NOT NULL, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')))")
+            .execute(db)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO ghostchat_crypto_text_cache(client_message_id,conversation_id,encrypted_content) VALUES(?,?,x'00')")
+            .bind(client_message_id)
+            .bind(Uuid::new_v4().to_string())
+            .execute(db)
+            .await
+            .unwrap();
+    }
+
+    async fn text_cache_layout(db: &SqlitePool) -> (bool, Vec<String>) {
+        let columns = sqlx::query_scalar::<_, String>(
+            "SELECT name FROM pragma_table_info('ghostchat_crypto_text_cache')",
+        )
+        .fetch_all(db)
+        .await
+        .unwrap();
+        let ids = sqlx::query_scalar::<_, String>(
+            "SELECT client_message_id FROM ghostchat_crypto_text_cache",
+        )
+        .fetch_all(db)
+        .await
+        .unwrap();
+        (columns.iter().any(|name| name == "sender_id"), ids)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_existing_text_cache_is_copied_once_before_it_is_rebuilt() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-copy-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let fresh = open_database(&root.join("fresh.sqlite")).await;
+        prepare_device(&fresh, &Uuid::new_v4().to_string())
+            .await
+            .unwrap();
+        assert!(
+            binding_backups(&root).is_empty(),
+            "a fresh profile gets no copy"
+        );
+
+        let db = open_database(&root.join("profile.sqlite")).await;
+        seed_legacy_text_cache(&db, "m-old").await;
+        prepare_crypto_storage(&db).await.unwrap();
+        prepare_crypto_storage(&db).await.unwrap();
+        assert_eq!(
+            binding_backups(&root),
+            vec!["profile.sqlite.pre-account-binding.bak"]
+        );
+        assert_eq!(text_cache_layout(&db).await, (true, vec!["m-old".into()]));
+        let backup = open_database(&root.join("profile.sqlite.pre-account-binding.bak")).await;
+        assert_eq!(
+            text_cache_layout(&backup).await,
+            (false, vec!["m-old".into()]),
+            "the copy holds the cache as the earlier build stored it"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_text_cache_that_cannot_be_copied_is_not_rebuilt() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-nocopy-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let db = open_database(&root.join("profile.sqlite")).await;
+        seed_legacy_text_cache(&db, "m-old").await;
+        std::fs::create_dir_all(root.join("profile.sqlite.pre-account-binding.bak.tmp/blocker"))
+            .unwrap();
+        assert!(prepare_crypto_storage(&db).await.is_err());
+        assert_eq!(text_cache_layout(&db).await, (false, vec!["m-old".into()]));
+        assert!(binding_backups(&root).is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]
