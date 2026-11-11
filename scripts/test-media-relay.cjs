@@ -262,6 +262,7 @@ async function run() {
       addEventListener() {} removeEventListener() {}
       createMediaStreamDestination() { return { stream: processed }; }
       createMediaStreamSource(stream) { return { stream, connect() {}, disconnect() {} }; }
+      createGain() { return { gain: { value: 1 }, connect() {}, disconnect() {} }; }
     }
     class Worklet {
       constructor() {
