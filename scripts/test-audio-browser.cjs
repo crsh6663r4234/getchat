@@ -29,6 +29,10 @@ const config = require('../crates/desktop/tauri.conf.json');
   try {
     browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : 'chromium', headless: true, args: ['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', '--autoplay-policy=no-user-gesture-required'] });
     const page = await browser.newPage();
+    if (process.env.GHOSTCHAT_CPU_SLOWDOWN) {
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.GHOSTCHAT_CPU_SLOWDOWN) });
+    }
     page.on('pageerror', error => console.error('Browser error:', error.message));
     await page.goto('http://127.0.0.1:' + server.address().port);
     const result = await page.evaluate(async ({ hasSpeech, engine }) => {
@@ -67,8 +71,17 @@ const config = require('../crates/desktop/tauri.conf.json');
       ensure(input > 0.1, 'Fixture must have non-silent input');
       ensure(reductionDb > 6, 'Steady noise should be attenuated by at least 6 dB, got ' + reductionDb);
       ensure(engine === 'deepfilter' ? filtered.status.processedFrames > 0 : filtered.status.speechProbability !== undefined, 'Worklet processed frames');
-      filtered.setMuted(true); await wait(100);
-      ensure(rms(after) < 0.00001, 'Mute must silence outgoing audio');
+      filtered.setMuted(true);
+      ensure(!filtered.stream.getAudioTracks()[0].enabled, 'Mute disables transmission immediately');
+      // A 2048-sample analyser retains old samples; use the audio clock rather
+      // than assuming 100 ms of wall time means the CI audio graph advanced.
+      const muteStarted = performance.now(), mutedAt = context.currentTime;
+      while (context.currentTime - mutedAt < 0.2 && performance.now() - muteStarted < 2000) await wait(20);
+      ensure(context.currentTime - mutedAt >= 0.2, 'Audio clock must advance during mute test');
+      for (let i = 0; i < 3; i++) {
+        ensure(rms(after) < 0.00001, 'Mute must sustain silence in outgoing audio');
+        await wait(40);
+      }
       await filtered.close();
       const bypass = await GhostChatAudio.open({ ...settings, noiseSuppression: false }); bypass.setMuted(false);
       ensure(bypass.status.engine === 'capture', 'Explicit off mode uses native capture');
