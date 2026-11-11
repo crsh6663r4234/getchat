@@ -265,7 +265,63 @@ async fn backup_before_upgrade(
         .map_err(|e| failed(e.to_string()))?;
     std::fs::rename(&partial, &backup).map_err(|e| failed(e.to_string()))?;
     tracing::info!(backup = %backup.display(), "wrote the pre-upgrade database backup");
+    rotate_upgrade_backups(&backup);
     Ok(())
+}
+
+/// How many `pre-<version>.bak` backups of one database are kept.
+const KEPT_UPGRADE_BACKUPS: usize = 3;
+
+/// After `written` was completed, deletes this database's older
+/// `<database>.pre-<version>.bak` files so that `written` and the newest
+/// others (by version) make KEPT_UPGRADE_BACKUPS. `written` is never deleted;
+/// other files are left alone. A failed deletion is logged, not fatal.
+fn rotate_upgrade_backups(written: &std::path::Path) {
+    let (Some(directory), Some(written_name)) = (
+        written.parent(),
+        written.file_name().and_then(|name| name.to_str()),
+    ) else {
+        return;
+    };
+    let Some(prefix) = written_name
+        .rsplit_once(".pre-")
+        .map(|(database, _)| format!("{database}.pre-"))
+    else {
+        return;
+    };
+    let directory = if directory.as_os_str().is_empty() {
+        std::path::Path::new(".")
+    } else {
+        directory
+    };
+    let Ok(entries) = std::fs::read_dir(directory) else {
+        return;
+    };
+    let mut others: Vec<(u64, PathBuf)> = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let name = entry.file_name().into_string().ok()?;
+            let version = name.strip_prefix(&prefix)?.strip_suffix(".bak")?;
+            if name == written_name
+                || version.len() < 4
+                || !version.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                return None;
+            }
+            Some((version.parse().ok()?, entry.path()))
+        })
+        .collect();
+    others.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, path) in others.into_iter().skip(KEPT_UPGRADE_BACKUPS - 1) {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                tracing::info!(backup = %path.display(), "removed an older pre-upgrade backup")
+            }
+            Err(error) => {
+                tracing::warn!(backup = %path.display(), %error, "could not remove an older pre-upgrade backup")
+            }
+        }
+    }
 }
 
 pub async fn build_state(db: SqlitePool) -> AppState {
@@ -8801,6 +8857,56 @@ mod tests {
             .await;
         assert_eq!(std::fs::read(&existing).unwrap(), b"earlier backup");
         assert_eq!(backup_files(&dir), vec!["db.sqlite.pre-0027.bak"]);
+    }
+
+    #[tokio::test]
+    async fn upgrade_backups_are_rotated_to_the_three_newest_after_a_new_one() {
+        for (existing, expected) in [
+            (
+                vec![
+                    "db.sqlite.pre-0001.bak",
+                    "db.sqlite.pre-0002.bak",
+                    "db.sqlite.pre-0003.bak",
+                    "db.sqlite.pre-0004.bak",
+                    "db.sqlite.pre-account-binding.bak",
+                    "other.sqlite.pre-0001.bak",
+                ],
+                vec![
+                    "db.sqlite.pre-0003.bak",
+                    "db.sqlite.pre-0004.bak",
+                    "db.sqlite.pre-0027.bak",
+                    "db.sqlite.pre-account-binding.bak",
+                    "other.sqlite.pre-0001.bak",
+                ],
+            ),
+            // Newer backups from before a restore: the one just written stays.
+            (
+                vec![
+                    "db.sqlite.pre-0030.bak",
+                    "db.sqlite.pre-0031.bak",
+                    "db.sqlite.pre-0032.bak",
+                ],
+                vec![
+                    "db.sqlite.pre-0027.bak",
+                    "db.sqlite.pre-0031.bak",
+                    "db.sqlite.pre-0032.bak",
+                ],
+            ),
+        ] {
+            let dir = std::env::temp_dir().join(format!("ghostchat-backup-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("db.sqlite");
+            database_migrated_to(&path, 26).await.close().await;
+            for name in &existing {
+                std::fs::write(dir.join(name), b"older").unwrap();
+            }
+            open_database(&path.to_string_lossy())
+                .await
+                .unwrap()
+                .close()
+                .await;
+            assert_eq!(backup_files(&dir), expected);
+        }
     }
 
     #[tokio::test]

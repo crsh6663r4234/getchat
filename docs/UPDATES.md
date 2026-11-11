@@ -10,7 +10,7 @@ Updates cannot be undone by installing an older version: server migrations 0025 
 
 Builds after 4.0.51 take these backups automatically, next to the database they copy:
 
-- The server, and the desktop app's built-in server, write `<database>.pre-<first pending migration>.bak` (for example `ghostchat.sqlite.pre-0033.bak`) before applying a migration numbered 0025 or higher to a database that already holds data. They stop instead of migrating if the backup cannot be written.
+- The server, and the desktop app's built-in server, write `<database>.pre-<first pending migration>.bak` (for example `ghostchat.sqlite.pre-0033.bak`) before applying a migration numbered 0025 or higher to a database that already holds data. They stop instead of migrating if the backup cannot be written, and keep the three newest of these backups per database.
 - The desktop app copies its local database once to `ghostchat.sqlite.pre-account-binding.bak` in `%APPDATA%\app.ghostchat.desktop\` at startup, before anything is migrated, when the profile was written by a build before the account binding. Both desktop backups of one upgrade hold the state before it. If the copy fails, encrypted chats stay paused with a message until a restart writes it.
 
 4.0.51 and earlier shipped without these backups: an installation already on 4.0.51 has passed migrations 0025-0032 and gets automatic backups only for later migrations. Before updating, still copy the server database (stop the service or use a SQLite-aware backup) and, on each PC, the `%APPDATA%\app.ghostchat.desktop\` folder with GhostChat closed.
