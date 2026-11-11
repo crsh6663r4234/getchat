@@ -213,6 +213,9 @@ pub struct CryptoEventResult {
 
 async fn prepare_crypto_storage(db: &SqlitePool) -> Result<(), String> {
     install_storage_key(get_storage_key()?)?;
+    if migration_marker(db).is_some_and(|path| startup_copy_failed(&path)) {
+        return Err(LOCAL_BACKUP_FAILED.into());
+    }
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS ghostchat_crypto_identities (\
@@ -298,41 +301,127 @@ async fn prepare_crypto_storage(db: &SqlitePool) -> Result<(), String> {
     migrate_hash_reference_keys(db).await
 }
 
-/// Copies the local database once, to `<database>.pre-account-binding.bak`,
-/// before this build first rewrites data an earlier build cannot read again
-/// (the text-cache rebuild and the adoption of account-less MLS groups).
-/// `VACUUM INTO` on the open pool gives a consistent snapshot of the WAL
-/// database; the copy is written under a `.tmp` name and renamed when
-/// complete. An existing copy is kept, an in-memory database is skipped, and
-/// a failed copy is an error so the caller changes nothing. The rows keep the
-/// field encryption of the original (same storage key), so the copy needs no
-/// protection beyond the original's directory.
-async fn copy_before_account_binding(db: &SqlitePool) -> Result<(), String> {
-    let error = || {
-        "GhostChat could not back up its local encryption database before upgrading it; nothing was changed."
-            .to_string()
-    };
-    let Some(path) = migration_marker(db) else {
-        return Ok(());
-    };
-    let mut name = path.into_os_string();
+/// Shown when the one-time safety copy of the local database cannot be
+/// written. Encrypted storage stays untouched until a restart succeeds.
+pub const LOCAL_BACKUP_FAILED: &str = "Encrypted chats are paused because GhostChat could not write a safety copy of its local data before upgrading it. Free some disk space, then restart GhostChat.";
+
+/// Database files whose startup copy failed in this process: their
+/// encrypted storage is not prepared (and so not rewritten) until a restart.
+static STARTUP_COPY_FAILED: std::sync::Mutex<
+    Option<std::collections::HashSet<std::path::PathBuf>>,
+> = std::sync::Mutex::new(None);
+
+fn startup_copy_failed(path: &std::path::Path) -> bool {
+    STARTUP_COPY_FAILED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        .is_some_and(|paths| paths.contains(path))
+}
+
+fn account_binding_backup_path(path: &std::path::Path) -> std::path::PathBuf {
+    let mut name = path.as_os_str().to_owned();
     name.push(".pre-account-binding.bak");
-    let backup = std::path::PathBuf::from(name);
-    if backup.exists() {
-        return Ok(());
-    }
-    let mut partial = backup.clone().into_os_string();
+    std::path::PathBuf::from(name)
+}
+
+/// `VACUUM INTO` a `.tmp` file next to `backup`, renamed once complete: a
+/// consistent snapshot of the WAL database as this connection sees it.
+async fn vacuum_copy(
+    connection: &mut sqlx::SqliteConnection,
+    backup: &std::path::Path,
+) -> Result<(), String> {
+    let mut partial = backup.as_os_str().to_owned();
     partial.push(".tmp");
     let partial = std::path::PathBuf::from(partial);
     if partial.exists() {
-        std::fs::remove_file(&partial).map_err(|_| error())?;
+        std::fs::remove_file(&partial).map_err(|_| LOCAL_BACKUP_FAILED.to_string())?;
     }
     sqlx::query("VACUUM INTO ?")
         .bind(partial.to_string_lossy().into_owned())
-        .execute(db)
+        .execute(&mut *connection)
         .await
-        .map_err(|_| error())?;
-    std::fs::rename(&partial, &backup).map_err(|_| error())
+        .map_err(|_| LOCAL_BACKUP_FAILED.to_string())?;
+    std::fs::rename(&partial, backup).map_err(|_| LOCAL_BACKUP_FAILED.to_string())
+}
+
+/// Whether the text cache still has the layout of builds before the account
+/// binding (no table yet is a fresh profile, not an old one).
+async fn text_cache_needs_rebuild(
+    connection: &mut sqlx::SqliteConnection,
+) -> Result<bool, sqlx::Error> {
+    let columns = sqlx::query_scalar::<_, String>(
+        "SELECT name FROM pragma_table_info('ghostchat_crypto_text_cache')",
+    )
+    .fetch_all(&mut *connection)
+    .await?;
+    Ok(!columns.is_empty() && !columns.iter().any(|name| name == "sender_id"))
+}
+
+/// Opens the app's local database, which the built-in server and the MLS
+/// store share. A profile an earlier build wrote is copied once to
+/// `<database>.pre-account-binding.bak` before anything opens or migrates
+/// it, so this copy and the server's `pre-<version>.bak` backup both hold the
+/// state before the upgrade. If the copy fails the app still starts, but its
+/// encrypted storage is left untouched and reports LOCAL_BACKUP_FAILED.
+pub async fn open_local_database(path: &str) -> Result<SqlitePool, String> {
+    let file = std::path::Path::new(path);
+    if file.exists() && !account_binding_backup_path(file).exists() {
+        if let Err(error) = copy_profile_before_opening(file).await {
+            eprintln!("GhostChat could not copy its local database before upgrading it: {error}");
+            STARTUP_COPY_FAILED
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get_or_insert_with(Default::default)
+                .insert(file.to_path_buf());
+        }
+    }
+    ghostchat_server::open_database(path)
+        .await
+        .map_err(|error| format!("Could not open GhostChat's local database at {path}: {error}"))
+}
+
+async fn copy_profile_before_opening(file: &std::path::Path) -> Result<(), String> {
+    use sqlx::{sqlite::SqliteConnectOptions, ConnectOptions, Connection};
+    let mut connection = SqliteConnectOptions::new()
+        .filename(file)
+        .connect()
+        .await
+        .map_err(|error| error.to_string())?;
+    let result = match text_cache_needs_rebuild(&mut connection).await {
+        Ok(true) => vacuum_copy(&mut connection, &account_binding_backup_path(file)).await,
+        Ok(false) => Ok(()),
+        Err(error) => Err(error.to_string()),
+    };
+    let _ = connection.close().await;
+    result
+}
+
+/// Copies the local database once, to `<database>.pre-account-binding.bak`,
+/// before this build first rewrites data an earlier build cannot read again
+/// (the text-cache rebuild and the adoption of account-less MLS groups).
+/// Normally `open_local_database` took the copy at startup; this covers a
+/// profile it did not recognize as old (a legacy group with a current cache).
+/// An existing copy is kept, an in-memory database is skipped, and a failed
+/// copy is an error so the caller changes nothing. The rows keep the field
+/// encryption of the original (same storage key), so the copy needs no
+/// protection beyond the original's directory.
+async fn copy_before_account_binding(db: &SqlitePool) -> Result<(), String> {
+    let Some(path) = migration_marker(db) else {
+        return Ok(());
+    };
+    if startup_copy_failed(&path) {
+        return Err(LOCAL_BACKUP_FAILED.into());
+    }
+    let backup = account_binding_backup_path(&path);
+    if backup.exists() {
+        return Ok(());
+    }
+    let mut connection = db
+        .acquire()
+        .await
+        .map_err(|_| LOCAL_BACKUP_FAILED.to_string())?;
+    vacuum_copy(&mut connection, &backup).await
 }
 
 /// The local plaintext cache is keyed like the server's message uniqueness:
@@ -344,13 +433,12 @@ async fn copy_before_account_binding(db: &SqlitePool) -> Result<(), String> {
 /// moved to its sender once it answers for that sender (`claim_legacy_text`).
 async fn prepare_text_cache(db: &SqlitePool) -> Result<(), String> {
     let error = || "GhostChat could not prepare its encrypted message cache.".to_string();
-    let old_layout = sqlx::query_scalar::<_, String>(
-        "SELECT name FROM pragma_table_info('ghostchat_crypto_text_cache')",
-    )
-    .fetch_all(db)
-    .await
-    .map_err(|_| error())?;
-    if !old_layout.is_empty() && !old_layout.iter().any(|name| name == "sender_id") {
+    let mut connection = db.acquire().await.map_err(|_| error())?;
+    let old_layout = text_cache_needs_rebuild(&mut connection)
+        .await
+        .map_err(|_| error())?;
+    drop(connection);
+    if old_layout {
         copy_before_account_binding(db).await?;
     }
     let mut transaction = db.begin().await.map_err(|_| error())?;
@@ -4790,6 +4878,97 @@ mod tests {
             (false, vec!["m-old".into()]),
             "the copy holds the cache as the earlier build stored it"
         );
+    }
+
+    /// A local database as an earlier build left it: the built-in server
+    /// migrated only up to `last_version` and the text cache in its old layout.
+    async fn earlier_build_profile(path: &Path, last_version: i64) {
+        let all = sqlx::migrate!("../server/migrations");
+        let db = open_database(path).await;
+        sqlx::migrate::Migrator {
+            migrations: std::borrow::Cow::Owned(
+                all.iter()
+                    .filter(|migration| migration.version <= last_version)
+                    .cloned()
+                    .collect(),
+            ),
+            ..sqlx::migrate::Migrator::DEFAULT
+        }
+        .run(&db)
+        .await
+        .unwrap();
+        seed_legacy_text_cache(&db, "m-old").await;
+        db.close().await;
+    }
+
+    async fn migration_level(db: &SqlitePool) -> i64 {
+        sqlx::query_scalar::<_, i64>("SELECT max(version) FROM _sqlx_migrations")
+            .fetch_one(db)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_startup_backups_both_hold_the_profile_before_the_upgrade() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-startup-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let fresh = open_local_database(&root.join("fresh.sqlite").to_string_lossy())
+            .await
+            .unwrap();
+        prepare_device(&fresh, &Uuid::new_v4().to_string())
+            .await
+            .unwrap();
+        assert!(
+            binding_backups(&root).is_empty(),
+            "a fresh profile gets no copy"
+        );
+
+        let path = root.join("ghostchat.sqlite");
+        earlier_build_profile(&path, 24).await;
+        let db = open_local_database(&path.to_string_lossy()).await.unwrap();
+        prepare_crypto_storage(&db).await.unwrap();
+        assert_eq!(
+            binding_backups(&root),
+            vec![
+                "ghostchat.sqlite.pre-0025.bak",
+                "ghostchat.sqlite.pre-account-binding.bak"
+            ]
+        );
+        for name in [
+            "ghostchat.sqlite.pre-0025.bak",
+            "ghostchat.sqlite.pre-account-binding.bak",
+        ] {
+            let backup = open_database(&root.join(name)).await;
+            assert_eq!(migration_level(&backup).await, 24, "{name} is pre-upgrade");
+            assert_eq!(
+                text_cache_layout(&backup).await,
+                (false, vec!["m-old".into()]),
+                "{name} holds the old cache"
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_failed_startup_copy_pauses_encrypted_storage_with_its_own_error() {
+        let root = std::env::temp_dir().join(format!("ghostchat-mls-startfail-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let path = root.join("ghostchat.sqlite");
+        earlier_build_profile(&path, 24).await;
+        std::fs::create_dir_all(root.join("ghostchat.sqlite.pre-account-binding.bak.tmp/blocker"))
+            .unwrap();
+        let db = open_local_database(&path.to_string_lossy())
+            .await
+            .expect("the app still starts");
+        assert_eq!(
+            prepare_crypto_storage(&db).await.unwrap_err(),
+            LOCAL_BACKUP_FAILED
+        );
+        assert_eq!(text_cache_layout(&db).await, (false, vec!["m-old".into()]));
+        assert!(!root
+            .join("ghostchat.sqlite.pre-account-binding.bak")
+            .exists());
     }
 
     #[tokio::test(flavor = "multi_thread")]

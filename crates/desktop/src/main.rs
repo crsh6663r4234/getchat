@@ -824,11 +824,7 @@ fn main() {
                 .join("attachments");
             let path = database_path.to_string_lossy().to_string();
             let (api, crypto_db) = tauri::async_runtime::block_on(async move {
-                let db = ghostchat_server::open_database(&path)
-                    .await
-                    .map_err(|error| {
-                        format!("Could not open GhostChat's local database at {path}: {error}")
-                    })?;
+                let db = crypto::open_local_database(&path).await?;
                 let crypto_db = db.clone();
                 let state =
                     ghostchat_server::build_state_with_attachment_dir(db, attachment_dir).await;
