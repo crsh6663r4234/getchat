@@ -283,6 +283,40 @@ async function run() {
     media.close();
   }
 
+  // Every message of the relay path that can reach the user has a Turkish
+  // entry in main.js's translation table (toast() translates through it).
+  {
+    const main = fs.readFileSync(path.join(ui, 'main.js'), 'utf8');
+    const start = main.indexOf('const trText = {');
+    const end = main.indexOf('const tr = () =>');
+    assert(start >= 0 && end > start, 'the translation table is found in main.js');
+    const tables = main.slice(start, end).replace(/\n\s*let [^\n]*/g, '');
+    const trText = vm.runInNewContext(`${tables};trText`);
+    const literals = (source, pattern) => [...source.matchAll(pattern)].map(match => match[1]);
+    const client = fs.readFileSync(path.join(ui, 'server-media-client.js'), 'utf8');
+    const refusals = client.slice(client.indexOf('const REFUSALS = {'), client.indexOf('};', client.indexOf('const REFUSALS = {')));
+    const strings = new Set([
+      ...literals(client, /new Error\("([^"]+)"\)/g),
+      ...literals(refusals, /:\s*"([^"]+)"/g),
+      ...literals(client, /onClosed\("([^"]+)"\)/g),
+    ]);
+    for (const file of ['voice-client.js', 'group-voice-client.js']) {
+      // console.debug() lines are diagnostics, not user messages.
+      const source = fs.readFileSync(path.join(ui, file), 'utf8').split('\n').filter(line => !line.includes('console.')).join('\n');
+      for (const text of literals(source, /"([A-Z][^"]*(?:call relay|server relay|through the server)[^"]*)"/g)) strings.add(text);
+    }
+    // Relay-path screen sharing and the paused-audio notice.
+    for (const text of [
+      'Screen capture is unavailable in this WebView. Update the Microsoft Edge WebView2 Runtime.',
+      'The screen capture returned no picture.',
+      'Wait until the call is connected before sharing your screen.',
+      'Call audio is paused. Click anywhere in GhostChat to turn it on.',
+    ]) strings.add(text);
+    assert(strings.size >= 14, `the relay messages are found (${strings.size})`);
+    const missing = [...strings].filter(text => !Object.hasOwn(trText, text) || !trText[text] || trText[text] === text);
+    assert.deepEqual(missing, [], 'every relay message has a Turkish translation');
+  }
+
   // Screen sharing over the relay: low frame rate VP8 through WebCodecs,
   // fragmented under the server's frame limit, reassembled per peer.
   {

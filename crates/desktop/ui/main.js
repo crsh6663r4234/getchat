@@ -213,7 +213,24 @@
   Object.assign(trText, { "Voice processing settings applied.": "Ses işleme ayarları uygulandı." });
   // Calls through the GhostChat server (server media relay).
   Object.assign(trText, {
-    "Call audio is paused. Click anywhere in GhostChat to turn it on.": "Arama sesi duraklatıldı. Açmak için GhostChat’te herhangi bir yere tıkla."
+    "Call audio is paused. Click anywhere in GhostChat to turn it on.": "Arama sesi duraklatıldı. Açmak için GhostChat’te herhangi bir yere tıkla.",
+    "The call relay refused this session. Sign in again and call again.": "Arama aktarıcısı bu oturumu reddetti. Yeniden giriş yap ve tekrar ara.",
+    "You are not allowed to join this call through the server relay.": "Bu aramaya sunucu aktarıcısı üzerinden katılma iznin yok.",
+    "Too many call relay connections. Wait a minute and try again.": "Çok fazla arama aktarıcısı bağlantısı var. Bir dakika bekle ve tekrar dene.",
+    "The call relay did not understand this client. Update GhostChat.": "Arama aktarıcısı bu istemciyi anlamadı. GhostChat’i güncelle.",
+    "The call relay refused the connection.": "Arama aktarıcısı bağlantıyı reddetti.",
+    "This WebView cannot relay calls through the server. Update the Microsoft Edge WebView2 Runtime.": "Bu WebView aramaları sunucu üzerinden aktaramıyor. Microsoft Edge WebView2 Runtime’ı güncelle.",
+    "Screen sharing through the server needs a newer Microsoft Edge WebView2 Runtime.": "Sunucu üzerinden ekran paylaşımı için daha yeni bir Microsoft Edge WebView2 Runtime gerekiyor.",
+    "The call ended.": "Arama sona erdi.",
+    "The call relay on the GhostChat server did not answer.": "GhostChat sunucusundaki arama aktarıcısı yanıt vermedi.",
+    "GhostChat could not reach the call relay on the server.": "GhostChat sunucudaki arama aktarıcısına ulaşamadı.",
+    "The call relay connection was lost.": "Arama aktarıcısı bağlantısı koptu.",
+    "The call relay connection to the GhostChat server was lost. Call again.": "GhostChat sunucusuyla arama aktarıcısı bağlantısı koptu. Tekrar ara.",
+    "The call relay on the GhostChat server could not be reached.": "GhostChat sunucusundaki arama aktarıcısına ulaşılamadı.",
+    "The group call relay connection to the GhostChat server was lost.": "GhostChat sunucusuyla grup araması aktarıcısı bağlantısı koptu.",
+    "Screen capture is unavailable in this WebView. Update the Microsoft Edge WebView2 Runtime.": "Bu WebView’da ekran yakalama kullanılamıyor. Microsoft Edge WebView2 Runtime’ı güncelle.",
+    "The screen capture returned no picture.": "Ekran yakalama görüntü vermedi.",
+    "Wait until the call is connected before sharing your screen.": "Ekranını paylaşmadan önce aramanın bağlanmasını bekle."
   });
   Object.assign(trText, {
     "Online on this device": "Bu cihazda çevrimiçi",
