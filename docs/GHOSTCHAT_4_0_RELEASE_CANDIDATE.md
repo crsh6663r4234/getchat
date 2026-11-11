@@ -31,11 +31,30 @@ This document is the handoff checklist for the unreleased 4.0 candidate. The can
 - The client stores processed MLS event cursors with MLS state atomically and seeds the new cursor table from the prior client cursor on first upgrade.
 - Owners/admins can copy a `ghostchat://invite/<code>` link for a regular group. The deep-link handler forwards URLs to the current app instance, validates the 43-character invite code, and queues it until an authenticated user can explicitly choose **Join group**. Encrypted groups continue to require the verified MLS membership flow.
 
+## Upgrades are one-way: back up first
+
+Back up before upgrading. Server migrations 0025 and later and the desktop app's account-bound local storage cannot be undone, so restoring a backup taken before the upgrade is the only way back to an older build:
+
+- An older server binary refuses to start on a database that a newer one migrated: SQLx stops when the database records migrations the binary does not know.
+- An older desktop build cannot use a profile a newer one opened: the rebuilt text cache has columns it does not fill, and it cannot find MLS groups whose storage is bound to the account.
+- There are no reverse migrations. Several migrations rebuild tables (0027, 0029) or change keys and constraints, and the desktop re-keys stored groups to the account. Undoing the group binding would mean making every group readable to every account on the profile again, which is the defect the binding fixed, so it is not offered.
+
+Automatic backups (builds after 4.0.51):
+
+- **Server:** before it applies a migration numbered 0025 or higher to a database that already holds data, the server writes `<database>.pre-<first pending migration, four digits>.bak` next to the database (for example `ghostchat.sqlite.pre-0033.bak`) with SQLite `VACUUM INTO`. This applies to every future migration. An existing backup is never overwritten, new and in-memory databases get none, and if the backup cannot be written the server stops before migrating.
+- **Desktop:** the app's local database `ghostchat.sqlite` in `%APPDATA%\app.ghostchat.desktop\` gets the same server backup when its built-in server migrates. In addition, before the first text-cache rebuild or the first adoption of a group stored by an earlier build, the app copies that database once to `ghostchat.sqlite.pre-account-binding.bak` in the same folder. If the copy fails, the app reports an error and changes nothing; encrypted conversations stay unavailable until the copy can be written (for example after freeing disk space).
+
+**4.0.51 shipped without these backups.** Anyone who upgraded to 4.0.51 or earlier has already passed server migrations 0025-0032 and the desktop's account binding without an automatic copy; only their own manual backup can take them back. Later builds back up only the migrations that are still pending.
+
+To go back: stop the server (or quit GhostChat, including from the tray), keep the current database aside, delete its `-wal` and `-shm` files, copy the backup over the database file, and start the older build. On a PC, restore the earliest backup written by the upgrade you are undoing: the `pre-<version>.bak` file is taken at startup, before the account-binding copy, and is the only one an older build whose built-in server lacks those migrations can open. The account-binding copy is for going back to a build with the same server migrations. Backups are not rotated; delete them once the upgrade is confirmed.
+
+Protection: a server backup is as sensitive as the server database (protect it as readable private-message data). The desktop copy keeps the field encryption of the original: MLS state and cached texts stay encrypted with the local storage key held in Windows Credential Manager (`GhostChat.MlsStorageKey`), while account, conversation and device ids, public keys and timestamps are stored in the clear in both. It sits in the same per-user application-data folder and needs no protection beyond the original's; it only opens on the same Windows account with that key. Unlike the live database, it keeps whatever is later deleted until you delete the file. `docs/SECURE_VAULT.md` describes a separate opt-in SQLCipher vault that does not cover `ghostchat.sqlite`.
+
 ## Required before public release
 
 - Run a two-device MLS interoperability and restart/replay pass.
 - Validate LiveKit over trusted TLS with two real devices, reconnects, device changes, screen refresh, and removed-member behavior.
-- Validate installer upgrade, signed update download, migration rollback, and SmartScreen behavior on a clean Windows machine.
+- Validate installer upgrade, signed update download, restoring the automatic pre-upgrade backups with the previous build, and SmartScreen behavior on a clean Windows machine.
 - Verify `ghostchat://invite/<code>` from a browser with the installed app closed and already running; confirm sign-in gating, explicit join confirmation, expired/revoked links, and that the invite-code endpoint cannot add members to MLS-locked groups.
 - Review server environment, TLS proxy, TURN/LiveKit secrets, attachment storage, database backup, and report retention policy.
 - Obtain an independent protocol/security review before making a production end-to-end-encryption claim.

@@ -30,6 +30,14 @@ The MSI will be written below `target/release/bundle/msi`. The application and i
 6. In GhostChat on each computer, set the server address to the public `https://` URL. The WebSocket endpoint upgrades from HTTPS to WSS automatically.
 7. Back up SQLite using a SQLite-aware online backup tool, or stop the service cleanly before copying the database. Protect backups as readable private-message data.
 
+## Upgrading the server
+
+Back up before every upgrade. Migrations are one-way: there are no reverse migrations (several rebuild tables or change keys and constraints, and the desktop clients rebind their encrypted group storage at the same time), and an older server binary refuses to start on a database a newer one migrated, because SQLx stops when the database records migrations it does not know. Restoring a backup is the only way back.
+
+Builds after 4.0.51 back up automatically: before applying a migration numbered 0025 or higher to a database that already holds data, the server writes `<GHOSTCHAT_DATABASE>.pre-<first pending migration, four digits>.bak` in the same directory (for example `ghostchat.sqlite.pre-0033.bak`) with SQLite `VACUUM INTO`. An existing backup is not overwritten, a new database gets none, and the server exits with an error, without migrating, if the backup cannot be written (for example a full disk or a read-only directory). The backups are not rotated and contain the same private data as the database; protect them the same way and delete old ones once the upgrade is confirmed. 4.0.51 and earlier shipped without this backup, so a server already on 4.0.51 has passed migrations 0025-0032 and is backed up automatically only for later migrations.
+
+To go back: stop the service, move the current database and its `-wal` and `-shm` files aside, copy the `.bak` file to the `GHOSTCHAT_DATABASE` path, and start the older binary. Data written since the backup is lost. Run the same version on the server and the desktop apps.
+
 ## Environment
 
 `GHOSTCHAT_BIND` defaults to `0.0.0.0:38241`; use `127.0.0.1:38241` when the HTTPS reverse proxy runs on the same host. `GHOSTCHAT_DATABASE` defaults to `ghostchat.sqlite` in the process working directory; use an absolute path for deployment. `GHOSTCHAT_STUN_URLS` is a comma-separated list and defaults to Google's public STUN example. `GHOSTCHAT_TURN_URLS` is an optional comma-separated coturn URL list. Set `GHOSTCHAT_TURN_SHARED_SECRET` only on the GhostChat server; authenticated clients receive user-scoped, 12-hour TURN credentials. `GHOSTCHAT_LIVEKIT_URL`, `GHOSTCHAT_LIVEKIT_API_KEY`, and `GHOSTCHAT_LIVEKIT_API_SECRET` optionally enable group voice; only the GhostChat server signs short-lived, membership-checked LiveKit tokens. Group media passes through the configured SFU and is not end-to-end encrypted. `RUST_LOG` configures server logging. Request bodies and logs do not include authentication tokens.
@@ -38,4 +46,4 @@ See [server.env.example](../server.env.example) for placeholders. Do not place r
 
 ## Operational limits
 
-The server has health endpoint `GET /health`, SQLite WAL mode, versioned migrations, a five-second SQLite busy timeout, and graceful Ctrl+C shutdown. It does not include a TLS listener, clustered presence, replicated rate limits, automated backup rotation, metrics, or an operations dashboard. Use one server process per database.
+The server has health endpoint `GET /health`, SQLite WAL mode, versioned migrations, a five-second SQLite busy timeout, and graceful Ctrl+C shutdown. It does not include a TLS listener, clustered presence, replicated rate limits, scheduled backups or backup rotation (it only backs up before a migration), metrics, or an operations dashboard. Use one server process per database.

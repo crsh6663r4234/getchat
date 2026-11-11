@@ -4,6 +4,17 @@ The installed Windows app checks for updates when it starts, then every six hour
 
 Updates use Tauri's signed updater bundles. Keep the private signing key private and backed up: existing installations trust the public key embedded in the app, so replacing or losing the private key breaks future updates.
 
+## Back up before you update
+
+Updates cannot be undone by installing an older version: server migrations 0025 and later have no reverse migrations, an older server binary refuses to start on a database a newer one migrated, and an older desktop build cannot read the account-bound encrypted groups and text cache a newer one wrote. Restoring a backup taken before the update is the only way back. See "Upgrades are one-way" in [GHOSTCHAT_4_0_RELEASE_CANDIDATE.md](GHOSTCHAT_4_0_RELEASE_CANDIDATE.md) for why and for the restore steps.
+
+Builds after 4.0.51 take these backups automatically, next to the database they copy:
+
+- The server, and the desktop app's built-in server, write `<database>.pre-<first pending migration>.bak` (for example `ghostchat.sqlite.pre-0033.bak`) before applying a migration numbered 0025 or higher to a database that already holds data. They stop instead of migrating if the backup cannot be written.
+- The desktop app copies its local database once to `ghostchat.sqlite.pre-account-binding.bak` in `%APPDATA%\app.ghostchat.desktop\` before it first rebinds data stored by an earlier build, and changes nothing if the copy fails.
+
+4.0.51 and earlier shipped without these backups: an installation already on 4.0.51 has passed migrations 0025-0032 and gets automatic backups only for later migrations. Before updating, still copy the server database (stop the service or use a SQLite-aware backup) and, on each PC, the `%APPDATA%\app.ghostchat.desktop\` folder with GhostChat closed.
+
 ## GitHub releases
 
 The source and release workflow are published at [crsh6663r4234/getchat](https://github.com/crsh6663r4234/getchat).
