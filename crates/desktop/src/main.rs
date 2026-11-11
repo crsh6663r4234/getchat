@@ -455,6 +455,7 @@ async fn crypto_get_cached_text_state(
     conversation_id: String,
     sender_id: String,
     client_message_id: String,
+    payload: Option<String>,
 ) -> Result<crypto::CachedTextState, String> {
     crypto::get_cached_text_state(
         &state.crypto_db,
@@ -462,6 +463,7 @@ async fn crypto_get_cached_text_state(
         &conversation_id,
         &sender_id,
         &client_message_id,
+        payload.as_deref(),
     )
     .await
 }

@@ -473,7 +473,11 @@ async fn prepare_text_cache(db: &SqlitePool) -> Result<(), String> {
     .await
     .map_err(|_| error())?;
     // History rows this device can never decrypt (their epoch is behind the
-    // group's), so the client stops retrying them on every sync.
+    // group's), so the client stops retrying them on every sync. The epoch
+    // comes from the row's unauthenticated header, so a marker holds the
+    // SHA-256 of the payload it was written for and blocks only that payload.
+    // Markers from before the hash have an empty one (see
+    // `get_cached_text_state`).
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS ghostchat_crypto_undecryptable_rows (\
             user_id TEXT NOT NULL,\
@@ -481,12 +485,27 @@ async fn prepare_text_cache(db: &SqlitePool) -> Result<(), String> {
             sender_id TEXT NOT NULL,\
             client_message_id TEXT NOT NULL,\
             created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),\
+            payload_hash BLOB NOT NULL DEFAULT X'',\
             PRIMARY KEY(user_id,conversation_id,sender_id,client_message_id)\
         )",
     )
     .execute(&mut *transaction)
     .await
     .map_err(|_| error())?;
+    let marker_has_hash = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('ghostchat_crypto_undecryptable_rows') WHERE name='payload_hash')",
+    )
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(|_| error())?;
+    if marker_has_hash == 0 {
+        sqlx::query(
+            "ALTER TABLE ghostchat_crypto_undecryptable_rows ADD COLUMN payload_hash BLOB NOT NULL DEFAULT X''",
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(|_| error())?;
+    }
     if needs_rebuild {
         sqlx::query(
             "INSERT OR IGNORE INTO ghostchat_crypto_text_cache(user_id,conversation_id,sender_id,client_message_id,encrypted_content,created_at) \
@@ -2826,13 +2845,16 @@ pub struct CachedTextState {
 }
 
 /// The cached plaintext of a row, or whether the row was found to be
-/// permanently undecryptable on this device.
+/// permanently undecryptable on this device. With the row's `payload`, a
+/// marker counts only for the payload it was written for, so a later
+/// delivery of another payload for the same row is decoded normally.
 pub async fn get_cached_text_state(
     db: &SqlitePool,
     user_id: &str,
     conversation_id: &str,
     sender_id: &str,
     client_message_id: &str,
+    payload: Option<&str>,
 ) -> Result<CachedTextState, String> {
     let content =
         get_cached_sent_text(db, user_id, conversation_id, sender_id, client_message_id).await?;
@@ -2843,20 +2865,93 @@ pub async fn get_cached_text_state(
         });
     }
     let _operation = CRYPTO_OPERATION_LOCK.lock().await;
-    let marked = sqlx::query_scalar::<_, i64>(
-        "SELECT EXISTS(SELECT 1 FROM ghostchat_crypto_undecryptable_rows WHERE user_id=? AND conversation_id=? AND sender_id=? AND client_message_id=?)",
+    let error = || "GhostChat could not load the encrypted message cache.".to_string();
+    let user_id = normalized_uuid(user_id, "account")?;
+    let conversation_id = normalized_uuid(conversation_id, "conversation")?;
+    let sender_id = normalized_uuid(sender_id, "sender account")?;
+    let client_message_id = normalized_uuid(client_message_id, "message")?;
+    let marker_hash = sqlx::query_scalar::<_, Vec<u8>>(
+        "SELECT payload_hash FROM ghostchat_crypto_undecryptable_rows WHERE user_id=? AND conversation_id=? AND sender_id=? AND client_message_id=?",
     )
-    .bind(normalized_uuid(user_id, "account")?)
-    .bind(normalized_uuid(conversation_id, "conversation")?)
-    .bind(normalized_uuid(sender_id, "sender account")?)
-    .bind(normalized_uuid(client_message_id, "message")?)
-    .fetch_one(db)
+    .bind(&user_id)
+    .bind(&conversation_id)
+    .bind(&sender_id)
+    .bind(&client_message_id)
+    .fetch_optional(db)
     .await
-    .map_err(|_| "GhostChat could not load the encrypted message cache.".to_string())?;
+    .map_err(|_| error())?;
+    let undecryptable = match (marker_hash, payload) {
+        (None, _) => false,
+        (Some(_), None) => true,
+        (Some(marker_hash), Some(payload)) => {
+            let bytes = URL_SAFE_NO_PAD
+                .decode(payload.as_bytes())
+                .unwrap_or_default();
+            let payload_hash = Sha256::digest(&bytes).to_vec();
+            if !marker_hash.is_empty() {
+                marker_hash == payload_hash
+            } else {
+                // A marker from before markers held a hash: it was written
+                // because the row's payload named a past epoch. It keeps that
+                // effect for a payload that still does, now bound to it, and
+                // is dropped for one that does not.
+                let past =
+                    history_payload_is_past_epoch(db, &user_id, &conversation_id, &bytes).await?;
+                let query = if past {
+                    sqlx::query("UPDATE ghostchat_crypto_undecryptable_rows SET payload_hash=? WHERE user_id=? AND conversation_id=? AND sender_id=? AND client_message_id=?")
+                        .bind(payload_hash)
+                } else {
+                    sqlx::query("DELETE FROM ghostchat_crypto_undecryptable_rows WHERE user_id=? AND conversation_id=? AND sender_id=? AND client_message_id=?")
+                };
+                query
+                    .bind(&user_id)
+                    .bind(&conversation_id)
+                    .bind(&sender_id)
+                    .bind(&client_message_id)
+                    .execute(db)
+                    .await
+                    .map_err(|_| error())?;
+                past
+            }
+        }
+    };
     Ok(CachedTextState {
         content: None,
-        undecryptable: marked != 0,
+        undecryptable,
     })
+}
+
+/// Whether a history payload names an epoch that this device's group for the
+/// conversation has left: the condition a past-epoch marker records.
+async fn history_payload_is_past_epoch(
+    db: &SqlitePool,
+    user_id: &str,
+    conversation_id: &str,
+    bytes: &[u8],
+) -> Result<bool, String> {
+    let Ok(message) = MlsMessageIn::tls_deserialize_exact(bytes) else {
+        return Ok(false);
+    };
+    let Ok(protocol_message) = message.try_into_protocol_message() else {
+        return Ok(false);
+    };
+    let group_id = group_id_for_conversation(conversation_id);
+    if protocol_message.group_id().as_slice() != group_id.as_slice() {
+        return Ok(false);
+    }
+    let _storage_account = StorageAccountScope::enter(user_id);
+    adopt_legacy_group(db, user_id, conversation_id).await?;
+    let mut connection = db
+        .acquire()
+        .await
+        .map_err(|_| "GhostChat could not load the local MLS group state.".to_string())?;
+    let provider = DesktopMlsProvider {
+        crypto: RustCrypto::default(),
+        storage: SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *connection),
+    };
+    let group = MlsGroup::load(provider.storage(), &group_id)
+        .map_err(|_| "GhostChat could not load the local MLS group state.".to_string())?;
+    Ok(group.is_some_and(|group| protocol_message.epoch() < group.epoch()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3490,11 +3585,15 @@ async fn process_crypto_event_core(
     }
     if result.kind == "past_epoch" {
         if let (false, Some(client_message_id)) = (dry_run, client_message_id.as_deref()) {
-            sqlx::query("INSERT OR IGNORE INTO ghostchat_crypto_undecryptable_rows(user_id,conversation_id,sender_id,client_message_id) VALUES(?,?,?,?)")
+            sqlx::query(
+                "INSERT INTO ghostchat_crypto_undecryptable_rows(user_id,conversation_id,sender_id,client_message_id,payload_hash) VALUES(?,?,?,?,?) \
+                 ON CONFLICT(user_id,conversation_id,sender_id,client_message_id) DO UPDATE SET payload_hash=excluded.payload_hash",
+            )
                 .bind(&user_id)
                 .bind(&conversation_id)
                 .bind(&sender_id)
                 .bind(client_message_id)
+                .bind(Sha256::digest(&bytes).to_vec())
                 .execute(&mut *transaction)
                 .await
                 .map_err(|_| "GhostChat could not save the encrypted message cache.".to_string())?;
@@ -4712,9 +4811,16 @@ mod tests {
         )
         .await
         .unwrap();
-        let state = get_cached_text_state(&bob_db, &bob_id, &conversation_id, &mallory_id, &old_id)
-            .await
-            .unwrap();
+        let state = get_cached_text_state(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &mallory_id,
+            &old_id,
+            Some(&reused.payload),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             state.content, None,
             "a legacy row must not answer for another sender's message with the same id"
@@ -4813,9 +4919,16 @@ mod tests {
                 .as_deref(),
             Some("alice past")
         );
-        let state = get_cached_text_state(&bob_db, &bob_id, &conversation_id, &alice_id, &past_id)
-            .await
-            .unwrap();
+        let state = get_cached_text_state(
+            &bob_db,
+            &bob_id,
+            &conversation_id,
+            &alice_id,
+            &past_id,
+            Some(&past.payload),
+        )
+        .await
+        .unwrap();
         assert_eq!(state.content.as_deref(), Some("alice past"));
         assert!(!state.undecryptable);
     }
@@ -6510,7 +6623,7 @@ mod tests {
                 alice_id.clone(),
             );
             async move {
-                get_cached_text_state(&bob_db, &bob_id, &conversation_id, &alice_id, &id)
+                get_cached_text_state(&bob_db, &bob_id, &conversation_id, &alice_id, &id, None)
                     .await
                     .unwrap()
             }
@@ -6549,6 +6662,112 @@ mod tests {
         let cached = state(new_id).await;
         assert_eq!(cached.content.as_deref(), Some("new"));
         assert!(!cached.undecryptable);
+
+        // The marker is bound to the payload it was written for: the server
+        // first gives a row a past-epoch payload, then the real one.
+        let state_for = |id: String, payload: String| {
+            let (bob_db, bob_id, conversation_id, alice_id) = (
+                bob_db.clone(),
+                bob_id.clone(),
+                conversation_id.clone(),
+                alice_id.clone(),
+            );
+            async move {
+                get_cached_text_state(
+                    &bob_db,
+                    &bob_id,
+                    &conversation_id,
+                    &alice_id,
+                    &id,
+                    Some(&payload),
+                )
+                .await
+                .unwrap()
+            }
+        };
+        let later_id = Uuid::new_v4().to_string();
+        let later = encrypt_text(&alice_db, &alice_id, &conversation_id, &later_id, "later")
+            .await
+            .unwrap();
+        assert!(decode(later_id.clone(), old.payload.clone()).await.is_err());
+        assert!(
+            state_for(later_id.clone(), old.payload.clone())
+                .await
+                .undecryptable,
+            "the payload that was marked stays marked"
+        );
+        assert!(
+            !state_for(later_id.clone(), later.payload.clone())
+                .await
+                .undecryptable,
+            "a different payload for the same row is not marked"
+        );
+        let decoded = decode(later_id.clone(), later.payload.clone())
+            .await
+            .unwrap();
+        assert_eq!(decoded.content.as_deref(), Some("later"));
+        assert_eq!(
+            state_for(later_id, later.payload.clone())
+                .await
+                .content
+                .as_deref(),
+            Some("later")
+        );
+
+        // A marker written before markers held a payload hash keeps its
+        // effect for a payload that is still from a past epoch, and does not
+        // block a payload that is not.
+        let legacy_marker = |id: String| {
+            let (bob_db, bob_id, conversation_id, alice_id) = (
+                bob_db.clone(),
+                bob_id.clone(),
+                conversation_id.clone(),
+                alice_id.clone(),
+            );
+            async move {
+                sqlx::query("DROP TABLE ghostchat_crypto_undecryptable_rows")
+                    .execute(&bob_db)
+                    .await
+                    .unwrap();
+                sqlx::query("CREATE TABLE ghostchat_crypto_undecryptable_rows (user_id TEXT NOT NULL, conversation_id TEXT NOT NULL, sender_id TEXT NOT NULL, client_message_id TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), PRIMARY KEY(user_id,conversation_id,sender_id,client_message_id))")
+                    .execute(&bob_db)
+                    .await
+                    .unwrap();
+                sqlx::query("INSERT INTO ghostchat_crypto_undecryptable_rows(user_id,conversation_id,sender_id,client_message_id) VALUES(?,?,?,?)")
+                    .bind(&bob_id)
+                    .bind(&conversation_id)
+                    .bind(&alice_id)
+                    .bind(&id)
+                    .execute(&bob_db)
+                    .await
+                    .unwrap();
+            }
+        };
+        legacy_marker(old_id.clone()).await;
+        assert!(
+            state_for(old_id.clone(), old.payload.clone())
+                .await
+                .undecryptable
+        );
+        assert!(
+            state_for(old_id.clone(), old.payload.clone())
+                .await
+                .undecryptable,
+            "the migration is idempotent"
+        );
+        let honest_id = Uuid::new_v4().to_string();
+        let honest = encrypt_text(&alice_db, &alice_id, &conversation_id, &honest_id, "honest")
+            .await
+            .unwrap();
+        legacy_marker(honest_id.clone()).await;
+        assert!(
+            !state_for(honest_id.clone(), honest.payload.clone())
+                .await
+                .undecryptable,
+            "an old marker does not block a payload of the current epoch"
+        );
+        let decoded = decode(honest_id, honest.payload).await.unwrap();
+        assert_eq!(decoded.content.as_deref(), Some("honest"));
     }
 
     #[tokio::test(flavor = "multi_thread")]

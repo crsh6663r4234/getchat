@@ -1984,8 +1984,9 @@
       let reachedCached = false;
       for (const row of rows) {
         if (typeof row.content !== "string" || !row.content.startsWith("e2e1:") || !row.client_message_id || row.sender_id === state.user.id) continue;
-        // A cached row, or one already found undecryptable, is done.
-        const cache = await invoke("crypto_get_cached_text_state", { userId: state.user.id, conversationId, senderId: row.sender_id, clientMessageId: row.client_message_id });
+        // A cached row, or one already found undecryptable, is done. A marker
+        // counts only for the payload it was written for.
+        const cache = await invoke("crypto_get_cached_text_state", { userId: state.user.id, conversationId, senderId: row.sender_id, clientMessageId: row.client_message_id, payload: row.content.slice(5) });
         if (cache?.content != null || cache?.undecryptable) reachedCached = true;
         else pending.push(row);
       }
@@ -2543,7 +2544,7 @@
     if (inFlight) { try { return await inFlight; } catch {} }
     const task = (async () => {
       const cacheKey = { userId: state.user.id, conversationId: message.conversation_id, senderId: message.sender_id, clientMessageId: message.client_message_id };
-      const cache = await invoke("crypto_get_cached_text_state", cacheKey);
+      const cache = await invoke("crypto_get_cached_text_state", { ...cacheKey, payload: message.content.slice(5) });
       if (cache?.undecryptable) throw new Error(translate("This message could not be decrypted on this device."));
       let content = cache?.content ?? null;
       if (content == null && beforePendingCommits) {
