@@ -211,6 +211,10 @@
   Object.assign(trText, { "Preview": "Önizleme", "Open preview": "Önizlemeyi aç", "Shared image": "Paylaşılan görsel", "SHARED MEDIA": "PAYLAŞILAN MEDYA" });
   Object.assign(trText, { "Compact call view": "Kompakt arama görünümü", "Expand call view": "Arama görünümünü genişlet" });
   Object.assign(trText, { "Voice processing settings applied.": "Ses işleme ayarları uygulandı." });
+  // Calls through the GhostChat server (server media relay).
+  Object.assign(trText, {
+    "Call audio is paused. Click anywhere in GhostChat to turn it on.": "Arama sesi duraklatıldı. Açmak için GhostChat’te herhangi bir yere tıkla."
+  });
   Object.assign(trText, {
     "Online on this device": "Bu cihazda çevrimiçi",
     "Edit profile": "Profili düzenle",
@@ -3322,7 +3326,11 @@
   // (server-media-client.js) when TURN or LiveKit cannot be reached.
   function createServerMedia(options) {
     const url = activeBase().replace(/^http:/, "ws:").replace(/^https:/, "wss:");
-    return window.GhostChatServerMedia.create({ ...options, url: `${url}/v1/media/ws`, token: state.token });
+    return window.GhostChatServerMedia.create({
+      // A click anywhere resumes the relay's paused audio (server-media-client.js).
+      onAudioSuspended: () => toast("Call audio is paused. Click anywhere in GhostChat to turn it on.", true),
+      ...options, url: `${url}/v1/media/ws`, token: state.token,
+    });
   }
   function connectSocket() {
     if (state.socket) { try { state.socket.close(); } catch {} }

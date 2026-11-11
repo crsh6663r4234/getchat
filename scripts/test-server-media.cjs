@@ -201,6 +201,48 @@ async function run() {
     assert.equal(env.sockets.length, 0);
   }
 
+  // A suspended AudioContext plays nothing: the relay resumes it when the
+  // call starts, and on the next click or key press if Windows or the
+  // WebView refused (for example a call accepted from a notification).
+  {
+    const env = fixture();
+    const listeners = new Map();
+    env.window.addEventListener = (type, fn) => { listeners.set(type, fn); };
+    env.window.removeEventListener = (type, fn) => { if (listeners.get(type) === fn) listeners.delete(type); };
+    let allowResume = false; let resumes = 0;
+    env.context.AudioContext = class extends env.context.AudioContext {
+      state = 'suspended';
+      async resume() { resumes++; if (allowResume) { this.state = 'running'; this.onstatechange?.(); } }
+    };
+    const suspended = [];
+    const { media, connecting, socket } = await join(env, { onAudioSuspended: () => suspended.push(true) });
+    socket.open();
+    socket.text({ type: 'ready', user_id: 'me', peers: ['peer-b'] });
+    await connecting;
+    await new Promise(resolve => setImmediate(resolve));
+    assert(resumes >= 1, 'the relay resumes its AudioContext when the call starts');
+    assert.equal(suspended.length, 1, 'the app is told the call audio is paused');
+    for (const type of ['pointerdown', 'keydown']) assert(listeners.has(type), `a ${type} resumes the call audio`);
+    allowResume = true;
+    listeners.get('pointerdown')({ type: 'pointerdown' });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(env.contexts[0].state, 'running', 'the first user gesture resumes the call audio');
+    assert.equal(listeners.size, 0, 'the gesture listeners are removed once audio runs');
+    // Windows can suspend the context again (device change, sleep).
+    const before = resumes;
+    env.contexts[0].state = 'suspended'; env.contexts[0].onstatechange();
+    await new Promise(resolve => setImmediate(resolve));
+    assert(resumes > before, 'a context suspended mid-call is resumed again');
+    assert.equal(env.contexts[0].state, 'running');
+    assert.equal(typeof media.resumeAudio, 'function', 'callers can resume the audio from a click');
+    allowResume = false;
+    env.contexts[0].state = 'suspended';
+    await media.resumeAudio();
+    assert(listeners.has('pointerdown'));
+    media.close();
+    assert.equal(listeners.size, 0, 'closing the relay removes the gesture listeners');
+  }
+
   // Screen sharing over the relay: low frame rate VP8 through WebCodecs,
   // fragmented under the server's frame limit, reassembled per peer.
   {

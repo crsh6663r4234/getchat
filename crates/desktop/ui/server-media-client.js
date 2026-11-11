@@ -89,6 +89,7 @@
     const onPeers = options.onPeers || (() => {});
     const onClosed = options.onClosed || (() => {});
     const onPeerScreen = options.onPeerScreen || (() => {});
+    const onAudioSuspended = options.onAudioSuspended || (() => {});
     let socket = null;
     let context = null;
     let ready = false;
@@ -100,7 +101,37 @@
     let sequence = 0;
     let captureTimestamp = 0;
     let screen = null;
+    let gesturesArmed = false;
+    let suspendedReported = false;
     const peers = new Map();
+
+    // A suspended AudioContext plays and captures nothing. It is resumed
+    // when the relay starts (inside the call or accept flow, so the click's
+    // user activation applies); if Windows or the WebView still refuses
+    // (for example a call accepted from a notification), the next click or
+    // key press anywhere in the app resumes it.
+    const GESTURES = ["pointerdown", "keydown"];
+    function onGesture() { void resumeAudio(); }
+    function armGestures() {
+      if (gesturesArmed || typeof window.addEventListener !== "function") return;
+      gesturesArmed = true;
+      for (const type of GESTURES) window.addEventListener(type, onGesture, true);
+    }
+    function disarmGestures() {
+      if (!gesturesArmed) return;
+      gesturesArmed = false;
+      for (const type of GESTURES) window.removeEventListener?.(type, onGesture, true);
+    }
+    function audioRunning() {
+      return !context || context.state === "running" || context.state === "closed";
+    }
+    async function resumeAudio() {
+      if (closed || audioRunning()) { disarmGestures(); return; }
+      try { await context.resume?.(); } catch {}
+      if (closed || audioRunning()) { disarmGestures(); return; }
+      armGestures();
+      if (!suspendedReported) { suspendedReported = true; onAudioSuspended(); }
+    }
 
     function socketOpen() {
       return socket && socket.readyState === (WebSocket.OPEN ?? 1);
@@ -394,8 +425,12 @@
       }
       const ContextType = audioContextType();
       context = new ContextType({ latencyHint: "interactive", sampleRate: SAMPLE_RATE });
+      context.onstatechange = () => {
+        if (audioRunning()) disarmGestures();
+        else if (!closed) void resumeAudio();
+      };
       await context.audioWorklet.addModule(WORKLET_URL);
-      void context.resume?.()?.catch?.(() => {});
+      void resumeAudio();
       if (closed) throw new Error("The call ended.");
       return new Promise((resolve, reject) => {
         let settled = false;
@@ -449,6 +484,7 @@
     }
 
     function release() {
+      disarmGestures();
       if (screen) {
         try { void screen.reader.cancel?.(); } catch {}
         try { screen.encoder.close(); } catch {}
@@ -482,6 +518,7 @@
       setInputStream,
       setSending,
       setScreenTrack,
+      resumeAudio,
       close,
       peers: () => new Set(peers.keys()),
       isConnected: () => ready && !closed,
