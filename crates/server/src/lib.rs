@@ -43,6 +43,7 @@ use tokio::{
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 pub mod device_proof;
+mod media_relay;
 mod media_revocation;
 pub mod ratelimit;
 
@@ -67,6 +68,8 @@ pub struct AppState {
     distributed_limiter: Result<Option<ratelimit::RateLimiter>, ratelimit::LimitError>,
     /// GHOSTCHAT_REQUIRE_REDIS=1, read once at startup.
     require_redis: bool,
+    /// Call rooms of the server media relay (`/v1/media/ws`).
+    media_rooms: media_relay::Rooms,
 }
 
 #[derive(Clone)]
@@ -394,6 +397,7 @@ pub async fn build_state_with_attachment_dir(db: SqlitePool, attachment_dir: Pat
         },
         distributed_limiter: ratelimit::RateLimiter::from_env(),
         require_redis: env::var("GHOSTCHAT_REQUIRE_REDIS").as_deref() == Ok("1"),
+        media_rooms: media_relay::Rooms::default(),
     }
 }
 
@@ -570,6 +574,7 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/conversations/:id/voice-token", post(group_voice_token))
         .route("/v1/conversations/:id/share-token", post(ghost_share_token))
         .route("/v1/ws", get(websocket))
+        .route("/v1/media/ws", get(media_relay::websocket))
         .fallback(|| async { ApiError::not_found() })
         .layer(DefaultBodyLimit::max(96 * 1024))
         .layer(cors)
@@ -882,6 +887,8 @@ async fn voice_ice_servers(
     Ok(Json(serde_json::json!({
         "ice_servers": ice_servers,
         "turn_available": turn_available,
+        // Calls can always fall back to relaying media through this server.
+        "media_relay": true,
         "group_voice_available": state.voice.livekit_url.is_some()
             && state.voice.livekit_api_key.is_some()
             && state.voice.livekit_api_secret.is_some()
@@ -2026,6 +2033,7 @@ async fn delete_account(
         .await
         .map_err(|_| ApiError::internal())?;
     tx.commit().await.map_err(|_| ApiError::internal())?;
+    state.media_rooms.authorization_changed();
     for attachment_id in attachment_ids {
         let path = state.attachment_dir.join(format!("{attachment_id}.blob"));
         let _ = tokio::fs::remove_file(path).await;
@@ -2172,6 +2180,7 @@ async fn block_user(
         .await
         .map_err(|_| ApiError::internal())?;
     tx.commit().await.map_err(|_| ApiError::internal())?;
+    state.media_rooms.authorization_changed();
     let _ = state.events.send(ServerEvent {
         recipients: vec![user.id],
         event: serde_json::json!({"type":"user_block_updated","user_id":target_id}),
@@ -3679,6 +3688,7 @@ async fn commit_encrypted_group_leave(
     media_revocation::enqueue(&mut tx, &id, &target_id).await?;
     advance_crypto_commit_seq(&mut tx, &id, built_on_commit_seq).await?;
     tx.commit().await.map_err(|_| ApiError::internal())?;
+    state.media_rooms.authorization_changed();
 
     if let Err(error) = remove_livekit_participant(&state, &id, &target_id).await {
         tracing::warn!(conversation_id = %id, account_id = %target_id, %error, "could not remove group member from LiveKit");
@@ -3937,6 +3947,7 @@ async fn remove_encrypted_group_member(
     }
     advance_crypto_commit_seq(&mut tx, &id, built_on_commit_seq).await?;
     tx.commit().await.map_err(|_| ApiError::internal())?;
+    state.media_rooms.authorization_changed();
 
     if !deleted_target {
         if let Err(error) = remove_livekit_participant(&state, &id, &target_id).await {
@@ -4015,6 +4026,7 @@ async fn remove_group_member(
         .map_err(|_| ApiError::internal())?;
     media_revocation::enqueue(&mut tx, &id, &target_id).await?;
     tx.commit().await.map_err(|_| ApiError::internal())?;
+    state.media_rooms.authorization_changed();
     if let Err(error) = remove_livekit_participant(&state, &id, &target_id).await {
         tracing::warn!(conversation_id = %id, account_id = %target_id, %error, "could not remove group member from LiveKit");
     }
@@ -8963,6 +8975,273 @@ mod tests {
             "invisible and offline look the same to the caller"
         );
         assert!(observed[0].is_empty());
+    }
+
+    // Client for the server media relay (`/v1/media/ws`): binary frames of
+    // any length, and a bounded wait for the next frame.
+    struct MediaSocket(tokio::net::TcpStream);
+
+    impl MediaSocket {
+        /// Connect and say hello; returns the socket and the server's first
+        /// text reply (`ready` or `error`).
+        async fn join(base: &str, token: &str, conversation: &str) -> (Self, serde_json::Value) {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let addr = base.trim_start_matches("http://");
+            let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let request = format!(
+                "GET /v1/media/ws HTTP/1.1\r\nHost: {addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+            );
+            stream.write_all(request.as_bytes()).await.unwrap();
+            let mut response = Vec::new();
+            while !response.ends_with(b"\r\n\r\n") {
+                let mut byte = [0u8; 1];
+                stream.read_exact(&mut byte).await.unwrap();
+                response.push(byte[0]);
+            }
+            assert!(
+                response.starts_with(b"HTTP/1.1 101"),
+                "{}",
+                String::from_utf8_lossy(&response)
+            );
+            let mut socket = Self(stream);
+            let hello = serde_json::json!({"token": token, "conversation_id": conversation});
+            socket.send(1, hello.to_string().as_bytes()).await;
+            let reply = match socket.next(Duration::from_secs(3)).await {
+                Some((1, text)) => serde_json::from_slice(&text).unwrap(),
+                other => panic!("no reply to the hello: {other:?}"),
+            };
+            (socket, reply)
+        }
+
+        async fn send(&mut self, opcode: u8, payload: &[u8]) {
+            use tokio::io::AsyncWriteExt;
+            let mask = [0x12u8, 0x34, 0x56, 0x78];
+            let mut frame = vec![0x80 | opcode];
+            if payload.len() < 126 {
+                frame.push(0x80 | payload.len() as u8);
+            } else if payload.len() <= usize::from(u16::MAX) {
+                frame.push(0x80 | 126);
+                frame.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+            } else {
+                frame.push(0x80 | 127);
+                frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+            }
+            frame.extend_from_slice(&mask);
+            frame.extend(payload.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+            let _ = self.0.write_all(&frame).await;
+        }
+
+        /// The next frame (opcode, payload) within `wait`; None on timeout
+        /// or a closed connection.
+        async fn next(&mut self, wait: Duration) -> Option<(u8, Vec<u8>)> {
+            use tokio::io::AsyncReadExt;
+            tokio::time::timeout(wait, async {
+                let mut head = [0u8; 2];
+                self.0.read_exact(&mut head).await.ok()?;
+                let mut len = u64::from(head[1] & 0x7f);
+                if len == 126 {
+                    let mut ext = [0u8; 2];
+                    self.0.read_exact(&mut ext).await.ok()?;
+                    len = u64::from(u16::from_be_bytes(ext));
+                } else if len == 127 {
+                    let mut ext = [0u8; 8];
+                    self.0.read_exact(&mut ext).await.ok()?;
+                    len = u64::from_be_bytes(ext);
+                }
+                let mut payload = vec![0u8; len as usize];
+                self.0.read_exact(&mut payload).await.ok()?;
+                Some((head[0] & 0x0f, payload))
+            })
+            .await
+            .ok()
+            .flatten()
+        }
+
+        /// The next binary frame within `wait`, skipping text events; None
+        /// on timeout or close.
+        async fn next_media(&mut self, wait: Duration) -> Option<Vec<u8>> {
+            let deadline = tokio::time::Instant::now() + wait;
+            loop {
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                match self.next(left).await? {
+                    (2, payload) => return Some(payload),
+                    (8, _) => return None,
+                    _ => continue,
+                }
+            }
+        }
+    }
+
+    fn relayed_from(sender: &str, payload: &[u8]) -> Vec<u8> {
+        let mut frame = vec![sender.len() as u8];
+        frame.extend_from_slice(sender.as_bytes());
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    #[tokio::test]
+    async fn media_relay_refuses_bad_sessions_and_non_members() {
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let mallory = app.user("mallory").await;
+        let direct = app.direct(&alice, &bob).await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let (_, reply) = MediaSocket::join(&app.base, "not-a-session", &direct).await;
+        assert_eq!(reply["code"], "unauthorized");
+        for room in [&direct, &group] {
+            let (_, reply) = MediaSocket::join(&app.base, &mallory.token, room).await;
+            assert_eq!(
+                reply["code"], "forbidden",
+                "a non-member cannot join {room}"
+            );
+        }
+        let (_, reply) = MediaSocket::join(&app.base, &bob.token, &group).await;
+        assert_eq!(reply["type"], "ready");
+        let reply: serde_json::Value = app
+            .request(reqwest::Method::GET, "/v1/voice/ice", &alice)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            reply["media_relay"], true,
+            "clients learn that the relay exists"
+        );
+    }
+
+    #[tokio::test]
+    async fn media_relay_forwards_frames_between_direct_and_group_members() {
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let direct = app.direct(&alice, &bob).await;
+        let (mut a, ready) = MediaSocket::join(&app.base, &alice.token, &direct).await;
+        assert_eq!(ready["peers"], serde_json::json!([]));
+        let (mut b, ready) = MediaSocket::join(&app.base, &bob.token, &direct).await;
+        assert_eq!(ready["peers"], serde_json::json!([alice.id]));
+        let joined = a.next(Duration::from_secs(2)).await.unwrap();
+        let joined: serde_json::Value = serde_json::from_slice(&joined.1).unwrap();
+        assert_eq!(joined["type"], "peer_joined");
+        assert_eq!(joined["user_id"], bob.id);
+        a.send(2, b"\x01opus-a").await;
+        assert_eq!(
+            b.next_media(Duration::from_secs(2)).await,
+            Some(relayed_from(&alice.id, b"\x01opus-a"))
+        );
+        b.send(2, b"\x01opus-b").await;
+        assert_eq!(
+            a.next_media(Duration::from_secs(2)).await,
+            Some(relayed_from(&bob.id, b"\x01opus-b"))
+        );
+        assert_eq!(
+            b.next_media(Duration::from_millis(200)).await,
+            None,
+            "no echo"
+        );
+
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let (mut ga, _) = MediaSocket::join(&app.base, &alice.token, &group).await;
+        let (mut gb, _) = MediaSocket::join(&app.base, &bob.token, &group).await;
+        let (mut gc, _) = MediaSocket::join(&app.base, &carol.token, &group).await;
+        gc.send(2, b"\x01carol").await;
+        for socket in [&mut ga, &mut gb] {
+            assert_eq!(
+                socket.next_media(Duration::from_secs(2)).await,
+                Some(relayed_from(&carol.id, b"\x01carol"))
+            );
+        }
+        // Frames of the group room never leak into the direct room.
+        assert_eq!(a.next_media(Duration::from_millis(200)).await, None);
+    }
+
+    #[tokio::test]
+    async fn media_relay_drops_frames_once_a_peer_is_blocked_or_removed() {
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let dave = app.user("dave").await;
+        let direct = app.direct(&alice, &bob).await;
+        let (mut a, _) = MediaSocket::join(&app.base, &alice.token, &direct).await;
+        let (mut b, _) = MediaSocket::join(&app.base, &bob.token, &direct).await;
+        a.send(2, b"\x01before").await;
+        assert!(b.next_media(Duration::from_secs(2)).await.is_some());
+        app.block(&bob, &alice).await;
+        for _ in 0..5 {
+            a.send(2, b"\x01after-block").await;
+        }
+        assert_eq!(
+            b.next_media(Duration::from_millis(500)).await,
+            None,
+            "the blocking user hears nothing more"
+        );
+        let (_, reply) = MediaSocket::join(&app.base, &alice.token, &direct).await;
+        assert_eq!(reply["code"], "forbidden", "a blocked pair cannot rejoin");
+
+        // A removed group member neither receives nor sends.
+        let group = app.group(&alice, &[&carol, &dave]).await;
+        let (mut ga, _) = MediaSocket::join(&app.base, &alice.token, &group).await;
+        let (mut gc, _) = MediaSocket::join(&app.base, &carol.token, &group).await;
+        gc.send(2, b"\x01still-member").await;
+        assert!(ga.next_media(Duration::from_secs(2)).await.is_some());
+        let status = app
+            .request(
+                reqwest::Method::DELETE,
+                &format!("/v1/conversations/{group}/members/{}", carol.id),
+                &alice,
+            )
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert!(status.is_success(), "removing carol returned {status}");
+        ga.send(2, b"\x01after-removal").await;
+        assert_eq!(gc.next_media(Duration::from_millis(500)).await, None);
+        gc.send(2, b"\x01from-removed").await;
+        assert_eq!(ga.next_media(Duration::from_millis(500)).await, None);
+    }
+
+    #[tokio::test]
+    async fn media_relay_limits_frame_size_and_rate() {
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let direct = app.direct(&alice, &bob).await;
+        let (mut a, _) = MediaSocket::join(&app.base, &alice.token, &direct).await;
+        let (mut b, _) = MediaSocket::join(&app.base, &bob.token, &direct).await;
+        // A flood far above the frame rate: only about the burst arrives.
+        let reader = tokio::spawn(async move {
+            let mut received = 0;
+            while b.next_media(Duration::from_millis(700)).await.is_some() {
+                received += 1;
+            }
+            received
+        });
+        for _ in 0..1000 {
+            a.send(2, b"\x01x").await;
+        }
+        let received = reader.await.unwrap();
+        assert!(
+            (1..400).contains(&received),
+            "{received} of 1000 flooded frames were forwarded"
+        );
+        // An oversized frame is never forwarded; the connection is closed.
+        let (mut b, _) = MediaSocket::join(&app.base, &bob.token, &direct).await;
+        a.send(2, &vec![1u8; media_relay::MAX_FRAME_BYTES + 1])
+            .await;
+        assert_eq!(b.next_media(Duration::from_millis(500)).await, None);
+        loop {
+            match a.next(Duration::from_secs(2)).await {
+                None | Some((8, _)) => break,
+                Some((2, _)) => panic!("the oversized sender still receives media"),
+                Some(_) => continue,
+            }
+        }
     }
 
     #[tokio::test]
