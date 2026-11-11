@@ -120,6 +120,8 @@ pub trait Swap: Send + Sync {
     fn healthy(&self, version: &str) -> impl Future<Output = bool> + Send;
     /// Stops the started process after a failed health check.
     fn stop_started(&self) -> impl Future<Output = ()> + Send;
+    /// The highest migration recorded in the database.
+    fn schema_version(&self) -> impl Future<Output = Result<i64, String>> + Send;
 }
 
 /// The files of one swap, all next to the running exe.
@@ -156,6 +158,12 @@ pub enum Outcome {
     Rejected(String),
     /// The swap failed and the old exe is back in place and serving.
     RolledBack { version: String, reason: String },
+    /// The new exe failed after it migrated the database, which the old exe
+    /// cannot open again. The new exe stays in place (the old one is kept as
+    /// `.old`), this server does not listen again, and the process exits so
+    /// that the new exe can be started again (by a service manager or by
+    /// hand) or the old one restored together with the database backup.
+    KeptNew { version: String, reason: String },
     /// The new exe runs and answered its health check; this process exits.
     Installed(String),
 }
@@ -204,6 +212,19 @@ pub async fn try_update<R: Releases, F: Files, S: Swap>(
     }
     tracing::info!("self-update: stopping this server to swap the exe");
     swap.stop_serving().await;
+    // Read with nothing serving, so only the new exe can change it.
+    let schema_before = match swap.schema_version().await {
+        Ok(version) => version,
+        Err(reason) => {
+            discard_download();
+            swap.resume_serving().await;
+            tracing::error!(%latest, %reason, "self-update: could not read the database schema; not updating");
+            return Outcome::RolledBack {
+                version: latest,
+                reason: format!("could not read the database schema: {reason}"),
+            };
+        }
+    };
     let rolled_back = |reason: String| {
         tracing::error!(%latest, %reason, "self-update: rolled back to the running version");
         Outcome::RolledBack {
@@ -238,6 +259,27 @@ pub async fn try_update<R: Releases, F: Files, S: Swap>(
         }
         Err(reason) => format!("could not start the new server: {reason}"),
     };
+    let schema_after = swap.schema_version().await;
+    if schema_after
+        .as_ref()
+        .map_or(true, |after| *after != schema_before)
+    {
+        tracing::error!(
+            %latest,
+            %reason,
+            schema_before,
+            schema_after = ?schema_after,
+            exe = %paths.exe.display(),
+            old = %paths.old.display(),
+            "self-update: the new server failed after it migrated the database, which the old \
+             server cannot open; keeping the new exe. Start it again, or restore the old exe \
+             (the .old file) together with the database backup <database>.pre-update.bak"
+        );
+        return Outcome::KeptNew {
+            version: latest,
+            reason,
+        };
+    }
     log_restore(&files.rename(&paths.old, &paths.exe));
     swap.resume_serving().await;
     rolled_back(reason)
@@ -563,6 +605,13 @@ impl Swap for ProcessSwap {
         false
     }
 
+    async fn schema_version(&self) -> Result<i64, String> {
+        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(version), 0) FROM _sqlx_migrations")
+            .fetch_one(&self.db)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     async fn stop_started(&self) {
         let child = self.child.lock().unwrap_or_else(|e| e.into_inner()).take();
         if let Some(mut child) = child {
@@ -627,6 +676,12 @@ pub fn start(
                 }
                 Outcome::RolledBack { version, .. } => {
                     failed.insert(version);
+                }
+                Outcome::KeptNew { version, .. } => {
+                    // Exits non-zero, so a service manager restarts the exe,
+                    // which is now the new version.
+                    tracing::error!(%version, "self-update: exiting; the new server exe is in place");
+                    std::process::exit(1);
                 }
                 Outcome::UpToDate(_) | Outcome::Rejected(_) => {}
             }
@@ -725,6 +780,9 @@ mod tests {
     struct FakeSwap {
         unhealthy: bool,
         backup_fails: bool,
+        /// The started exe applies a migration before it fails its check.
+        migrates: bool,
+        started: Mutex<bool>,
         calls: Mutex<Vec<String>>,
     }
 
@@ -755,7 +813,15 @@ mod tests {
         fn start(&self, exe: &Path) -> Result<(), String> {
             let running = std::fs::read(exe).unwrap();
             self.record(format!("start:{}", String::from_utf8_lossy(&running)));
+            *self.started.lock().unwrap() = true;
             Ok(())
+        }
+        async fn schema_version(&self) -> Result<i64, String> {
+            Ok(if self.migrates && *self.started.lock().unwrap() {
+                33
+            } else {
+                32
+            })
         }
         async fn healthy(&self, version: &str) -> bool {
             self.record(format!("healthy:{version}"));
@@ -929,6 +995,37 @@ mod tests {
         );
         assert_eq!(std::fs::read(&paths.exe).unwrap(), OLD_BUILD);
         assert_eq!(files_in(&paths), vec![SERVER_ASSET.to_owned()]);
+    }
+
+    /// The old exe refuses to start on a database a newer one migrated, so
+    /// it must not be put back once the new exe applied a migration.
+    #[tokio::test]
+    async fn a_new_exe_that_migrated_the_database_is_kept_instead_of_rolled_back() {
+        let paths = running_exe();
+        let releases = FakeReleases::new("9.9.9", PAYLOAD, signature_of_payload(&test_key(9)));
+        let swap = FakeSwap {
+            unhealthy: true,
+            migrates: true,
+            ..FakeSwap::default()
+        };
+        let outcome = attempt(&releases, &swap, &paths).await;
+        assert!(
+            matches!(&outcome, Outcome::KeptNew { version, .. } if version == "9.9.9"),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            swap.calls(),
+            vec![
+                "backup".to_owned(),
+                "stop_serving".into(),
+                format!("start:{}", String::from_utf8_lossy(PAYLOAD)),
+                "healthy:9.9.9".into(),
+                "stop_started".into(),
+            ],
+            "the old server must not serve the migrated database"
+        );
+        assert_eq!(std::fs::read(&paths.exe).unwrap(), PAYLOAD);
+        assert_eq!(std::fs::read(&paths.old).unwrap(), OLD_BUILD);
     }
 
     #[tokio::test]
