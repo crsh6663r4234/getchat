@@ -435,7 +435,10 @@ test('a safety copy that could not be written pauses encrypted chats with its ow
 const SAFETY_COPY_FAILURE = 'Encrypted chats are paused because GhostChat could not write a safety copy of its local data before upgrading it. Free some disk space, then restart GhostChat.';
 const SAFETY_COPY_FAILURE_TR = 'Yükseltmeden önce yerel verilerin güvenlik kopyası yazılamadığı için şifreli sohbetler duraklatıldı. Diskte yer aç, ardından GhostChat’i yeniden başlat.';
 
-const ID_IN_USE = { status: 409, body: { error: 'This message ID is already used in this conversation.' } };
+const ID_IN_USE_MESSAGE = 'This message ID is already used in this conversation.';
+const ID_IN_USE = { status: 409, body: { error: ID_IN_USE_MESSAGE, code: 'client_message_id_in_use' } };
+// A server from before the code existed answers the same refusal without one.
+const ID_IN_USE_LEGACY = { status: 409, body: { error: ID_IN_USE_MESSAGE } };
 const STALE_COMMIT = { status: 409, body: { error: 'The encrypted group changed after this message was encrypted. Sync the group and send it again.', code: 'stale_commit_seq' } };
 function collisionChat({ encrypted, refusals, extraHooks = {} }) {
   let refused = 0;
@@ -460,6 +463,18 @@ test('a client message id another sender already used is replaced once and the m
       assert.deepEqual(ids, [posts[0].client_message_id, posts[1].client_message_id], 'the text is encrypted again for the new id');
     }
   }
+});
+
+test('a codeless id-in-use 409 from an older server is replaced once as well', async () => {
+  const app = await collisionChat({ encrypted: true, refusals: [ID_IN_USE_LEGACY] });
+  const posts = messagePosts(app);
+  assert.equal(posts.length, 2);
+  assert.notEqual(posts[1].client_message_id, posts[0].client_message_id);
+});
+
+test('a 409 with another code is not treated as an id collision', async () => {
+  const app = await collisionChat({ encrypted: false, refusals: [{ status: 409, body: { error: 'other', code: 'something_else' } }] });
+  assert.equal(messagePosts(app).length, 1, 'no regenerated id for an unrelated conflict');
 });
 
 test('a client message id refused twice is reported and not retried again', async () => {

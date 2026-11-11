@@ -2977,10 +2977,13 @@
   // The server answers 409 to a send for two reasons. A stale commit sequence
   // carries code "stale_commit_seq" and is the encrypted group's own resync
   // path. The same client message id used by another sender in the conversation
-  // has no code: it can never succeed under that id, so the message is sent
-  // again once under a new id instead of being retried.
+  // is code "client_message_id_in_use": it can never succeed under that id, so
+  // the message is sent again once under a new id instead of being retried.
+  // A server older than that code (4.0.52 before it) answers the same 409
+  // without any code; that is accepted too, a stale commit always has its own.
   function isClientIdCollision(error) {
-    return error?.status === 409 && error.appError === true && !error.code;
+    if (error?.status !== 409 || error.appError !== true) return false;
+    return error.code === "client_message_id_in_use" || !error.code;
   }
   const CLIENT_ID_REFUSED = "The server refused this message's ID twice, so it was not sent. Try sending it again.";
   async function retryPendingEncryptedMessage(conversation) {

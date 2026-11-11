@@ -5613,7 +5613,10 @@ async fn send_message(
     tx.commit().await.map_err(|_| ApiError::internal())?;
     let message = sqlx::query_as::<_, MessageRow>("SELECT m.rowid AS sequence,m.id,m.conversation_id,m.sender_id,u.display_name AS sender_name,u.avatar_data AS sender_avatar,m.client_message_id,m.content,m.created_at,m.edited_at,m.pinned_at,m.reply_to_id,(SELECT r.content FROM messages r WHERE r.id=m.reply_to_id) AS reply_to_content,(SELECT u.display_name FROM messages r JOIN users u ON u.id=r.sender_id WHERE r.id=m.reply_to_id) AS reply_to_sender FROM messages m JOIN users u ON u.id=m.sender_id WHERE m.conversation_id=? AND m.sender_id=? AND m.client_message_id=?")
         .bind(&conversation_id).bind(&user.id).bind(&body.client_message_id).fetch_optional(&state.db).await.map_err(|_| ApiError::internal())?
-        .ok_or_else(|| ApiError::conflict("This message ID is already used in this conversation."));
+        .ok_or_else(|| {
+            ApiError::conflict("This message ID is already used in this conversation.")
+                .with_code("client_message_id_in_use")
+        });
     // Nothing was stored and the sender has no earlier row of this id (a
     // retry of a stored message is answered above whatever it carries).
     let message = match message {
@@ -7691,8 +7694,14 @@ mod tests {
 
         // Bob reuses Alice's client id in the same conversation: refused, so
         // no reader can mistake his message for hers.
-        let status = send(&bob, &direct, "imposter").await.unwrap().status();
-        assert_eq!(status, StatusCode::CONFLICT);
+        let refused = send(&bob, &direct, "imposter").await.unwrap();
+        assert_eq!(refused.status(), StatusCode::CONFLICT);
+        let body: serde_json::Value = refused.json().await.unwrap();
+        assert_eq!(body["code"], "client_message_id_in_use", "{body}");
+        assert_eq!(
+            body["error"],
+            "This message ID is already used in this conversation."
+        );
         assert_eq!(count().await.unwrap(), 1);
 
         // Alice's retry still returns her existing row.
