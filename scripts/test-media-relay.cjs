@@ -919,6 +919,38 @@ async function run() {
     assert.equal(fixture.group.getState().status, 'idle');
   }
   {
+    // A dropped watch survives an outage: reconnects back off and keep
+    // trying until the relay answers again.
+    let failing = false;
+    const watch = fakeServerMedia({ connect: async () => { if (failing) throw new Error('GhostChat could not reach the call relay on the server.'); } });
+    const fixture = relayGroupFixture({ watchServerMedia: watch.factory });
+    await fixture.group.join({ id: 'group' });
+    await new Promise(resolve => setImmediate(resolve));
+    const pending = () => fixture.timers.filter(timer => !timer.cleared && !timer.fired && timer.ms > 0);
+    const fire = timer => { timer.fired = true; timer.fn(); };
+    failing = true;
+    watch.instances[0].closed = true;
+    watch.instances[0].options.onClosed('dropped');
+    const delays = [];
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const [retry] = pending();
+      assert(retry, `reconnect attempt ${attempt + 1} is scheduled`);
+      delays.push(retry.ms);
+      fire(retry);
+      for (let index = 0; index < 3; index++) await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.equal(watch.instances.length, 5, 'each attempt opens a new watch');
+    assert(delays.every((ms, index) => index === 0 || ms > delays[index - 1] || ms === 30_000), `reconnects back off (${delays})`);
+    failing = false;
+    fire(pending()[0]);
+    for (let index = 0; index < 3; index++) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(pending().length, 0, 'a watch that connects again stops retrying');
+    watch.instances.at(-1).options.onPeerActive('b');
+    for (let index = 0; index < 5; index++) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(fixture.group.getState().mediaPath, 'server', 'the reconnected watch still makes this member follow');
+    await fixture.group.leave();
+  }
+  {
     // An older server without the relay refuses the watch: no retry loop.
     const watch = fakeServerMedia({ connect: async () => { throw new Error('GhostChat could not reach the call relay on the server.'); } });
     const fixture = relayGroupFixture({ watchServerMedia: watch.factory });

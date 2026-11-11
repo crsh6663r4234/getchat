@@ -71,6 +71,27 @@ pub struct AppState {
     require_redis: bool,
     /// Call rooms of the server media relay (`/v1/media/ws`).
     media_rooms: media_relay::Rooms,
+    /// WebSocket keepalive for `/v1/ws` and `/v1/media/ws`.
+    keepalive: Keepalive,
+}
+
+/// Server-side WebSocket keepalive. Tunnels such as Cloudflare close a
+/// WebSocket that carries nothing for about 100 s, so the server pings every
+/// `interval`, and closes a socket that has sent nothing (not even a pong)
+/// for `timeout`.
+#[derive(Clone, Copy, Debug)]
+struct Keepalive {
+    interval: Duration,
+    timeout: Duration,
+}
+
+impl Default for Keepalive {
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_secs(30),
+            timeout: Duration::from_secs(90),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -424,6 +445,7 @@ pub async fn build_state_with_attachment_dir(db: SqlitePool, attachment_dir: Pat
         distributed_limiter: ratelimit::RateLimiter::from_env(),
         require_redis: env::var("GHOSTCHAT_REQUIRE_REDIS").as_deref() == Ok("1"),
         media_rooms: media_relay::Rooms::default(),
+        keepalive: Keepalive::default(),
     }
 }
 
@@ -6975,8 +6997,18 @@ async fn websocket_session(mut socket: WebSocket, state: AppState) {
     }
     let mut session_check = tokio::time::interval(Duration::from_secs(15));
     session_check.tick().await;
+    let mut keepalive = tokio::time::interval(state.keepalive.interval);
+    keepalive.tick().await;
+    let mut last_heard = Instant::now();
     loop {
         tokio::select! {
+            _ = keepalive.tick() => {
+                if last_heard.elapsed() >= state.keepalive.timeout
+                    || socket.send(WsMessage::Ping(Vec::new())).await.is_err()
+                {
+                    break;
+                }
+            }
             _ = session_check.tick() => {
                 let active = sqlx::query_scalar::<_, i64>(
                     "SELECT EXISTS(SELECT 1 FROM sessions WHERE token_hash=? AND datetime(expires_at)>datetime('now'))",
@@ -6994,8 +7026,13 @@ async fn websocket_session(mut socket: WebSocket, state: AppState) {
             incoming = socket.recv() => match incoming {
                 Some(Ok(WsMessage::Close(_))) => break,
                 None | Some(Err(_)) => break,
-                Some(Ok(WsMessage::Ping(bytes))) => if socket.send(WsMessage::Pong(bytes)).await.is_err() { break; },
+                Some(Ok(WsMessage::Pong(_))) => last_heard = Instant::now(),
+                Some(Ok(WsMessage::Ping(bytes))) => {
+                    last_heard = Instant::now();
+                    if socket.send(WsMessage::Pong(bytes)).await.is_err() { break; }
+                },
                 Some(Ok(WsMessage::Text(text))) => {
+                    last_heard = Instant::now();
                     relay_typing_signal(&state, &user, &text).await;
                     relay_voice_signal(&state, &user, &text).await;
                 },
@@ -7289,6 +7326,15 @@ mod tests {
         }
 
         async fn configured(require_redis: bool) -> Self {
+            Self::build(require_redis, Keepalive::default()).await
+        }
+
+        /// A server whose WebSocket keepalive uses the given (short) timings.
+        async fn with_keepalive(keepalive: Keepalive) -> Self {
+            Self::build(false, keepalive).await
+        }
+
+        async fn build(require_redis: bool, keepalive: Keepalive) -> Self {
             let dir = std::env::temp_dir().join(format!("ghostchat-route-{}", Uuid::new_v4()));
             std::fs::create_dir_all(&dir).unwrap();
             let db = open_database(&dir.join("db.sqlite").to_string_lossy())
@@ -7298,6 +7344,7 @@ mod tests {
             // Do not inherit the developer's shell: no Redis admission, no
             // TURN and no LiveKit, whatever GHOSTCHAT_* variables are set.
             state.require_redis = require_redis;
+            state.keepalive = keepalive;
             state.distributed_limiter = Ok(None);
             state.voice = VoiceServerConfig {
                 stun_urls: vec!["stun:stun.l.google.com:19302".into()],
@@ -9204,11 +9251,23 @@ mod tests {
         /// Connect and say hello; returns the socket and the server's first
         /// text reply (`ready` or `error`).
         async fn join(base: &str, token: &str, conversation: &str) -> (Self, serde_json::Value) {
+            let mut socket = Self::upgrade(base, "/v1/media/ws").await;
+            let hello = serde_json::json!({"token": token, "conversation_id": conversation});
+            socket.send(1, hello.to_string().as_bytes()).await;
+            let reply = match socket.next(Duration::from_secs(3)).await {
+                Some((1, text)) => serde_json::from_slice(&text).unwrap(),
+                other => panic!("no reply to the hello: {other:?}"),
+            };
+            (socket, reply)
+        }
+
+        /// Open a WebSocket on `path` without saying anything yet.
+        async fn upgrade(base: &str, path: &str) -> Self {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let addr = base.trim_start_matches("http://");
             let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
             let request = format!(
-                "GET /v1/media/ws HTTP/1.1\r\nHost: {addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+                "GET {path} HTTP/1.1\r\nHost: {addr}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
             );
             stream.write_all(request.as_bytes()).await.unwrap();
             let mut response = Vec::new();
@@ -9222,14 +9281,7 @@ mod tests {
                 "{}",
                 String::from_utf8_lossy(&response)
             );
-            let mut socket = Self(stream);
-            let hello = serde_json::json!({"token": token, "conversation_id": conversation});
-            socket.send(1, hello.to_string().as_bytes()).await;
-            let reply = match socket.next(Duration::from_secs(3)).await {
-                Some((1, text)) => serde_json::from_slice(&text).unwrap(),
-                other => panic!("no reply to the hello: {other:?}"),
-            };
-            (socket, reply)
+            Self(stream)
         }
 
         async fn send(&mut self, opcode: u8, payload: &[u8]) {
@@ -9423,6 +9475,79 @@ mod tests {
         assert_eq!(gc.next_media(Duration::from_millis(500)).await, None);
         gc.send(2, b"\x01from-removed").await;
         assert_eq!(ga.next_media(Duration::from_millis(500)).await, None);
+    }
+
+    #[tokio::test]
+    async fn sockets_are_pinged_and_a_silent_client_is_closed() {
+        // Tunnels such as Cloudflare drop WebSockets that carry nothing for
+        // about 100 s: the server pings both the app socket and the media
+        // relay socket, and closes a client that stopped answering.
+        let keepalive = Keepalive {
+            interval: Duration::from_millis(100),
+            timeout: Duration::from_millis(600),
+        };
+        let app = TestApp::with_keepalive(keepalive).await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let direct = app.direct(&alice, &bob).await;
+        async fn open(app: &TestApp, kind: &str, user: &TestUser, room: &str) -> MediaSocket {
+            if kind == "media" {
+                let (socket, reply) = MediaSocket::join(&app.base, &user.token, room).await;
+                assert_eq!(reply["type"], "ready");
+                return socket;
+            }
+            let mut socket = MediaSocket::upgrade(&app.base, "/v1/ws").await;
+            let hello = serde_json::json!({ "token": user.token });
+            socket.send(1, hello.to_string().as_bytes()).await;
+            match socket.next(Duration::from_secs(3)).await {
+                Some((1, text)) => assert_eq!(
+                    serde_json::from_slice::<serde_json::Value>(&text).unwrap()["type"],
+                    "ready"
+                ),
+                other => panic!("no ready on the app socket: {other:?}"),
+            }
+            socket
+        }
+        for kind in ["app", "media"] {
+            // A client that answers the pings stays connected past the timeout.
+            let mut live = open(&app, kind, &alice, &direct).await;
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(1500);
+            let mut pings = 0;
+            loop {
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                match live.next(left).await {
+                    Some((9, payload)) => {
+                        pings += 1;
+                        live.send(10, &payload).await;
+                    }
+                    Some((8, _)) => panic!("{kind}: a client answering pings was closed"),
+                    None if tokio::time::Instant::now() + Duration::from_millis(20) < deadline => {
+                        panic!("{kind}: a client answering pings was disconnected")
+                    }
+                    _ => {}
+                }
+            }
+            assert!(
+                pings >= 5,
+                "{kind}: the server pings every interval ({pings})"
+            );
+            // A client that never answers is closed after the timeout.
+            let started = tokio::time::Instant::now();
+            let mut silent = open(&app, kind, &bob, &direct).await;
+            let closed = loop {
+                match silent.next(Duration::from_secs(3)).await {
+                    Some((8, _)) | None => break started.elapsed(),
+                    Some(_) => continue,
+                }
+            };
+            assert!(
+                closed >= Duration::from_millis(500) && closed < Duration::from_millis(2500),
+                "{kind}: a silent client is closed after the timeout ({closed:?})"
+            );
+        }
     }
 
     #[tokio::test]

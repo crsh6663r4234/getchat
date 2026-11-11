@@ -301,6 +301,10 @@ async fn run(
     let mut budget = FrameBudget::new();
     let mut recheck = tokio::time::interval(RECHECK_EVERY);
     recheck.tick().await;
+    // Tunnels drop idle sockets; see `Keepalive`.
+    let mut keepalive = tokio::time::interval(state.keepalive.interval);
+    keepalive.tick().await;
+    let mut last_heard = Instant::now();
     let mut prefix = Vec::with_capacity(1 + user.id.len());
     prefix.push(user.id.len().min(255) as u8);
     prefix.extend_from_slice(&user.id.as_bytes()[..user.id.len().min(255)]);
@@ -309,6 +313,13 @@ async fn run(
             return;
         }
         tokio::select! {
+            _ = keepalive.tick() => {
+                if last_heard.elapsed() >= state.keepalive.timeout
+                    || socket.send(WsMessage::Ping(Vec::new())).await.is_err()
+                {
+                    return;
+                }
+            }
             _ = recheck.tick() => {
                 if session_user(state, token_hash).await.is_none()
                     || !allowed(&state.db, conversation_id, &user.id).await
@@ -325,7 +336,9 @@ async fn run(
                 None => return,
             },
             incoming = socket.recv() => match incoming {
+                Some(Ok(WsMessage::Pong(_))) => last_heard = Instant::now(),
                 Some(Ok(WsMessage::Binary(payload))) => {
+                    last_heard = Instant::now();
                     if payload.is_empty() || !budget.admit(payload.len()) {
                         continue;
                     }
@@ -356,6 +369,7 @@ async fn run(
                     }
                 }
                 Some(Ok(WsMessage::Ping(bytes))) => {
+                    last_heard = Instant::now();
                     if socket.send(WsMessage::Pong(bytes)).await.is_err() {
                         return;
                     }

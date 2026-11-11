@@ -49,6 +49,7 @@
     let relayWatch = null;
     let relayWatchTimer = null;
     const RELAY_WATCH_RETRY_MS = 2_000;
+    const RELAY_WATCH_MAX_RETRY_MS = 30_000;
 
     function relayAvailable() {
       return typeof api.createServerMedia === "function";
@@ -373,24 +374,35 @@
       try { watch?.close(); } catch {}
     }
 
-    function watchRelay(ticket, activeRoom, activeConversation) {
+    // attempt: reconnects since the watch last worked; everReady: the relay
+    // answered this watch at least once during this LiveKit room.
+    function watchRelay(ticket, activeRoom, activeConversation, { attempt = 0, everReady = false } = {}) {
       if (typeof api.watchServerMedia !== "function" || ticket !== joinGeneration || room !== activeRoom) return;
       closeRelayWatch();
+      let ready = everReady;
       const stillWatching = () => relayWatch === watch && ticket === joinGeneration && room === activeRoom;
-      const retry = () => {
+      const retry = nextAttempt => {
         if (!stillWatching()) return;
         relayWatch = null;
-        // Tunnels close idle sockets; reopen the watch while on LiveKit.
-        relayWatchTimer = setTimeout(() => { relayWatchTimer = null; watchRelay(ticket, activeRoom, activeConversation); }, RELAY_WATCH_RETRY_MS);
+        // A dropped watch (tunnel or network hiccup) is reopened while on
+        // LiveKit, backing off while the relay stays unreachable.
+        const delay = Math.min(RELAY_WATCH_MAX_RETRY_MS, RELAY_WATCH_RETRY_MS * 2 ** nextAttempt);
+        relayWatchTimer = setTimeout(() => {
+          relayWatchTimer = null;
+          watchRelay(ticket, activeRoom, activeConversation, { attempt: nextAttempt, everReady: ready });
+        }, delay);
       };
       const watch = api.watchServerMedia({
         conversationId: activeConversation.id,
         onPeerActive: () => { if (stillWatching()) void followRelay(ticket, activeRoom, activeConversation); },
-        onClosed: retry,
+        onClosed: () => retry(0),
       });
       relayWatch = watch;
-      // A refused or unreachable watch (an older server) is not retried.
-      Promise.resolve().then(() => watch.connect()).catch(() => { if (stillWatching()) relayWatch = null; });
+      Promise.resolve().then(() => watch.connect()).then(() => { ready = true; }, () => {
+        // A watch refused from the start (an older server) is not retried.
+        if (ready) retry(attempt + 1);
+        else if (stillWatching()) relayWatch = null;
+      });
     }
 
     async function followRelay(ticket, activeRoom, activeConversation) {
