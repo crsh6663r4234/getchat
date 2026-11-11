@@ -9691,6 +9691,40 @@ mod tests {
         }
     }
 
+    /// Screen video (client frame kind 2) has its own budget: a burst of
+    /// large key frame fragments must not drop the call audio (kind 1).
+    #[tokio::test]
+    async fn media_relay_screen_video_cannot_starve_the_call_audio() {
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let direct = app.direct(&alice, &bob).await;
+        let (mut a, _) = MediaSocket::join(&app.base, &alice.token, &direct).await;
+        let (mut b, _) = MediaSocket::join(&app.base, &bob.token, &direct).await;
+        let reader = tokio::spawn(async move {
+            let mut received = Vec::new();
+            while let Some(frame) = b.next_media(Duration::from_millis(700)).await {
+                received.push(frame);
+            }
+            received
+        });
+        // Key frame fragments of the largest size use up the whole byte
+        // burst; the audio frame right after them must still pass.
+        let fragment = [vec![2u8], vec![0u8; media_relay::MAX_FRAME_BYTES - 1]].concat();
+        for _ in 0..12 {
+            a.send(2, &fragment).await;
+        }
+        let audio = [b"\x01".to_vec(), vec![7u8; 16 * 1024]].concat();
+        a.send(2, &audio).await;
+        let received = reader.await.unwrap();
+        let video = received.iter().filter(|f| f.ends_with(&[0u8; 64])).count();
+        assert!(video < 12, "the video burst is limited ({video} forwarded)");
+        assert!(
+            received.contains(&relayed_from(&alice.id, &audio)),
+            "the audio frame after a video burst is forwarded"
+        );
+    }
+
     #[tokio::test]
     async fn account_deletion_keeps_planner_items_with_an_anonymous_creator() {
         use reqwest::{Method, StatusCode};

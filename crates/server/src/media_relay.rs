@@ -17,6 +17,8 @@
 //! and closes. Afterwards each binary message from a client (at most
 //! [`MAX_FRAME_BYTES`]) reaches every other participant as
 //! `[sender id length: u8][sender id bytes][the client's bytes unchanged]`.
+//! The first byte of the client's bytes (its frame kind; 2 is screen video)
+//! only picks the rate budget the frame counts against.
 //! Text events `peer_joined` / `peer_left` announce participants.
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -27,6 +29,12 @@ const FRAME_RATE: f64 = 100.0;
 const FRAME_BURST: f64 = 200.0;
 const BYTE_RATE: f64 = 256.0 * 1024.0;
 const BYTE_BURST: f64 = 512.0 * 1024.0;
+/// The client's frame kind (first byte) of a screen-share video fragment.
+/// Video gets the budget above; audio and the small control frames get
+/// their own, so a key frame burst never drops call audio.
+const VIDEO_KIND: u8 = 2;
+const AUDIO_BYTE_RATE: f64 = 64.0 * 1024.0;
+const AUDIO_BYTE_BURST: f64 = 128.0 * 1024.0;
 const QUEUE_DEPTH: usize = 64;
 const RECHECK_EVERY: Duration = Duration::from_secs(5);
 /// Call rooms one user may hold at once (each socket rechecks its session
@@ -112,14 +120,22 @@ fn over_capacity(
 struct FrameBudget {
     frames: f64,
     bytes: f64,
+    byte_rate: f64,
+    byte_burst: f64,
     at: Instant,
 }
 
 impl FrameBudget {
     fn new() -> Self {
+        Self::with_bytes(BYTE_RATE, BYTE_BURST)
+    }
+
+    fn with_bytes(byte_rate: f64, byte_burst: f64) -> Self {
         Self {
             frames: FRAME_BURST,
-            bytes: BYTE_BURST,
+            bytes: byte_burst,
+            byte_rate,
+            byte_burst,
             at: Instant::now(),
         }
     }
@@ -129,7 +145,7 @@ impl FrameBudget {
         let elapsed = now.duration_since(self.at).as_secs_f64();
         self.at = now;
         self.frames = (self.frames + elapsed * FRAME_RATE).min(FRAME_BURST);
-        self.bytes = (self.bytes + elapsed * BYTE_RATE).min(BYTE_BURST);
+        self.bytes = (self.bytes + elapsed * self.byte_rate).min(self.byte_burst);
         if self.frames < 1.0 || self.bytes < size as f64 {
             return false;
         }
@@ -351,7 +367,8 @@ async fn run(
     revoked: &AtomicBool,
     queue: &mut mpsc::Receiver<WsMessage>,
 ) {
-    let mut budget = FrameBudget::new();
+    let mut video_budget = FrameBudget::new();
+    let mut audio_budget = FrameBudget::with_bytes(AUDIO_BYTE_RATE, AUDIO_BYTE_BURST);
     let mut recheck = tokio::time::interval(RECHECK_EVERY);
     recheck.tick().await;
     // Tunnels drop idle sockets; see `Keepalive`.
@@ -392,7 +409,12 @@ async fn run(
                 Some(Ok(WsMessage::Pong(_))) => last_heard = Instant::now(),
                 Some(Ok(WsMessage::Binary(payload))) => {
                     last_heard = Instant::now();
-                    if payload.is_empty() || !budget.admit(payload.len()) {
+                    let budget = match payload.first() {
+                        None => continue,
+                        Some(&VIDEO_KIND) => &mut video_budget,
+                        Some(_) => &mut audio_budget,
+                    };
+                    if !budget.admit(payload.len()) {
                         continue;
                     }
                     let epoch = state.media_rooms.epoch.load(Ordering::SeqCst);
