@@ -469,8 +469,12 @@
     // GhostChat server cannot carry. A TURN call that has not connected after
     // this long switches to the server media relay.
     const RELAY_FALLBACK_MS = 8_000;
+    // A relayed peer whose app crashed or lost power never sends hangup; the
+    // server drops its socket, and the call ends if it is not back in time.
+    const PEER_LOST_TIMEOUT_MS = 30_000;
     let connectTimer = null;
     let relayFallbackTimer = null;
+    let peerLostTimer = null;
     function startConnectTimer(activeCall) {
       clearTimeout(connectTimer);
       connectTimer = setTimeout(() => {
@@ -498,6 +502,7 @@
       clearTimeout(ringTimer); ringTimer = null;
       clearTimeout(connectTimer); connectTimer = null;
       clearTimeout(relayFallbackTimer); relayFallbackTimer = null;
+      clearTimeout(peerLostTimer); peerLostTimer = null;
     }
 
     // Both ends meet in the server's relay room for this conversation. The
@@ -530,7 +535,16 @@
         onPeerLeft: peerId => {
           if (call !== activeCall || activeCall.serverMedia !== media || peerId !== activeCall.peerId) return;
           // The peer's relay socket dropped; its client reconnects or hangs up.
-          if (activeCall.everConnected) activeCall.status = "reconnecting";
+          if (activeCall.everConnected) {
+            activeCall.status = "reconnecting";
+            clearTimeout(peerLostTimer);
+            peerLostTimer = setTimeout(() => {
+              peerLostTimer = null;
+              if (call === activeCall && activeCall.serverMedia === media && activeCall.status === "reconnecting") {
+                closeCall({ notifyPeer: true, message: "The call ended: the other side lost its connection." });
+              }
+            }, PEER_LOST_TIMEOUT_MS);
+          }
           notify();
         },
         onPeerScreen: (peerId, stream) => {
@@ -563,6 +577,8 @@
       connectTimer = null;
       clearTimeout(relayFallbackTimer);
       relayFallbackTimer = null;
+      clearTimeout(peerLostTimer);
+      peerLostTimer = null;
       if (call && notifyPeer) {
         try { send(call.conversationId, call.peerId, "hangup", null); } catch {}
       }

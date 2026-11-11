@@ -311,6 +311,7 @@ async function run() {
       'The screen capture returned no picture.',
       'Wait until the call is connected before sharing your screen.',
       'Call audio is paused. Click anywhere in GhostChat to turn it on.',
+      'The call ended: the other side lost its connection.',
     ]) strings.add(text);
     assert(strings.size >= 14, `the relay messages are found (${strings.size})`);
     const missing = [...strings].filter(text => !Object.hasOwn(trText, text) || !trText[text] || trText[text] === text);

@@ -226,6 +226,7 @@
     "GhostChat could not reach the call relay on the server.": "GhostChat sunucudaki arama aktarıcısına ulaşamadı.",
     "The call relay connection was lost.": "Arama aktarıcısı bağlantısı koptu.",
     "The call relay connection to the GhostChat server was lost. Call again.": "GhostChat sunucusuyla arama aktarıcısı bağlantısı koptu. Tekrar ara.",
+    "The call ended: the other side lost its connection.": "Arama sona erdi: karşı tarafın bağlantısı koptu.",
     "The call relay on the GhostChat server could not be reached.": "GhostChat sunucusundaki arama aktarıcısına ulaşılamadı.",
     "The group call relay connection to the GhostChat server was lost.": "GhostChat sunucusuyla grup araması aktarıcısı bağlantısı koptu.",
     "Screen capture is unavailable in this WebView. Update the Microsoft Edge WebView2 Runtime.": "Bu WebView’da ekran yakalama kullanılamıyor. Microsoft Edge WebView2 Runtime’ı güncelle.",

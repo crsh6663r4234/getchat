@@ -182,6 +182,32 @@ async function run() {
     assert(relay.instances[0].closed, 'hangup closes the relay');
     assert.equal(fixture.signals.at(-1).kind, 'hangup');
   }
+  // A relayed peer that vanishes (crash, power loss) never sends hangup:
+  // "reconnecting" ends after a timeout, and a peer that comes back in time
+  // keeps the call.
+  {
+    const relay = fakeServerMedia();
+    const fixture = directFixture(relayOnlyConfig, { serverMedia: relay.factory });
+    await fixture.client.start({ id: 'conversation', peer_id: 'b' });
+    await fixture.client.handleSignal(answerSignal);
+    const media = relay.instances[0];
+    media.options.onPeerStream('b', { id: 'relayed-b' });
+    media.options.onPeerLeft('b');
+    assert.equal(fixture.client.getState().status, 'reconnecting');
+    const back = fixture.timers.filter(timer => timer.ms === 30_000 && !timer.cleared).at(-1);
+    assert(back, 'a lost relayed peer starts a timeout');
+    media.options.onPeerStream('b', { id: 'relayed-b-again' });
+    assert.equal(fixture.client.getState().status, 'connected');
+    assert(back.cleared, 'the peer re-joining clears the timeout');
+    media.options.onPeerLeft('b');
+    const lost = fixture.timers.filter(timer => timer.ms === 30_000 && !timer.cleared).at(-1);
+    assert(lost && lost !== back);
+    lost.fn();
+    assert.equal(fixture.client.getState().status, 'idle', 'a peer that does not come back ends the call');
+    assert(media.closed, 'the relay is closed');
+    assert.equal(fixture.errors.at(-1), 'The call ended: the other side lost its connection.');
+    assert.equal(fixture.signals.at(-1).kind, 'hangup');
+  }
   // The callee joins at accept; mute, push-to-talk and a microphone change reach the relay.
   {
     const relay = fakeServerMedia();
