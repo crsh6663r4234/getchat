@@ -364,7 +364,7 @@ async fn text_cache_needs_rebuild(
 /// it, so this copy and the server's `pre-<version>.bak` backup both hold the
 /// state before the upgrade. If the copy fails the app still starts, but its
 /// encrypted storage is left untouched and reports LOCAL_BACKUP_FAILED.
-pub async fn open_local_database(path: &str) -> Result<SqlitePool, String> {
+pub async fn open_local_database(path: &str) -> Result<SqlitePool, LocalDatabaseError> {
     let file = std::path::Path::new(path);
     if file.exists() && !account_binding_backup_path(file).exists() {
         if let Err(error) = copy_profile_before_opening(file).await {
@@ -378,7 +378,52 @@ pub async fn open_local_database(path: &str) -> Result<SqlitePool, String> {
     }
     ghostchat_server::open_database(path)
         .await
-        .map_err(|error| format!("Could not open GhostChat's local database at {path}: {error}"))
+        .map_err(|error| {
+            let text = format!("Could not open GhostChat's local database at {path}: {error}");
+            if ghostchat_server::is_pre_upgrade_backup_error(&error) {
+                LocalDatabaseError::BackupFailed(text)
+            } else {
+                LocalDatabaseError::Other(text)
+            }
+        })
+}
+
+/// Why the local database could not be opened at startup.
+#[derive(Debug)]
+pub enum LocalDatabaseError {
+    /// The built-in server's pre-upgrade backup could not be written, so it
+    /// migrated nothing.
+    BackupFailed(String),
+    Other(String),
+}
+
+impl std::fmt::Display for LocalDatabaseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BackupFailed(text) | Self::Other(text) => f.write_str(text),
+        }
+    }
+}
+
+/// Title and text of the startup dialog for `LocalDatabaseError::BackupFailed`,
+/// in Turkish when the first preferred system language is Turkish. (The
+/// language chosen in the app lives in the WebView's storage, which does not
+/// exist yet at this point.)
+pub fn startup_backup_failure_dialog(languages: &[String]) -> (&'static str, &'static str) {
+    let turkish = languages
+        .first()
+        .is_some_and(|language| language.to_ascii_lowercase().starts_with("tr"));
+    if turkish {
+        (
+            "GhostChat başlatılamadı",
+            "GhostChat, yükseltmeden önce yerel verilerinin güvenlik kopyasını yazamadı. Hiçbir şey değiştirilmedi. Diskte yer aç, ardından GhostChat’i yeniden başlat.",
+        )
+    } else {
+        (
+            "GhostChat could not start",
+            "GhostChat could not write a safety copy of its local data before upgrading it. Nothing was changed. Free some disk space, then start GhostChat again.",
+        )
+    }
 }
 
 async fn copy_profile_before_opening(file: &std::path::Path) -> Result<(), String> {
@@ -5096,6 +5141,36 @@ mod tests {
                 "{name} holds the old cache"
             );
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_server_backup_that_cannot_be_written_stops_startup_with_its_own_error() {
+        let root =
+            std::env::temp_dir().join(format!("ghostchat-mls-serverfail-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).expect("test directory should be created");
+        let _directory = TestDirectory(root.clone());
+        let path = root.join("ghostchat.sqlite");
+        earlier_build_profile(&path, 24).await;
+        std::fs::create_dir_all(root.join("ghostchat.sqlite.pre-0025.bak.tmp/blocker")).unwrap();
+        match open_local_database(&path.to_string_lossy()).await {
+            Err(LocalDatabaseError::BackupFailed(_)) => {}
+            Err(LocalDatabaseError::Other(error)) => {
+                panic!("not reported as a backup failure: {error}")
+            }
+            Ok(_) => panic!("startup must stop without a backup"),
+        }
+        let db = open_database(&path).await;
+        assert_eq!(migration_level(&db).await, 24, "nothing was migrated");
+    }
+
+    #[test]
+    fn the_startup_backup_dialog_follows_the_system_language() {
+        let (_, english) = startup_backup_failure_dialog(&["en-US".into(), "tr-TR".into()]);
+        let (_, turkish) = startup_backup_failure_dialog(&["tr-TR".into()]);
+        let (_, fallback) = startup_backup_failure_dialog(&[]);
+        assert!(english.contains("Nothing was changed") && english.contains("disk space"));
+        assert!(turkish.contains("Hiçbir şey değiştirilmedi") && turkish.contains("Diskte yer aç"));
+        assert_eq!(fallback, english);
     }
 
     #[tokio::test(flavor = "multi_thread")]

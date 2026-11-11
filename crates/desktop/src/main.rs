@@ -828,7 +828,15 @@ fn main() {
                 .join("attachments");
             let path = database_path.to_string_lossy().to_string();
             let (api, crypto_db) = tauri::async_runtime::block_on(async move {
-                let db = crypto::open_local_database(&path).await?;
+                let db = match crypto::open_local_database(&path).await {
+                    Ok(db) => db,
+                    Err(crypto::LocalDatabaseError::BackupFailed(error)) => {
+                        eprintln!("{error}");
+                        show_startup_backup_failure();
+                        std::process::exit(1);
+                    }
+                    Err(error) => return Err(error.to_string()),
+                };
                 let crypto_db = db.clone();
                 let state =
                     ghostchat_server::build_state_with_attachment_dir(db, attachment_dir).await;
@@ -909,6 +917,56 @@ fn show_main_window(app: &tauri::AppHandle) {
         let _ = window.unminimize();
         let _ = window.set_focus();
     }
+}
+
+/// The user's preferred UI languages, most preferred first.
+fn system_languages() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+        let user = RegKey::predef(HKEY_CURRENT_USER);
+        if let Ok(languages) = user
+            .open_subkey("Control Panel\\Desktop")
+            .and_then(|key| key.get_value::<Vec<String>, _>("PreferredUILanguages"))
+        {
+            if !languages.is_empty() {
+                return languages;
+            }
+        }
+        user.open_subkey("Control Panel\\International")
+            .and_then(|key| key.get_value::<String, _>("LocaleName"))
+            .map(|locale| vec![locale])
+            .unwrap_or_default()
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var("LANG")
+            .map(|language| vec![language])
+            .unwrap_or_default()
+    }
+}
+
+/// Tells the user that the pre-upgrade safety copy could not be written and
+/// nothing was changed, before GhostChat exits.
+fn show_startup_backup_failure() {
+    let (title, message) = crypto::startup_backup_failure_dialog(&system_languages());
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+        let wide =
+            |text: &str| -> Vec<u16> { text.encode_utf16().chain(std::iter::once(0)).collect() };
+        let (title, message) = (wide(title), wide(message));
+        unsafe {
+            MessageBoxW(
+                std::ptr::null_mut(),
+                message.as_ptr(),
+                title.as_ptr(),
+                MB_OK | MB_ICONERROR,
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    eprintln!("{title}: {message}");
 }
 
 #[cfg(all(windows, not(debug_assertions)))]

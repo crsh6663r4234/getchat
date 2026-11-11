@@ -190,6 +190,25 @@ pub async fn open_database(path: &str) -> Result<SqlitePool, sqlx::Error> {
     Ok(pool)
 }
 
+/// `open_database` stopped because the pre-upgrade backup could not be
+/// written; nothing was migrated. Carried in `sqlx::Error::Configuration`.
+#[derive(Debug)]
+pub struct PreUpgradeBackupError(String);
+
+impl std::fmt::Display for PreUpgradeBackupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for PreUpgradeBackupError {}
+
+/// Whether `open_database` failed because its pre-upgrade backup could not
+/// be written (and so nothing was migrated).
+pub fn is_pre_upgrade_backup_error(error: &sqlx::Error) -> bool {
+    matches!(error, sqlx::Error::Configuration(inner) if inner.is::<PreUpgradeBackupError>())
+}
+
 /// Migrations from this version on cannot be run by an older server binary
 /// and have no reverse migration, so a backup is the only way back.
 const FIRST_ONE_WAY_MIGRATION: i64 = 25;
@@ -243,13 +262,10 @@ async fn backup_before_upgrade(
         return Ok(());
     }
     let failed = |reason: String| {
-        sqlx::Error::Configuration(
-            format!(
-                "could not write the pre-upgrade backup {}: {reason}; the database was not migrated",
-                backup.display()
-            )
-            .into(),
-        )
+        sqlx::Error::Configuration(Box::new(PreUpgradeBackupError(format!(
+            "could not write the pre-upgrade backup {}: {reason}; the database was not migrated",
+            backup.display()
+        ))))
     };
     // VACUUM INTO refuses an existing target, so a stale partial file from an
     // interrupted attempt is removed first; the rename makes the final name
