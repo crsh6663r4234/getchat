@@ -9,6 +9,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .with_target(false)
         .init();
+    // An exe the self-updater started must be the version it installed;
+    // anything else stops here, before the database is opened.
+    let expected = env::var(ghostchat_server::self_update::EXPECT_VERSION_ENV).ok();
+    if let Err(reason) = ghostchat_server::self_update::check_expected_version(
+        expected.as_deref(),
+        ghostchat_server::SERVER_VERSION,
+    ) {
+        tracing::error!(%reason, "self-update: refusing to start");
+        std::process::exit(2);
+    }
     let address: SocketAddr = env::var("GHOSTCHAT_BIND")
         .unwrap_or_else(|_| "0.0.0.0:38241".into())
         .parse()?;

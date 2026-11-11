@@ -26,6 +26,25 @@ pub const SERVER_ASSET: &str = "ghostchat-server-windows-x64.exe";
 /// How often a running server looks for a newer release.
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// Set by the updater on the exe it starts: the version that exe must be.
+/// The updater signature covers the bytes but not the version, so a validly
+/// signed older exe served under a newer tag stops at this check (`main.rs`)
+/// before it opens the database. Exes before 4.0.54 do not check it; they
+/// still fail the version-checked health probe and are rolled back.
+pub const EXPECT_VERSION_ENV: &str = "GHOSTCHAT_EXPECT_VERSION";
+
+/// `Err` when `expected` (from [`EXPECT_VERSION_ENV`]) is set and is not
+/// `own`, the version of the running exe.
+pub fn check_expected_version(expected: Option<&str>, own: &str) -> Result<(), String> {
+    match expected {
+        Some(expected) if expected.trim() != own => Err(format!(
+            "this server exe is version {own}, but the self-update installed it as {:?}",
+            expected.trim()
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Whether the standalone server updates itself: only on Windows, and not
 /// when `GHOSTCHAT_AUTO_UPDATE` is `false`, `0`, `no` or `off`.
 pub fn enabled(setting: Option<&str>, windows: bool) -> bool {
@@ -117,8 +136,9 @@ pub trait Swap: Send + Sync {
     fn stop_serving(&self) -> impl Future<Output = ()> + Send;
     /// Listens again after a failed swap.
     fn resume_serving(&self) -> impl Future<Output = ()> + Send;
-    /// Starts `exe` with this process's arguments, environment and directory.
-    fn start(&self, exe: &Path) -> Result<(), String>;
+    /// Starts `exe` with this process's arguments, environment and directory,
+    /// telling it that it must be `version` ([`EXPECT_VERSION_ENV`]).
+    fn start(&self, exe: &Path, version: &str) -> Result<(), String>;
     /// Whether the started process answers `/health` with `version` in time.
     fn healthy(&self, version: &str) -> impl Future<Output = bool> + Send;
     /// Stops the started process after a failed health check.
@@ -252,7 +272,7 @@ pub async fn try_update<R: Releases, F: Files, S: Swap>(
     }
     let _ = files.remove(&paths.new_signature);
     tracing::info!(exe = %paths.exe.display(), "self-update: starting the new server");
-    let reason = match swap.start(&paths.exe) {
+    let reason = match swap.start(&paths.exe, &latest) {
         Ok(()) if swap.healthy(&latest).await => {
             tracing::info!(%latest, "self-update: the new server is healthy; this one exits");
             return Outcome::Installed(latest);
@@ -624,10 +644,11 @@ impl Swap for ProcessSwap {
         self.control.resume().await;
     }
 
-    fn start(&self, exe: &Path) -> Result<(), String> {
+    fn start(&self, exe: &Path, version: &str) -> Result<(), String> {
         // Same arguments; environment and working directory are inherited.
         let child = std::process::Command::new(exe)
             .args(std::env::args_os().skip(1))
+            .env(EXPECT_VERSION_ENV, version)
             .spawn()
             .map_err(|e| e.to_string())?;
         tracing::info!(pid = child.id(), "self-update: started the new server");
@@ -828,6 +849,7 @@ mod tests {
         /// The started exe applies a migration before it fails its check.
         migrates: bool,
         started: Mutex<bool>,
+        started_as: Mutex<Option<String>>,
         calls: Mutex<Vec<String>>,
     }
 
@@ -858,7 +880,8 @@ mod tests {
         async fn resume_serving(&self) {
             self.record("resume_serving".into());
         }
-        fn start(&self, exe: &Path) -> Result<(), String> {
+        fn start(&self, exe: &Path, version: &str) -> Result<(), String> {
+            *self.started_as.lock().unwrap() = Some(version.to_owned());
             let running = std::fs::read(exe).unwrap();
             self.record(format!("start:{}", String::from_utf8_lossy(&running)));
             *self.started.lock().unwrap() = true;
@@ -1045,6 +1068,30 @@ mod tests {
         );
         assert_eq!(std::fs::read(&paths.exe).unwrap(), OLD_BUILD);
         assert_eq!(files_in(&paths), vec![SERVER_ASSET.to_owned()]);
+    }
+
+    /// The signature does not name a version, so a validly signed older exe
+    /// served under a newer tag is told which version it must be and stops
+    /// before it opens the database.
+    #[test]
+    fn a_started_exe_of_another_version_stops_before_the_database() {
+        assert_eq!(check_expected_version(None, "4.0.54"), Ok(()));
+        assert_eq!(check_expected_version(Some("4.0.54"), "4.0.54"), Ok(()));
+        assert_eq!(check_expected_version(Some(" 4.0.54 "), "4.0.54"), Ok(()));
+        assert!(check_expected_version(Some("4.0.60"), "4.0.54").is_err());
+        assert!(check_expected_version(Some(""), "4.0.54").is_err());
+    }
+
+    #[tokio::test]
+    async fn the_new_exe_is_started_with_the_version_it_must_be() {
+        let paths = running_exe();
+        let releases = FakeReleases::new("9.9.9", PAYLOAD, signature_of_payload(&test_key(9)));
+        let swap = FakeSwap::default();
+        assert_eq!(
+            attempt(&releases, &swap, &paths).await,
+            Outcome::Installed("9.9.9".into())
+        );
+        assert_eq!(swap.started_as.lock().unwrap().as_deref(), Some("9.9.9"));
     }
 
     #[tokio::test]
