@@ -503,9 +503,10 @@ test('a queued encrypted message whose client id is refused is sent again under 
   assert.equal(app.store.get(PENDING_KEY) ?? null, null);
 });
 
-test('a send refused as stale keeps its queued ciphertext for the existing resync path', async () => {
-  const app = await collisionChat({ encrypted: true, refusals: [STALE_COMMIT] });
-  assert.equal(messagePosts(app).length, 1, 'a stale commit sequence is not a client id collision: no regenerated id');
+test('a send refused as stale twice keeps its queued ciphertext and is not retried again', async () => {
+  const app = await collisionChat({ encrypted: true, refusals: [STALE_COMMIT, STALE_COMMIT, STALE_COMMIT], extraHooks: { crypto_reencrypt_text: () => ({ payload: 'fresh' }) } });
+  assert.equal(messagePosts(app).length, 2, 'a stale commit sequence is not a client id collision: same id, one encrypted-again resend');
+  assert.equal(new Set(messagePosts(app).map(post => post.client_message_id)).size, 1);
   assert.ok(app.store.get(PENDING_KEY), 'the ciphertext stays queued');
   assert.ok(app.$('#toast').textContent.includes('Sync the group'), 'the server message is shown');
 });
@@ -760,17 +761,18 @@ test('an admin removes a deleted leaf after the owner\'s grace period', async ()
 
 // An encrypted group whose server counts accepted commits (commitSeq). The
 // lock, the relay pages and the answers to membership requests are scripted.
-async function commitFenceHarness({ lock, pages = [], replies = [], members = null, friends = [], selectAll = null, pending = null, health = null, language = 'en' } = {}) {
+async function commitFenceHarness({ lock, pages = [], replies = [], members = null, friends = [], selectAll = null, pending = null, health = null, language = 'en', trustGroup = false, messageReplies = [], extraHooks = {} } = {}) {
   const base = 'https://a.example';
   const group = { id: 'g1', kind: 'group', display_name: 'Group' };
   const prepared = [];
   let staged = pending;
   let cursor = 0;
   const app = harness({
-    storage: { 'ghostchat.server': base, 'ghostchat.language': language },
+    storage: { 'ghostchat.server': base, 'ghostchat.language': language, ...(trustGroup ? { [`ghostchat.cryptoPeerTrusted.${base}.me.g1`]: 'fp-group' } : {}) },
     credentials: { [await serverKey(base)]: 'token-A' },
     selectAll,
     hooks: {
+      ...extraHooks,
       crypto_has_direct_group: () => true,
       crypto_group_fingerprint: () => 'fp-group',
       crypto_get_event_cursor: () => cursor,
@@ -809,6 +811,14 @@ async function commitFenceHarness({ lock, pages = [], replies = [], members = nu
         return { body: page || [] };
       }
       if (url.includes('/crypto/key-package')) return { body: { device_id: 'device-dave', payload: 'package' } };
+      if (options.method === 'POST' && url.endsWith('/conversations/g1/messages')) {
+        const sent = JSON.parse(options.body);
+        const index = app.fetches.filter(item => item.method === 'POST' && item.url.endsWith('/conversations/g1/messages')).length - 1;
+        const reply = messageReplies[index];
+        reply?.after?.();
+        if (reply) return reply;
+        return { body: { sequence: 99, id: `s-${sent.client_message_id}`, conversation_id: 'g1', sender_id: 'me', sender_name: 'Me', client_message_id: sent.client_message_id, content: sent.content, reply_to_id: null, created_at: '2026-01-01T00:00:00Z' } };
+      }
       const membership = options.method === 'POST' && (url.includes('/crypto-membership/remove/') ? 'remove' : url.endsWith('/conversations/g1/members') ? 'add' : null);
       if (membership) {
         const sent = app.fetches.filter(item => item.method === 'POST' && (item.url.includes('/crypto-membership/remove/') || item.url.endsWith('/conversations/g1/members'))).length;
@@ -830,6 +840,57 @@ async function commitFenceHarness({ lock, pages = [], replies = [], members = nu
 }
 const relayEvent = (sequence, commitSeq) => ({ sequence, id: `e${sequence}`, sender_id: 'bob', recipient_id: 'me', payload: 'p', created_at: '', setup_generation: 0, commit_seq: commitSeq });
 const deletedCarol = commitSeq => ({ locked: true, setupComplete: true, lockedBy: 'me', deletedMemberIds: ['carol'], deletedMembers: [{ userId: 'carol', deletedAt: '2000-01-01T00:00:00.000Z', removalCommittedAt: null }], setupGeneration: 0, commitSeq });
+
+async function sendInGroup(app, text = 'hi') {
+  app.$('#messageInput').value = text;
+  const [submit] = app.$('#composer').__listeners.get('submit');
+  await submit({ preventDefault() {} });
+}
+const groupPosts = app => app.fetches.filter(item => item.method === 'POST' && item.url.endsWith('/conversations/g1/messages')).map(item => JSON.parse(item.body));
+const GROUP_SEND_PENDING = 'ghostchat.cryptoMessagePending.https://a.example.me.g1';
+
+test('an encrypted group message names the commit sequence this device has synced to', async () => {
+  const app = await commitFenceHarness({ lock: deletedCarol(5), trustGroup: true, extraHooks: { crypto_encrypt_text: () => ({ payload: 'ciphertext' }) } });
+  await sendInGroup(app);
+  const posts = groupPosts(app);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].expected_commit_seq, 5);
+  assert.equal(app.store.get(GROUP_SEND_PENDING) ?? null, null, 'a stored message leaves the queue');
+});
+
+test('a direct encrypted message carries no commit sequence', async () => {
+  const app = await collisionChat({ encrypted: true, refusals: [] });
+  assert.equal('expected_commit_seq' in messagePosts(app)[0], false);
+});
+
+test('a group message refused as stale is synced, encrypted again and sent once more', async () => {
+  let commitSeq = 5;
+  const stale = { ...STALE_COMMIT, after: () => { commitSeq = 6; } };
+  const app = await commitFenceHarness({
+    lock: () => deletedCarol(commitSeq), trustGroup: true, messageReplies: [stale],
+    extraHooks: { crypto_encrypt_text: () => ({ payload: 'ciphertext' }), crypto_reencrypt_text: () => ({ payload: 'fresh' }) },
+  });
+  await sendInGroup(app);
+  const posts = groupPosts(app);
+  assert.equal(posts.length, 2, 'one refused send and exactly one resend');
+  assert.equal(posts[0].expected_commit_seq, 5);
+  assert.equal(posts[1].expected_commit_seq, 6, 'the resend names the synced state');
+  assert.equal(posts[1].content, 'e2e1:fresh', 'the text is encrypted again');
+  assert.equal(posts[1].client_message_id, posts[0].client_message_id, 'a stale commit keeps the message id');
+  assert.equal(app.invokes.filter(item => item.command === 'crypto_reencrypt_text').length, 1);
+  assert.equal(app.store.get(GROUP_SEND_PENDING) ?? null, null);
+});
+
+test('a group message refused as stale twice stays queued and is not retried in a loop', async () => {
+  const app = await commitFenceHarness({
+    lock: deletedCarol(5), trustGroup: true, messageReplies: [STALE_COMMIT, STALE_COMMIT, STALE_COMMIT],
+    extraHooks: { crypto_encrypt_text: () => ({ payload: 'ciphertext' }), crypto_reencrypt_text: () => ({ payload: 'fresh' }) },
+  });
+  await sendInGroup(app);
+  assert.equal(groupPosts(app).length, 2);
+  assert.ok(app.store.get(GROUP_SEND_PENDING), 'the ciphertext stays queued');
+  assert.ok(app.$('#toast').textContent.length > 0);
+});
 
 test('a staged removal names the commit sequence this device has synced to', async () => {
   // The lock was read at 5; the relay page listed afterwards already says 6,

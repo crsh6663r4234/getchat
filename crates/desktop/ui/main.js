@@ -2989,6 +2989,33 @@
     if (error?.status !== 409 || error.appError !== true) return false;
     return error.code === "client_message_id_in_use" || !error.code;
   }
+  // The commit sequence this device has synced to, for a group message; direct
+  // conversations, groups not synced yet and servers without the count have
+  // none, and the message is sent without the field (an older server ignores
+  // it either way).
+  function encryptedSendCommitSeq(conversationId) {
+    const commitSeq = state.cryptoCommitSeq.get(conversationId);
+    return Number.isSafeInteger(commitSeq) ? commitSeq : undefined;
+  }
+  // Sends a queued encrypted message. A 409 stale_commit_seq means a commit was
+  // accepted after it was encrypted: sync, encrypt the saved text again under
+  // the same message id for the current epoch, and send once more.
+  async function postEncryptedText(conversation, entry) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/messages`, {
+          method: "POST", body: JSON.stringify({ client_message_id: entry.clientMessageId, content: `e2e1:${entry.payload}`, reply_to_id: null, attachment_ids: entry.attachmentIds, expected_commit_seq: entry.expectedCommitSeq }),
+        });
+      } catch (error) {
+        if (error?.code !== "stale_commit_seq" || attempt >= 1) throw error;
+        await syncCryptoEvents(conversation.id);
+        const expectedCommitSeq = encryptedSendCommitSeq(conversation.id);
+        const fresh = await invoke("crypto_reencrypt_text", { userId: state.user.id, conversationId: conversation.id, clientMessageId: entry.clientMessageId });
+        entry = { ...entry, payload: fresh.payload, expectedCommitSeq };
+        localStorage.setItem(encryptedMessagePendingKey(conversation.id), JSON.stringify({ clientMessageId: entry.clientMessageId, payload: entry.payload, attachmentIds: entry.attachmentIds, expectedCommitSeq }));
+      }
+    }
+  }
   const CLIENT_ID_REFUSED = "The server refused this message's ID twice, so it was not sent. Try sending it again.";
   async function retryPendingEncryptedMessage(conversation) {
     const key = encryptedMessagePendingKey(conversation.id); const raw = localStorage.getItem(key);
@@ -2997,9 +3024,7 @@
     const attachmentIds = Array.isArray(pending.attachmentIds) ? pending.attachmentIds : [];
     let sent;
     try {
-      sent = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/messages`, {
-        method: "POST", body: JSON.stringify({ client_message_id: pending.clientMessageId, content: `e2e1:${pending.payload}`, reply_to_id: null, attachment_ids: attachmentIds }),
-      });
+      sent = await postEncryptedText(conversation, { ...pending, attachmentIds });
     } catch (error) {
       if (!isClientIdCollision(error)) throw error;
       // Drop the entry first so the resend below cannot find it again.
@@ -3040,14 +3065,16 @@
         // A client id another sender already used is replaced once; refused
         // again, the entry is dropped and the error shown (no retry loop).
         for (let replaced = idAlreadyReplaced; ; replaced = true) {
+          // Read before encrypting: what this device knew is never ahead of
+          // the group state the ciphertext is made for.
+          const expectedCommitSeq = encryptedSendCommitSeq(conversation.id);
           const encrypted = await invoke("crypto_encrypt_text", {
             userId: state.user.id, conversationId: conversation.id, clientMessageId: clientId, content,
           });
-          localStorage.setItem(encryptedMessagePendingKey(conversation.id), JSON.stringify({ clientMessageId: clientId, payload: encrypted.payload, attachmentIds }));
+          const entry = { clientMessageId: clientId, payload: encrypted.payload, attachmentIds, expectedCommitSeq };
+          localStorage.setItem(encryptedMessagePendingKey(conversation.id), JSON.stringify(entry));
           try {
-            message = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/messages`, {
-              method: "POST", body: JSON.stringify({ client_message_id: clientId, content: `e2e1:${encrypted.payload}`, reply_to_id: null, attachment_ids: attachmentIds }),
-            });
+            message = await postEncryptedText(conversation, entry);
             break;
           } catch (error) {
             if (!isClientIdCollision(error)) throw error;
