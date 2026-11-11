@@ -584,7 +584,7 @@
   function renderAudioProcessing(processing) {
     const node = $("#voiceProcessingStatus");
     if (!processing) { node.textContent = tr() ? "Mikrofon testinde veya aramada gerçek filtre durumu burada görünür." : "Actual processing status appears during a mic test or call."; return; }
-    const engine = processing.engine === "rnnoise" ? "RNNoise" : processing.engine === "nvidia" ? "NVIDIA Broadcast" : (tr() ? "Gürültü filtresi kapalı" : "Noise filter off");
+    const engine = processing.engine === "deepfilter" ? "DeepFilterNet" : processing.engine === "rnnoise" ? "RNNoise" : processing.engine === "nvidia" ? "NVIDIA Broadcast" : (tr() ? "Gürültü filtresi kapalı" : "Noise filter off");
     const actual = value => value === true ? (tr() ? "açık" : "on") : value === false ? (tr() ? "kapalı" : "off") : (tr() ? "doğrulanamadı" : "unverified");
     node.textContent = engine + " · " + (tr() ? "Yankı: " : "Echo: ") + actual(processing.echoCancellation) + " · " + (tr() ? "Otomatik seviye: " : "Auto level: ") + actual(processing.autoGainControl);
     if (processing.warning) node.textContent += " — " + translate(processing.warning);
@@ -702,6 +702,7 @@
       speakerId: localStorage.getItem("ghostchat.voice.speaker") || "",
       echoCancellation: localStorage.getItem("ghostchat.voice.echo") !== "false",
       noiseSuppression: localStorage.getItem("ghostchat.voice.noise") !== "false",
+      noiseEngine: localStorage.getItem("ghostchat.voice.noiseEngine") === "deepfilter" ? "deepfilter" : "rnnoise",
       autoGainControl: localStorage.getItem("ghostchat.voice.gain") !== "false",
       nvidiaBroadcast: localStorage.getItem("ghostchat.voice.nvidiaBroadcast") === "true",
       pushToTalk: localStorage.getItem("ghostchat.voice.ptt") === "true",
@@ -719,6 +720,7 @@
     localStorage.setItem("ghostchat.voice.speaker", $("#voiceSpeakerSelect").value);
     localStorage.setItem("ghostchat.voice.echo", String($("#voiceEchoCancellation").checked));
     localStorage.setItem("ghostchat.voice.noise", String($("#voiceNoiseSuppression").checked));
+    localStorage.setItem("ghostchat.voice.noiseEngine", $("#voiceNoiseEngine").value === "deepfilter" ? "deepfilter" : "rnnoise");
     localStorage.setItem("ghostchat.voice.gain", String($("#voiceAutoGain").checked));
     localStorage.setItem("ghostchat.voice.nvidiaBroadcast", String($("#voiceNvidiaBroadcast").checked));
     localStorage.setItem("ghostchat.voice.ptt", String($("#voicePushToTalk").checked));
@@ -732,6 +734,7 @@
     const settings = voiceSettings();
     $("#voiceEchoCancellation").checked = settings.echoCancellation;
     $("#voiceNoiseSuppression").checked = settings.noiseSuppression;
+    $("#voiceNoiseEngine").value = settings.noiseEngine;
     $("#voiceAutoGain").checked = settings.autoGainControl;
     $("#voiceNvidiaBroadcast").checked = settings.nvidiaBroadcast;
     $("#voicePushToTalk").checked = settings.pushToTalk;
@@ -760,7 +763,7 @@
   function updateNvidiaBroadcastState({ available = !!nvidiaBroadcastDeviceId() } = {}) {
     const enabled = $("#voiceNvidiaBroadcast").checked;
     const status = $("#voiceNvidiaBroadcastStatus");
-    [$("#voiceEchoCancellation"), $("#voiceNoiseSuppression"), $("#voiceAutoGain")].forEach(control => { control.disabled = enabled; });
+    [$("#voiceEchoCancellation"), $("#voiceNoiseSuppression"), $("#voiceNoiseEngine"), $("#voiceAutoGain")].forEach(control => { control.disabled = enabled; });
     status.textContent = enabled && available
       ? (state.language === "tr" ? "NVIDIA Broadcast mikrofonu seçili. Çifte işlemeyi önlemek için GhostChat’in yerel filtreleri kapalı." : "NVIDIA Broadcast microphone is selected. GhostChat’s local filters are off to avoid double processing.")
       : enabled
@@ -4142,7 +4145,7 @@
     player.currentTime = 0;
     try { await player.play(); } catch (error) { toast(error.message, true); }
   };
-  for (const selector of ["#voiceEchoCancellation", "#voiceNoiseSuppression", "#voiceAutoGain"]) {
+  for (const selector of ["#voiceEchoCancellation", "#voiceNoiseSuppression", "#voiceNoiseEngine", "#voiceAutoGain"]) {
     $(selector).onchange = async () => {
       const testing = !!microphoneTestStream;
       if (testing) await stopMicrophoneTest();

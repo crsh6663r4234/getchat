@@ -795,6 +795,22 @@ button:disabled {
   padding: var(--space-2) 10px;
 }
 
+#voiceNoiseEngine {
+  width: min(100%, 310px);
+  flex: 0 1 310px;
+  min-width: 0;
+}
+
+.setting-row:has(#voiceNoiseEngine) {
+  flex-wrap: wrap;
+}
+
+.setting-row:has(#voiceNoiseEngine) > span {
+  display: grid;
+  gap: 4px;
+  flex: 1 1 240px;
+}
+
 .dialog-actions {
   display: flex;
   justify-content: flex-end;

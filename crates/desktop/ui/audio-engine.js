@@ -1,6 +1,16 @@
 (() => {
   'use strict';
   const workletURL = new URL('audio-worklet.js', document.currentScript.src).href;
+  const deepFilterURL = new URL('vendor/deepfilter/', document.currentScript.src).href;
+  let deepFilterModule;
+  function loadDeepFilter() {
+    if (!deepFilterModule) deepFilterModule = (async () => {
+      const response = await fetch(new URL('df_bg.wasm', deepFilterURL), { signal: AbortSignal.timeout(15000) });
+      if (!response.ok) throw new Error('DeepFilterNet could not load. Choose the standard filter.');
+      return WebAssembly.compile(await response.arrayBuffer());
+    })().catch(error => { deepFilterModule = null; throw error; });
+    return deepFilterModule;
+  }
   async function open(settings, { onStatus = () => {} } = {}) {
     let rawStream, context, source, processor, destination, closed = false;
     let muted = true;
@@ -55,23 +65,34 @@
         context = new AudioContextType({ sampleRate: 48000, latencyHint: 'interactive' });
         await context.resume();
         if (context.state !== 'running') throw new Error('Audio processing could not start. Try the microphone again.');
-        await context.audioWorklet.addModule(workletURL);
-        processor = new AudioWorkletNode(context, 'ghostchat-denoiser', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1], channelCount: 1, channelCountMode: 'explicit' });
+        const advanced = settings.noiseEngine === 'deepfilter';
+        const wasmModule = advanced ? await loadDeepFilter() : null;
+        await context.audioWorklet.addModule(advanced ? new URL('worklet.js', deepFilterURL).href : workletURL);
+        processor = new AudioWorkletNode(context, advanced ? 'deepfilternet-processor' : 'ghostchat-denoiser', {
+          numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1], channelCount: 1, channelCountMode: 'explicit',
+          ...(advanced ? { processorOptions: { wasmModule, attenuationLimit: 35 } } : {}),
+        });
         await new Promise((resolve, reject) => {
           const timer = setTimeout(() => reject(new Error('Noise suppression did not start.')), 5000);
-          processor.port.onmessage = event => { if (event.data?.type === 'ready') { clearTimeout(timer); resolve(); } };
+          processor.port.onmessage = event => {
+            if (event.data?.type === 'ready') { clearTimeout(timer); resolve(); }
+            if (event.data?.type === 'failed') { clearTimeout(timer); reject(new Error('DeepFilterNet could not start. Choose the standard filter.')); }
+          };
           processor.onprocessorerror = () => { clearTimeout(timer); reject(new Error('Noise suppression could not load.')); };
         });
         destination = context.createMediaStreamDestination();
         source = context.createMediaStreamSource(rawStream);
         source.connect(processor); processor.connect(destination);
         session.stream = destination.stream;
-        status.engine = 'rnnoise'; status.noiseSuppression = true;
+        status.engine = advanced ? 'deepfilter' : 'rnnoise'; status.noiseSuppression = true;
         processor.onprocessorerror = () => {
           status.state = 'failed'; status.warning = 'Noise suppression stopped. Reconnect your microphone.';
           session.setMuted(true); emit();
         };
-        processor.port.onmessage = event => { if (event.data?.type === 'speech') status.speechProbability = event.data.probability; };
+        processor.port.onmessage = event => {
+          if (event.data?.type === 'speech') status.speechProbability = event.data.probability;
+          if (event.data?.type === 'frames') status.processedFrames = event.data.count;
+        };
         context.addEventListener('statechange', stateChanged);
       } else {
         session.stream = rawStream;

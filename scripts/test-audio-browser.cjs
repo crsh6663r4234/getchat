@@ -20,7 +20,7 @@ const config = require('../crates/desktop/tauri.conf.json');
       }
       const file = path.resolve(ui, '.' + pathname);
       if (!file.startsWith(ui + path.sep)) { res.writeHead(404).end(); return; }
-      res.setHeader('Content-Type', 'text/javascript');
+      res.setHeader('Content-Type', file.endsWith('.wasm') ? 'application/wasm' : 'text/javascript');
       res.end(await fs.readFile(file));
     } catch { res.writeHead(404).end(); }
   });
@@ -31,13 +31,13 @@ const config = require('../crates/desktop/tauri.conf.json');
     const page = await browser.newPage();
     page.on('pageerror', error => console.error('Browser error:', error.message));
     await page.goto('http://127.0.0.1:' + server.address().port);
-    const result = await page.evaluate(async hasSpeech => {
+    const result = await page.evaluate(async ({ hasSpeech, engine }) => {
       const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
       const ensure = (condition, message) => { if (!condition) throw new Error(message); };
-      const settings = { noiseSuppression: true, echoCancellation: true, autoGainControl: true };
+      const settings = { noiseSuppression: true, noiseEngine: engine, echoCancellation: true, autoGainControl: true };
       // Test the actual capture implementation (no physical microphone).
       const captured = await GhostChatAudio.open(settings);
-      ensure(captured.status.engine === 'rnnoise' && captured.status.state === 'running', 'Real worklet must start under production CSP');
+      ensure(captured.status.engine === engine && captured.status.state === 'running', 'Real worklet must start under production CSP');
       ensure(captured.stream.getAudioTracks()[0] !== captured.rawStream.getAudioTracks()[0], 'RNNoise output, not raw track, must be returned');
       ensure(!captured.stream.getAudioTracks()[0].enabled, 'New sessions start muted');
       captured.setMuted(false);
@@ -66,7 +66,7 @@ const config = require('../crates/desktop/tauri.conf.json');
       const reductionDb = 20 * Math.log10(input / Math.max(output, 1e-12));
       ensure(input > 0.1, 'Fixture must have non-silent input');
       ensure(reductionDb > 6, 'Steady noise should be attenuated by at least 6 dB, got ' + reductionDb);
-      ensure(filtered.status.speechProbability !== undefined, 'Worklet processed frames');
+      ensure(engine === 'deepfilter' ? filtered.status.processedFrames > 0 : filtered.status.speechProbability !== undefined, 'Worklet processed frames');
       filtered.setMuted(true); await wait(100);
       ensure(rms(after) < 0.00001, 'Mute must silence outgoing audio');
       await filtered.close();
@@ -97,9 +97,28 @@ const config = require('../crates/desktop/tauri.conf.json');
       navigator.mediaDevices.getUserMedia = originalCapture;
       await context.close(); destination.stream.getTracks().forEach(track => track.stop());
       await GhostChatAudio.open({ ...settings, nvidiaBroadcast: true, microphoneId: 'not-a-broadcast-microphone' }).then(() => { throw new Error('Invalid Broadcast device accepted'); }, error => ensure(/NVIDIA/.test(error.message), 'External mode validates the selected device'));
-      return { reductionDb: Math.round(reductionDb * 10) / 10, speechRatio, realWorklet: true, mute: true, bypass: true, cleanup: true };
-    }, !!process.env.GHOSTCHAT_SPEECH_FIXTURE);
+      return { engine, reductionDb: Math.round(reductionDb * 10) / 10, speechRatio, realWorklet: true, mute: true, bypass: true, cleanup: true };
+    }, { hasSpeech: !!process.env.GHOSTCHAT_SPEECH_FIXTURE, engine: process.env.GHOSTCHAT_TEST_ENGINE || 'rnnoise' });
     assert(result.realWorklet);
+    if (process.env.GHOSTCHAT_TEST_ENGINE === 'deepfilter') {
+      // Valid WASM with no model exports forces constructor failure, not a fetch error.
+      await page.route('**/vendor/deepfilter/df_bg.wasm', route => route.fulfill({
+        contentType: 'application/wasm', body: Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]),
+      }));
+      await page.reload();
+      await page.evaluate(async () => {
+        const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+        let raw;
+        navigator.mediaDevices.getUserMedia = async options => (raw = await capture(options));
+        let rejected = false;
+        try { await GhostChatAudio.open({ noiseSuppression: true, noiseEngine: 'deepfilter' }); }
+        catch { rejected = true; }
+        if (!rejected || raw?.getTracks().some(track => track.readyState !== 'ended')) {
+          throw new Error('Failed DeepFilterNet initialization must reject and release capture, never return raw audio.');
+        }
+      });
+      result.failedInitializationClosed = true;
+    }
     console.log('Chromium audio checks passed:', JSON.stringify(result));
   } finally { await browser?.close(); await new Promise(resolve => server.close(resolve)); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

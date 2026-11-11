@@ -71,6 +71,9 @@ jobs:
           $env:NODE_PATH = "$env:RUNNER_TEMP/ghostchat-audio-tests/node_modules"
           node scripts/test-audio-browser.cjs
           if ($LASTEXITCODE -ne 0) { throw "Real AudioWorklet test failed." }
+          $env:GHOSTCHAT_TEST_ENGINE = "deepfilter"
+          node scripts/test-audio-browser.cjs
+          if ($LASTEXITCODE -ne 0) { throw "DeepFilterNet AudioWorklet test failed." }
 
       - name: Build standalone Windows server binary
         shell: pwsh
