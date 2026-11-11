@@ -1,4 +1,4 @@
-name: Prepare GhostChat release draft
+name: Release GhostChat
 
 on:
   push:
