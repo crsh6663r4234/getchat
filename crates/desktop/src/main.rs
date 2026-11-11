@@ -648,6 +648,61 @@ async fn crypto_group_fingerprint(
 }
 
 #[tauri::command]
+async fn crypto_planner_key(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    epoch: Option<u64>,
+) -> Result<Option<crypto::PlannerKeyInfo>, String> {
+    crypto::planner_key(&state.crypto_db, &user_id, &conversation_id, epoch).await
+}
+
+#[tauri::command]
+async fn crypto_planner_seal(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    kind: String,
+    item_id: String,
+    plaintext: String,
+) -> Result<crypto::PlannerSealed, String> {
+    crypto::planner_seal(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &kind,
+        &item_id,
+        &plaintext,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn crypto_planner_open(
+    state: State<'_, DesktopState>,
+    user_id: String,
+    conversation_id: String,
+    kind: String,
+    item_id: String,
+    epoch: u64,
+    key_id: String,
+    ciphertext: String,
+) -> Result<Option<String>, String> {
+    crypto::planner_open(
+        &state.crypto_db,
+        &user_id,
+        &conversation_id,
+        &kind,
+        &item_id,
+        epoch,
+        &key_id,
+        &ciphertext,
+    )
+    .await
+}
+
+#[tauri::command]
 fn credential_get(server_key: String) -> Result<Option<String>, String> {
     windows_credential::get(&server_key)
 }
@@ -917,6 +972,9 @@ fn main() {
             crypto_has_direct_group,
             crypto_direct_peer_fingerprint,
             crypto_group_fingerprint,
+            crypto_planner_key,
+            crypto_planner_seal,
+            crypto_planner_open,
             get_start_at_login,
             set_start_at_login,
             take_pending_group_invites,

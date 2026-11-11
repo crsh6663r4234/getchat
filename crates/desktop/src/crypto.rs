@@ -24,6 +24,10 @@ use tls_codec::{Deserialize as TlsDeserialize, Serialize as TlsSerialize};
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
+#[path = "crypto_planner.rs"]
+mod planner;
+pub use planner::{planner_key, planner_open, planner_seal, PlannerKeyInfo, PlannerSealed};
+
 const MLS_CIPHERSUITE: Ciphersuite = Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519;
 
 static STORAGE_KEY: OnceLock<Zeroizing<[u8; 32]>> = OnceLock::new();
@@ -289,6 +293,7 @@ async fn prepare_crypto_storage(db: &SqlitePool) -> Result<(), String> {
     .execute(db)
     .await
     .map_err(|_| "GhostChat could not prepare its encrypted setup storage.".to_string())?;
+    planner::prepare_planner_storage(db).await?;
 
     let mut connection = db
         .acquire()
@@ -1472,7 +1477,7 @@ pub async fn create_direct_group(
     .ok_or_else(|| "Prepare this device for encryption in Settings first.".to_string())?;
     let group_id = group_id_for_conversation(&conversation_id);
 
-    let (welcome_payload, peer_identity_fingerprint) = {
+    let (welcome_payload, peer_identity_fingerprint, planner_key) = {
         let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
         let provider = DesktopMlsProvider {
             crypto: RustCrypto::default(),
@@ -1527,8 +1532,16 @@ pub async fn create_direct_group(
                 .tls_serialize_detached()
                 .map_err(|_| "GhostChat could not serialize the MLS invitation.".to_string())?,
         );
-        (welcome_payload, peer_identity_fingerprint)
+        let planner_key = planner::capture_planner_key(&group, provider.crypto(), &conversation_id);
+        (welcome_payload, peer_identity_fingerprint, planner_key)
     };
+    planner::store_planner_keys(
+        &mut transaction,
+        &user_id,
+        &conversation_id,
+        planner_key.as_slice(),
+    )
+    .await?;
     let bootstrap = DirectGroupStart {
         welcome_id: Uuid::new_v4().to_string(),
         welcome_payload,
@@ -1596,7 +1609,7 @@ pub async fn create_group(
     .ok_or_else(|| "Prepare this device for encryption in Settings first.".to_string())?;
     let group_id = group_id_for_conversation(&conversation_id);
 
-    let (welcome_payload, group_fingerprint) = {
+    let (welcome_payload, group_fingerprint, planner_key) = {
         let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
         let provider = DesktopMlsProvider {
             crypto: RustCrypto::default(),
@@ -1658,8 +1671,16 @@ pub async fn create_group(
             URL_SAFE_NO_PAD.encode(welcome.tls_serialize_detached().map_err(|_| {
                 "GhostChat could not serialize the MLS group invitation.".to_string()
             })?);
-        (welcome_payload, group_fingerprint)
+        let planner_key = planner::capture_planner_key(&group, provider.crypto(), &conversation_id);
+        (welcome_payload, group_fingerprint, planner_key)
     };
+    planner::store_planner_keys(
+        &mut transaction,
+        &user_id,
+        &conversation_id,
+        planner_key.as_slice(),
+    )
+    .await?;
     let mut welcome_recipients: Vec<String> = normalized_peers
         .iter()
         .map(|(peer_user_id, _, _)| peer_user_id.clone())
@@ -2650,6 +2671,7 @@ pub async fn finalize_group_membership_update(
     .map_err(|_| "GhostChat could not load this device's encryption identity.".to_string())?
     .ok_or_else(|| "Prepare this device for encryption in Settings first.".to_string())?;
 
+    let mut planner_keys = Vec::new();
     let fingerprint = {
         let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
         let provider = DesktopMlsProvider {
@@ -2682,9 +2704,19 @@ pub async fn finalize_group_membership_update(
             .ok_or_else(|| {
                 "The local MLS group contains invalid or duplicate identities.".to_string()
             })?;
+        planner_keys.extend(planner::capture_planner_key(
+            &group,
+            provider.crypto(),
+            &conversation_id,
+        ));
         group.merge_pending_commit(&provider).map_err(|_| {
             "GhostChat could not confirm the local MLS membership update.".to_string()
         })?;
+        planner_keys.extend(planner::capture_planner_key(
+            &group,
+            provider.crypto(),
+            &conversation_id,
+        ));
         let members = group.members().collect::<Vec<_>>();
         let mut expected = pending
             .expected_member_ids
@@ -2744,6 +2776,8 @@ pub async fn finalize_group_membership_update(
     .execute(&mut *transaction)
     .await
     .map_err(|_| "GhostChat could not clear the completed MLS membership update.".to_string())?;
+    planner::store_planner_keys(&mut transaction, &user_id, &conversation_id, &planner_keys)
+        .await?;
     transaction
         .commit()
         .await
@@ -3459,6 +3493,8 @@ async fn process_crypto_event_core(
     }
 
     let mut cache_content = None;
+    // Planner keys of the epochs this event leaves and enters.
+    let mut planner_keys = Vec::new();
     let result = {
         let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
         let provider = DesktopMlsProvider {
@@ -3542,9 +3578,14 @@ async fn process_crypto_event_core(
                     } else {
                         Some(key_fingerprint(&sender_member.signature_key))
                     };
-                    staged.into_group(&provider).map_err(|_| {
+                    let joined = staged.into_group(&provider).map_err(|_| {
                         "GhostChat could not join the encrypted direct conversation.".to_string()
                     })?;
+                    planner_keys.extend(planner::capture_planner_key(
+                        &joined,
+                        provider.crypto(),
+                        &conversation_id,
+                    ));
                     CryptoEventResult {
                         kind: "welcome".into(),
                         content: None,
@@ -3668,10 +3709,20 @@ async fn process_crypto_event_core(
                         }
                     }
                     ProcessedMessageContent::StagedCommitMessage(commit) => {
+                        planner_keys.extend(planner::capture_planner_key(
+                            &group,
+                            provider.crypto(),
+                            &conversation_id,
+                        ));
                         group.merge_staged_commit(&provider, *commit).map_err(|_| {
                             "GhostChat could not apply the authenticated MLS membership update."
                                 .to_string()
                         })?;
+                        planner_keys.extend(planner::capture_planner_key(
+                            &group,
+                            provider.crypto(),
+                            &conversation_id,
+                        ));
                         if !group_roster_matches(
                             &group,
                             &expected_member_ids,
@@ -3692,10 +3743,20 @@ async fn process_crypto_event_core(
                         }
                     }
                     ProcessedMessageContent::OwnPendingCommit => {
+                        planner_keys.extend(planner::capture_planner_key(
+                            &group,
+                            provider.crypto(),
+                            &conversation_id,
+                        ));
                         group.merge_pending_commit(&provider).map_err(|_| {
                             "GhostChat could not confirm the local MLS membership update."
                                 .to_string()
                         })?;
+                        planner_keys.extend(planner::capture_planner_key(
+                            &group,
+                            provider.crypto(),
+                            &conversation_id,
+                        ));
                         if !group_roster_matches(
                             &group,
                             &expected_member_ids,
@@ -3855,6 +3916,8 @@ async fn process_crypto_event_core(
         .await
         .map_err(|_| "GhostChat could not save the local encrypted event cursor.".to_string())?;
     }
+    planner::store_planner_keys(&mut transaction, &user_id, &conversation_id, &planner_keys)
+        .await?;
     transaction
         .commit()
         .await
