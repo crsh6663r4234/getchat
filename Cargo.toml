@@ -5,7 +5,7 @@ exclude = ["vendor"]
 resolver = "2"
 
 [workspace.package]
-version = "4.0.55"
+version = "4.0.56"
 edition = "2021"
 license = "MIT"
 
