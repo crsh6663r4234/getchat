@@ -2548,6 +2548,7 @@ pub async fn forget_group_state(
     .execute(&mut *transaction)
     .await
     .map_err(|_| "GhostChat could not clear the local membership outbox.".to_string())?;
+    planner::forget_planner_keys(&mut transaction, &user_id, &conversation_id).await?;
     transaction
         .commit()
         .await
@@ -2557,8 +2558,8 @@ pub async fn forget_group_state(
 /// Brings this account's local state of a group conversation to the server's
 /// setup generation. A takeover of an unfinished setup starts a new
 /// generation and is always a reset, so when `generation` is newer than the
-/// stored one the local MLS group, the staged membership update and the
-/// pending bootstrap of the older setup are dropped, in one transaction with
+/// stored one the local MLS group, the staged membership update, the
+/// pending bootstrap and the planner keys of the older setup are dropped, in one transaction with
 /// the new generation. Returns whether that happened. An equal or older
 /// value (a stale read) changes nothing, so a group joined in the current
 /// generation is never dropped. The decrypted text cache is kept.
@@ -2617,6 +2618,9 @@ pub async fn apply_setup_generation(
         .await
         .map_err(|_| error())?;
     }
+    planner::forget_planner_keys(&mut transaction, &user_id, &conversation_id)
+        .await
+        .map_err(|_| error())?;
     sqlx::query(
         "INSERT INTO ghostchat_crypto_setup_generations(user_id,conversation_id,generation) VALUES(?,?,?) \
          ON CONFLICT(user_id,conversation_id) DO UPDATE SET generation=excluded.generation",

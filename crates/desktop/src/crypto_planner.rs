@@ -113,6 +113,22 @@ pub(super) async fn prepare_planner_storage(db: &SqlitePool) -> Result<(), Strin
     Ok(())
 }
 
+/// Drops every cached planner key of one group, when this device forgets
+/// the group (removed, left, or a superseded setup reset).
+pub(super) async fn forget_planner_keys(
+    connection: &mut SqliteConnection,
+    user_id: &str,
+    conversation_id: &str,
+) -> Result<(), String> {
+    sqlx::query("DELETE FROM ghostchat_planner_keys WHERE user_id=? AND conversation_id=?")
+        .bind(user_id)
+        .bind(conversation_id)
+        .execute(connection)
+        .await
+        .map_err(|_| "GhostChat could not clear the group's planner keys.".to_string())?;
+    Ok(())
+}
+
 /// Saves planner keys in the bounded per-group cache (the newest
 /// [`PLANNER_KEY_CACHE_LIMIT`] keys of a group stay).
 pub(super) async fn store_planner_keys(
@@ -821,6 +837,46 @@ mod tests {
             raw_cache.starts_with(b"GC\x01"),
             "cached keys are encrypted at rest"
         );
+
+        // Forgetting the group (removed, left, or a reset setup) also drops
+        // its planner keys: no earlier item opens on that device any more.
+        forget_group_state(&bob_db, &bob_id, &conversation_id)
+            .await
+            .unwrap();
+        assert_eq!(
+            apply_setup_generation(&alice_db, &alice_id, &conversation_id, 1).await,
+            Ok(true)
+        );
+        for (db, id) in [(&bob_db, &bob_id), (&alice_db, &alice_id)] {
+            for (kind, item, sealed) in [("poll", &poll_id, &sealed), ("event", &event_id, &newer)]
+            {
+                assert_eq!(
+                    planner_open(
+                        db,
+                        id,
+                        &conversation_id,
+                        kind,
+                        item,
+                        sealed.epoch,
+                        &sealed.key_id,
+                        &sealed.ciphertext,
+                    )
+                    .await
+                    .unwrap(),
+                    None,
+                    "a forgotten group's planner keys must not stay in the cache"
+                );
+            }
+            let left = sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM ghostchat_planner_keys WHERE user_id=? AND conversation_id=?",
+            )
+            .bind(id)
+            .bind(&conversation_id)
+            .fetch_one(db)
+            .await
+            .unwrap();
+            assert_eq!(left, 0);
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
