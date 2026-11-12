@@ -222,11 +222,14 @@ pub async fn try_update<R: Releases, F: Files, S: Swap>(
         let _ = files.remove(&paths.new);
         let _ = files.remove(&paths.new_signature);
     };
-    if let Err(reason) = stage(&latest, public_key, paths, releases, files).await {
-        discard_download();
-        tracing::warn!(%latest, %reason, "self-update: the release was rejected");
-        return Outcome::Rejected(reason);
-    }
+    let verified = match stage(&latest, public_key, paths, releases, files).await {
+        Ok(verified) => verified,
+        Err(reason) => {
+            discard_download();
+            tracing::warn!(%latest, %reason, "self-update: the release was rejected");
+            return Outcome::Rejected(reason);
+        }
+    };
     tracing::info!(%latest, "self-update: the downloaded exe has a valid signature");
     swap.wait_for_no_calls().await;
     if let Err(reason) = swap.backup_database().await {
@@ -256,6 +259,17 @@ pub async fn try_update<R: Releases, F: Files, S: Swap>(
             reason,
         }
     };
+    // The download waited next to the exe while calls ended and the database
+    // was backed up: verify it again now, and require the very bytes that
+    // were verified when it was downloaded.
+    if let Err(reason) = verify_staged(public_key, paths, files, &verified) {
+        discard_download();
+        swap.resume_serving().await;
+        tracing::error!(%latest, %reason, "self-update: the download changed after it was verified; not updating");
+        return Outcome::Rejected(format!(
+            "the downloaded exe changed after it was verified: {reason}"
+        ));
+    }
     if let Err(reason) = files
         .remove(&paths.old)
         .and_then(|()| files.rename(&paths.exe, &paths.old))
@@ -269,6 +283,19 @@ pub async fn try_update<R: Releases, F: Files, S: Swap>(
         discard_download();
         swap.resume_serving().await;
         return rolled_back(reason);
+    }
+    // The file now in place must still be the verified one.
+    if let Err(reason) = files
+        .read(&paths.exe)
+        .and_then(|bytes| same_bytes(&bytes, &verified))
+    {
+        log_restore(&files.rename(&paths.old, &paths.exe));
+        discard_download();
+        swap.resume_serving().await;
+        tracing::error!(%latest, %reason, "self-update: the exe changed after it was renamed into place; not updating");
+        return Outcome::Rejected(format!(
+            "the new exe changed after it was verified: {reason}"
+        ));
     }
     let _ = files.remove(&paths.new_signature);
     tracing::info!(exe = %paths.exe.display(), "self-update: starting the new server");
@@ -319,34 +346,77 @@ fn log_restore(restored: &Result<(), String>) {
     }
 }
 
+/// The SHA-256 of the exe bytes that passed the signature check.
+type VerifiedDigest = [u8; 32];
+
+fn digest(bytes: &[u8]) -> VerifiedDigest {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes).into()
+}
+
+fn same_bytes(bytes: &[u8], verified: &VerifiedDigest) -> Result<(), String> {
+    if digest(bytes) == *verified {
+        Ok(())
+    } else {
+        Err("its bytes are not the ones that were verified".into())
+    }
+}
+
 /// Downloads the exe and its signature next to the running exe and
-/// verifies the bytes on disk, which are the bytes that will run.
+/// verifies the bytes on disk, which are the bytes that will run. Returns
+/// the digest of the verified bytes, checked again before the swap.
 async fn stage<R: Releases, F: Files>(
     version: &str,
     public_key: &str,
     paths: &SwapPaths,
     releases: &R,
     files: &F,
-) -> Result<(), String> {
+) -> Result<VerifiedDigest, String> {
     let exe = releases.download(version, SERVER_ASSET).await?;
     let signature = releases
         .download(version, &format!("{SERVER_ASSET}.sig"))
         .await?;
+    verify_signature(&exe, &signature, public_key)?;
     files.write(&paths.new, &exe)?;
     files.write(&paths.new_signature, &signature)?;
-    verify_signature(
-        &files.read(&paths.new)?,
-        &files.read(&paths.new_signature)?,
-        public_key,
-    )
+    let on_disk = files.read(&paths.new)?;
+    verify_signature(&on_disk, &files.read(&paths.new_signature)?, public_key)?;
+    let verified = digest(&on_disk);
+    same_bytes(&exe, &verified)?;
+    Ok(verified)
+}
+
+/// Verifies the staged download again, right before it is renamed into
+/// place, and requires it to be the bytes [`stage`] verified.
+fn verify_staged<F: Files>(
+    public_key: &str,
+    paths: &SwapPaths,
+    files: &F,
+    verified: &VerifiedDigest,
+) -> Result<(), String> {
+    let exe = files.read(&paths.new)?;
+    verify_signature(&exe, &files.read(&paths.new_signature)?, public_key)?;
+    same_bytes(&exe, verified)
 }
 
 /// The real files next to the exe.
 pub struct DiskFiles;
 
 impl Files for DiskFiles {
+    /// Creates `path` anew: a file someone else created there first is
+    /// removed, never written through, and one that reappears is an error.
     fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
-        std::fs::write(path, bytes).map_err(|e| format!("could not write {}: {e}", path.display()))
+        use std::io::Write as _;
+        self.remove(path)?;
+        let write = || {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)?;
+            file.write_all(bytes)?;
+            file.sync_all()
+        };
+        write().map_err(|e| format!("could not write {}: {e}", path.display()))
     }
     fn read(&self, path: &Path) -> Result<Vec<u8>, String> {
         std::fs::read(path).map_err(|e| format!("could not read {}: {e}", path.display()))
@@ -810,6 +880,51 @@ mod tests {
             .into_bytes()
     }
 
+    /// A legacy (non-prehashed) minisign signature over any `data`, which
+    /// `verify_signature` also accepts.
+    fn legacy_signature_of(key: &SigningKey, data: &[u8], trusted: &str) -> Vec<u8> {
+        let signature = key.sign(data).to_bytes();
+        let mut global_input = signature.to_vec();
+        global_input.extend_from_slice(trusted.as_bytes());
+        let global = key.sign(&global_input).to_bytes();
+        let mut line = b"Ed".to_vec();
+        line.extend_from_slice(&KEY_ID);
+        line.extend_from_slice(&signature);
+        STANDARD
+            .encode(format!(
+                "untrusted comment: signature from tauri secret key\n{}\ntrusted comment: {trusted}\n{}\n",
+                STANDARD.encode(line),
+                STANDARD.encode(global)
+            ))
+            .into_bytes()
+    }
+
+    /// The real files, except that renaming the download into place writes
+    /// `replacement` over the exe right after the rename.
+    struct FilesChangedAfterRename {
+        new: PathBuf,
+        replacement: Vec<u8>,
+    }
+
+    impl Files for FilesChangedAfterRename {
+        fn write(&self, path: &Path, bytes: &[u8]) -> Result<(), String> {
+            DiskFiles.write(path, bytes)
+        }
+        fn read(&self, path: &Path) -> Result<Vec<u8>, String> {
+            DiskFiles.read(path)
+        }
+        fn rename(&self, from: &Path, to: &Path) -> Result<(), String> {
+            DiskFiles.rename(from, to)?;
+            if from == self.new {
+                std::fs::write(to, &self.replacement).unwrap();
+            }
+            Ok(())
+        }
+        fn remove(&self, path: &Path) -> Result<(), String> {
+            DiskFiles.remove(path)
+        }
+    }
+
     struct FakeReleases {
         latest: String,
         assets: HashMap<String, Vec<u8>>,
@@ -848,6 +963,9 @@ mod tests {
         backup_fails: bool,
         /// The started exe applies a migration before it fails its check.
         migrates: bool,
+        /// Written over these files while the swap waits for calls to end,
+        /// after the download was verified.
+        tamper: Mutex<Vec<(PathBuf, Vec<u8>)>>,
         started: Mutex<bool>,
         started_as: Mutex<Option<String>>,
         calls: Mutex<Vec<String>>,
@@ -865,6 +983,9 @@ mod tests {
     impl Swap for FakeSwap {
         async fn wait_for_no_calls(&self) {
             self.record("wait_for_no_calls".into());
+            for (path, bytes) in self.tamper.lock().unwrap().drain(..) {
+                std::fs::write(path, bytes).unwrap();
+            }
         }
         async fn backup_database(&self) -> Result<(), String> {
             self.record("backup".into());
@@ -1173,6 +1294,78 @@ mod tests {
             swap.calls(),
             vec!["wait_for_no_calls".to_owned(), "backup".into()],
             "the swap waits for calls to end before the backup"
+        );
+        assert_eq!(std::fs::read(&paths.exe).unwrap(), OLD_BUILD);
+        assert_eq!(files_in(&paths), vec![SERVER_ASSET.to_owned()]);
+    }
+
+    /// The download waits next to the exe (for calls to end, the backup and
+    /// the stop) before it is renamed; a file changed in that time must not
+    /// be started, whether it no longer verifies or verifies as other bytes.
+    #[tokio::test]
+    async fn a_download_changed_between_verification_and_swap_is_not_started() {
+        let key = test_key(9);
+        let other: &[u8] = b"another validly signed build";
+        let other_signature =
+            legacy_signature_of(&key, other, "file:ghostchat-server-windows-x64.exe");
+        assert_eq!(
+            verify_signature(other, &other_signature, &public_key_of(&key)),
+            Ok(())
+        );
+        let unsigned = |paths: &SwapPaths| vec![(paths.new.clone(), b"attacker build".to_vec())];
+        let resigned = |paths: &SwapPaths| {
+            vec![
+                (paths.new.clone(), other.to_vec()),
+                (paths.new_signature.clone(), other_signature.clone()),
+            ]
+        };
+        for tamper in [
+            &unsigned as &dyn Fn(&SwapPaths) -> Vec<(PathBuf, Vec<u8>)>,
+            &resigned,
+        ] {
+            let paths = running_exe();
+            let releases = FakeReleases::new("9.9.9", PAYLOAD, signature_of_payload(&key));
+            let swap = FakeSwap {
+                tamper: Mutex::new(tamper(&paths)),
+                ..FakeSwap::default()
+            };
+            let outcome = attempt(&releases, &swap, &paths).await;
+            assert!(matches!(outcome, Outcome::Rejected(_)), "{outcome:?}");
+            assert!(
+                !swap.calls().iter().any(|call| call.starts_with("start:")),
+                "{:?}",
+                swap.calls()
+            );
+            assert_eq!(
+                swap.calls().last().map(String::as_str),
+                Some("resume_serving")
+            );
+            assert_eq!(std::fs::read(&paths.exe).unwrap(), OLD_BUILD);
+            assert_eq!(files_in(&paths), vec![SERVER_ASSET.to_owned()]);
+        }
+        // Changed right after it was renamed into place.
+        let paths = running_exe();
+        let releases = FakeReleases::new("9.9.9", PAYLOAD, signature_of_payload(&key));
+        let swap = FakeSwap::default();
+        let files = FilesChangedAfterRename {
+            new: paths.new.clone(),
+            replacement: b"attacker build".to_vec(),
+        };
+        let outcome = try_update(
+            "4.0.51",
+            &public_key_of(&key),
+            &paths,
+            &HashSet::new(),
+            &releases,
+            &files,
+            &swap,
+        )
+        .await;
+        assert!(matches!(outcome, Outcome::Rejected(_)), "{outcome:?}");
+        assert!(
+            !swap.calls().iter().any(|call| call.starts_with("start:")),
+            "{:?}",
+            swap.calls()
         );
         assert_eq!(std::fs::read(&paths.exe).unwrap(), OLD_BUILD);
         assert_eq!(files_in(&paths), vec![SERVER_ASSET.to_owned()]);
