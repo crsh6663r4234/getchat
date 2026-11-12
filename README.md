@@ -44,7 +44,7 @@ Calls never connect peer-to-peer, so callers do not learn each other's network a
 
 ## Encryption status
 
-Chats are stored on the server as plaintext unless encryption is enabled for them. A direct or group chat can opt in to MLS encryption after the members compare identity codes; only messages and files sent after that are encrypted, and the server still sees who talks to whom and when. Planner data and calls are not end-to-end encrypted. The MLS implementation is **experimental**: it has automated tests but has not had real multi-device validation or an independent security review, so do not rely on it for sensitive conversations. See [docs/SECURITY.md](docs/SECURITY.md).
+Chats are stored on the server as plaintext unless encryption is enabled for them. A direct or group chat can opt in to MLS encryption after the members compare identity codes; only messages and files sent after that are encrypted, and the server still sees who talks to whom and when. In an encrypted group, new polls, events, votes and RSVPs are end-to-end encrypted with a key exported from the group's current MLS epoch; the server still sees how many items and answers exist, who answered, and when, and planner items stored before the group was encrypted stay plaintext. Calls are not end-to-end encrypted. The MLS implementation is **experimental**: it has automated tests but has not had real multi-device validation or an independent security review, so do not rely on it for sensitive conversations. See [docs/SECURITY.md](docs/SECURITY.md).
 
 Account data can be exported or deleted from Settings. Sessions are stored in Windows Credential Manager; losing both the session and the recovery key locks you out permanently.
 
