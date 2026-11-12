@@ -1472,6 +1472,154 @@ test('an available update still blocks startup and installs', async () => {
   assert.ok(!app.$('#startupUpdateGate').classList.contains('hidden'), 'the gate stays visible');
 });
 
+// A fake crypto bridge for the encrypted planner: "sealing" wraps the JSON
+// with the AAD fields, "opening" checks them and returns null for keys this
+// fake device does not hold.
+function fakePlannerBridge({ heldKeys = new Set(['k-1']) } = {}) {
+  const seals = [];
+  const opens = [];
+  const sealed = (kind, itemId, plaintext) => `sealed:${Buffer.from(JSON.stringify({ kind, itemId, plaintext })).toString('base64')}`;
+  return {
+    seals, opens, sealed,
+    hooks: {
+      crypto_planner_seal: args => { seals.push(args); return { ciphertext: sealed(args.kind, args.itemId, args.plaintext), epoch: 4, keyId: 'k-1' }; },
+      crypto_planner_open: args => {
+        opens.push(args);
+        if (!heldKeys.has(args.keyId)) return null;
+        const decoded = JSON.parse(Buffer.from(args.ciphertext.slice('sealed:'.length), 'base64').toString());
+        if (decoded.kind !== args.kind || decoded.itemId !== args.itemId) throw new Error('The encrypted planner item could not be authenticated.');
+        return decoded.plaintext;
+      },
+    },
+  };
+}
+
+function plannerHarness({ locked, polls, events, bridge }) {
+  return (async () => {
+    const base = 'https://a.example';
+    const group = { id: 'g1', kind: 'group', display_name: 'Group' };
+    const posts = [];
+    const app = harness({
+      storage: { 'ghostchat.server': base, [`ghostchat.cryptoPeerTrusted.${base}.me.g1`]: 'fp-group' },
+      credentials: { [await serverKey(base)]: 'token-A' },
+      hooks: {
+        crypto_has_direct_group: () => true,
+        crypto_group_fingerprint: () => 'fp-group',
+        crypto_get_event_cursor: () => 0,
+        crypto_advance_event_cursor: args => args.sequence,
+        crypto_get_cached_sent_text: () => null,
+        ...bridge.hooks,
+      },
+      fetchHandler: (url, options = {}) => {
+        if (options.method === 'POST' && url.includes('/planner/')) { posts.push({ url, body: JSON.parse(options.body) }); return { body: url.endsWith('/polls') ? polls : events }; }
+        if (options.method === 'POST' && (url.includes('/vote') || url.includes('/rsvp'))) { posts.push({ url, body: JSON.parse(options.body) }); return { status: 204 }; }
+        if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
+        if (url.endsWith('/v1/conversations')) return { body: [group] };
+        if (url.endsWith('/conversations/g1/crypto-lock')) return { body: locked ? { locked: true, setupComplete: true, lockedBy: 'bob', deletedMemberIds: [] } : { locked: false } };
+        if (url.endsWith('/conversations/g1/members')) return { body: [{ id: 'me', role: 'member' }, { id: 'bob', role: 'owner' }] };
+        if (url.endsWith('/conversations/g1/planner/polls')) return { body: polls };
+        if (url.endsWith('/conversations/g1/planner/events')) return { body: events };
+        return { body: [] };
+      },
+    });
+    await app.flush(() => app.sockets.length > 0);
+    app.voiceOptions.voice.onIncoming({ conversationId: 'g1' });
+    await app.flush(() => app.fetches.some(item => item.url.endsWith('/conversations/g1/crypto-lock')));
+    await app.flush();
+    app.posts = posts;
+    return app;
+  })();
+}
+
+const POLL_ID = '11111111-1111-4111-8111-111111111111';
+const EVENT_ID = '22222222-2222-4222-8222-222222222222';
+
+test('the encrypted planner opens sealed items, tallies sealed votes and labels the rest', async () => {
+  const bridge = fakePlannerBridge();
+  const row = (kind, itemId, value, keyId = 'k-1') => ({ ciphertext: bridge.sealed(kind, itemId, JSON.stringify(value)), epoch: 4, key_id: keyId });
+  const polls = [
+    { id: POLL_ID, question: null, options: [], my_option_id: null, closed_at: null, ...row('poll', POLL_ID, { question: 'Sealed question?', options: ['Pizza', 'Sushi'] }),
+      responses: [
+        { user_id: 'bob', ...row('poll_vote', `${POLL_ID}/bob`, { option: '1' }) },
+        { user_id: 'me', ...row('poll_vote', `${POLL_ID}/me`, { option: '1' }) },
+        // A vote sealed for another voter's id is not counted.
+        { user_id: 'carol', ...row('poll_vote', `${POLL_ID}/bob`, { option: '0' }) },
+      ] },
+    { id: '33333333-3333-4333-8333-333333333333', question: null, options: [], my_option_id: null, closed_at: null, ...row('poll', '33333333-3333-4333-8333-333333333333', { question: 'Old epoch?', options: ['A', 'B'] }, 'k-unknown'), responses: [] },
+    { id: '44444444-4444-4444-8444-444444444444', question: 'Plain before?', options: [{ id: 'o1', label: 'Yes', votes: 1 }, { id: 'o2', label: 'No', votes: 0 }], my_option_id: null, closed_at: null, ciphertext: null, epoch: null, key_id: null, responses: [] },
+  ];
+  const events = [
+    { id: EVENT_ID, title: null, details: null, scheduled_at: null, going: 0, maybe: 0, declined: 0, my_status: null, ...row('event', EVENT_ID, { title: 'Sealed dinner', details: '', scheduled_at: '2999-01-01T19:00' }),
+      responses: [{ user_id: 'bob', ...row('event_rsvp', `${EVENT_ID}/bob`, { status: 'going' }) }] },
+  ];
+  const app = await plannerHarness({ locked: true, polls, events, bridge });
+  await app.$('#groupPlannerButton').onclick();
+  await app.flush(() => app.created.some(node => node.textContent === 'Sealed dinner'));
+  const texts = app.created.map(node => String(node.textContent));
+  assert.ok(texts.includes('Sealed question?'), 'the sealed question is decrypted');
+  assert.ok(texts.includes('Pizza · 0') && texts.includes('Sushi · 2'), `sealed votes are tallied on the client (${texts.filter(t => t.includes(' · ')).join(' | ')})`);
+  assert.ok(texts.includes('Encrypted item, cannot open on this device'), 'an item of an epoch this device lacks is shown locked');
+  assert.ok(!texts.includes('Old epoch?'));
+  assert.ok(texts.includes('Plain before?') && texts.includes('Stored before encryption'), 'an item from before encryption is labelled');
+  assert.ok(texts.some(text => text.startsWith('Going: 1')), 'sealed RSVPs are counted');
+  assert.ok(bridge.opens.every(args => args.userId === 'me' && args.conversationId === 'g1'));
+  const mine = app.created.find(node => node.textContent === 'Sushi · 2');
+  assert.equal(mine.disabled, true, "this account's decrypted vote marks its option");
+});
+
+test('the encrypted planner seals new polls, events, votes and RSVPs and never posts plaintext', async () => {
+  const bridge = fakePlannerBridge();
+  const row = (kind, itemId, value) => ({ ciphertext: bridge.sealed(kind, itemId, JSON.stringify(value)), epoch: 4, key_id: 'k-1' });
+  const polls = [{ id: POLL_ID, question: null, options: [], my_option_id: null, closed_at: null, ...row('poll', POLL_ID, { question: 'Q?', options: ['A', 'B'] }), responses: [] }];
+  const events = [{ id: EVENT_ID, title: null, details: null, scheduled_at: null, going: 0, maybe: 0, declined: 0, my_status: null, ...row('event', EVENT_ID, { title: 'Party', details: '', scheduled_at: '2999-01-01T19:00' }), responses: [] }];
+  const app = await plannerHarness({ locked: true, polls, events, bridge });
+  app.$('#groupPollQuestion').value = 'Secret question?';
+  app.$('#groupPollOptions').value = 'Left\nRight';
+  await app.$('#createGroupPoll').onclick({ currentTarget: app.$('#createGroupPoll') });
+  app.$('#groupEventTitle').value = 'Secret party';
+  app.$('#groupEventDetails').value = 'Bring cake';
+  app.$('#groupEventTime').value = '2999-02-02T20:00';
+  await app.$('#createGroupEvent').onclick({ currentTarget: app.$('#createGroupEvent') });
+  await app.flush(() => app.created.some(node => node.textContent === 'Party'));
+  app.created.find(node => node.textContent === 'B · 0').onclick();
+  app.created.find(node => node.textContent === 'Maybe').onclick();
+  await app.flush(() => app.posts.length >= 4);
+  const [poll, event] = app.posts;
+  for (const post of app.posts) {
+    const body = JSON.stringify(post.body);
+    for (const secret of ['Secret', 'Left', 'Right', 'cake', '2999-02-02', 'maybe', '"1"']) assert.ok(!body.includes(secret), `${post.url} leaks ${secret}: ${body}`);
+    assert.equal(post.body.epoch, 4); assert.equal(post.body.key_id, 'k-1'); assert.ok(post.body.ciphertext.startsWith('sealed:'));
+  }
+  assert.match(poll.body.id, /^[0-9a-f-]{36}$/);
+  assert.equal(poll.body.question, undefined); assert.equal(poll.body.options, undefined);
+  assert.equal(event.body.title, undefined);
+  const sealedPoll = bridge.seals.find(args => args.kind === 'poll');
+  assert.equal(sealedPoll.itemId, poll.body.id, 'the poll is sealed for the id it is posted with');
+  assert.deepEqual(JSON.parse(sealedPoll.plaintext), { question: 'Secret question?', options: ['Left', 'Right'] });
+  assert.deepEqual(JSON.parse(bridge.seals.find(args => args.kind === 'event').plaintext), { title: 'Secret party', details: 'Bring cake', scheduled_at: '2999-02-02T20:00' });
+  const vote = bridge.seals.find(args => args.kind === 'poll_vote');
+  assert.equal(vote.itemId, `${POLL_ID}/me`); assert.deepEqual(JSON.parse(vote.plaintext), { option: '1' });
+  const rsvp = bridge.seals.find(args => args.kind === 'event_rsvp');
+  assert.equal(rsvp.itemId, `${EVENT_ID}/me`); assert.deepEqual(JSON.parse(rsvp.plaintext), { status: 'maybe' });
+  assert.ok(app.posts.some(post => post.url.endsWith(`/v1/group-polls/${POLL_ID}/vote`)));
+});
+
+test('a plaintext group planner keeps posting plaintext without the crypto bridge', async () => {
+  const bridge = fakePlannerBridge();
+  const polls = [{ id: POLL_ID, question: 'Lunch?', options: [{ id: 'o1', label: 'Yes', votes: 0 }, { id: 'o2', label: 'No', votes: 0 }], my_option_id: null, closed_at: null, responses: [] }];
+  const app = await plannerHarness({ locked: false, polls, events: [], bridge });
+  app.$('#groupPollQuestion').value = 'Plain?';
+  app.$('#groupPollOptions').value = 'A\nB';
+  await app.$('#createGroupPoll').onclick({ currentTarget: app.$('#createGroupPoll') });
+  await app.flush(() => app.created.some(node => node.textContent === 'No · 0'));
+  app.created.find(node => node.textContent === 'No · 0').onclick();
+  await app.flush(() => app.posts.length >= 2);
+  assert.deepEqual(app.posts[0].body, { question: 'Plain?', options: ['A', 'B'], closes_at: null });
+  assert.deepEqual(app.posts[1].body, { option_id: 'o2' });
+  assert.ok(!app.created.some(node => node.textContent === 'Stored before encryption'));
+  assert.equal(bridge.seals.length + bridge.opens.length, 0, 'the crypto bridge is not used');
+});
+
 (async () => {
   let failed = 0;
   for (const { name, fn } of tests) {

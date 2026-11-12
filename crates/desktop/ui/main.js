@@ -285,7 +285,9 @@
     "Saved messages": "Kaydedilenler", "Saved": "Kaydedilenler", "Keep important messages within reach.": "Önemli mesajlarını kolayca bul.", "No saved messages yet.": "Henüz kaydedilmiş mesaj yok.", "Save message": "Mesajı kaydet", "Remove from saved": "Kaydedilenlerden kaldır", "Message saved.": "Mesaj kaydedildi.", "Removed from saved messages.": "Mesaj kaydedilenlerden kaldırıldı."
   });
   Object.assign(trText, {
-    "Group planner": "Grup planlayıcısı", "Plan together": "Birlikte planla", "Quick poll": "Hızlı anket", "Question": "Soru", "Options (one per line)": "Seçenekler (her satıra bir tane)", "Create poll": "Anket oluştur", "Make a plan": "Plan oluştur", "When": "Ne zaman", "Notes (optional)": "Notlar (isteğe bağlı)", "Create event": "Etkinlik oluştur", "Active polls": "Açık anketler", "Upcoming": "Yaklaşanlar", "Vote": "Oy ver", "Going": "Geliyorum", "Maybe": "Belki", "Declined": "Gelemiyorum", "No polls yet.": "Henüz anket yok.", "No upcoming events.": "Yaklaşan etkinlik yok.", "Poll created.": "Anket oluşturuldu.", "Event created.": "Etkinlik oluşturuldu."
+    "Group planner": "Grup planlayıcısı", "Plan together": "Birlikte planla", "Quick poll": "Hızlı anket", "Question": "Soru", "Options (one per line)": "Seçenekler (her satıra bir tane)", "Create poll": "Anket oluştur", "Make a plan": "Plan oluştur", "When": "Ne zaman", "Notes (optional)": "Notlar (isteğe bağlı)", "Create event": "Etkinlik oluştur", "Active polls": "Açık anketler", "Upcoming": "Yaklaşanlar", "Vote": "Oy ver", "Going": "Geliyorum", "Maybe": "Belki", "Declined": "Gelemiyorum", "No polls yet.": "Henüz anket yok.", "No upcoming events.": "Yaklaşan etkinlik yok.", "Poll created.": "Anket oluşturuldu.", "Event created.": "Etkinlik oluşturuldu.",
+    "Encrypted item, cannot open on this device": "Şifreli öğe, bu cihazda açılamıyor", "Stored before encryption": "Şifrelemeden önce kaydedildi", "A poll needs a question and 2 to 8 short options.": "Ankette bir soru ve 2 ile 8 arası kısa seçenek olmalı.", "Add a short title and a valid time for this event.": "Bu etkinliğe kısa bir başlık ve geçerli bir zaman ekle.",
+    "This group's planner is end-to-end encrypted. Update GhostChat to add or answer polls and events here.": "Bu grubun planlayıcısı uçtan uca şifreli. Burada anket ve etkinlik eklemek ya da yanıtlamak için GhostChat'i güncelle."
   });
   let updateStatusKey = "Updates are checked automatically.";
   let updateStatusValues = {};
@@ -1797,6 +1799,72 @@
       $("#groupManageStatus").textContent = error.message || translate("Group settings could not be loaded.");
     }
   }
+  // Planner items of an encrypted group are sealed and opened by the Rust
+  // crypto module (crypto_planner_*) with a key exported from the group's MLS
+  // epoch; the server stores only ciphertext. Items stored before the group
+  // was encrypted stay plaintext and are labelled.
+  function plannerIsEncrypted(conversationId) { return state.cryptoLocked.has(conversationId); }
+  async function plannerSeal(conversationId, kind, itemId, value) {
+    const sealed = await invoke("crypto_planner_seal", { userId: state.user.id, conversationId, kind, itemId, plaintext: JSON.stringify(value) });
+    return { ciphertext: sealed.ciphertext, epoch: sealed.epoch, key_id: sealed.keyId };
+  }
+  // The opened JSON object, or null: no key on this device, or a payload
+  // that does not authenticate for this item.
+  async function plannerOpen(conversationId, kind, itemId, row) {
+    if (!row || typeof row.ciphertext !== "string" || !Number.isSafeInteger(row.epoch) || typeof row.key_id !== "string") return null;
+    try {
+      const text = await invoke("crypto_planner_open", { userId: state.user.id, conversationId, kind, itemId, epoch: row.epoch, keyId: row.key_id, ciphertext: row.ciphertext });
+      if (typeof text !== "string") return null;
+      const value = JSON.parse(text);
+      return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+    } catch { return null; }
+  }
+  const plannerText = (value, min, max) => typeof value === "string" && value.trim().length >= min && value.length <= max;
+  function plannerPollValid(question, options) { return plannerText(question, 1, 240) && Array.isArray(options) && options.length >= 2 && options.length <= 8 && options.every(option => plannerText(option, 1, 100)); }
+  function plannerEventValid(value) { return plannerText(value?.title, 2, 140) && typeof value.details === "string" && value.details.length <= 1500 && plannerText(value.scheduled_at, 1, 64); }
+  async function plannerPollView(conversationId, poll) {
+    const view = { id: poll.id, closed: Boolean(poll.closed_at), legacy: false, locked: false, question: "", options: [], mine: null };
+    if (typeof poll.ciphertext === "string") {
+      const value = await plannerOpen(conversationId, "poll", poll.id, poll);
+      if (!value || !plannerPollValid(value.question, value.options)) { view.locked = true; return view; }
+      view.question = value.question; view.options = value.options.map((label, index) => ({ key: String(index), label, votes: 0 }));
+    } else {
+      view.legacy = plannerIsEncrypted(conversationId);
+      view.question = String(poll.question || ""); view.options = (poll.options || []).map(option => ({ key: option.id, label: String(option.label), votes: Number(option.votes) || 0 }));
+      view.mine = poll.my_option_id || null;
+    }
+    for (const response of Array.isArray(poll.responses) ? poll.responses : []) {
+      const value = await plannerOpen(conversationId, "poll_vote", `${poll.id}/${response.user_id}`, response);
+      const option = view.options.find(item => item.key === value?.option);
+      if (!option) continue;
+      option.votes += 1;
+      if (response.user_id === state.user?.id) view.mine = option.key;
+    }
+    return view;
+  }
+  async function plannerEventView(conversationId, item) {
+    const view = { id: item.id, legacy: false, locked: false, title: "", scheduled_at: "", going: Number(item.going) || 0, maybe: Number(item.maybe) || 0, mine: item.my_status || null };
+    if (typeof item.ciphertext === "string") {
+      const value = await plannerOpen(conversationId, "event", item.id, item);
+      if (!plannerEventValid(value)) { view.locked = true; return view; }
+      view.title = value.title; view.scheduled_at = value.scheduled_at;
+    } else {
+      view.legacy = plannerIsEncrypted(conversationId);
+      view.title = String(item.title || ""); view.scheduled_at = String(item.scheduled_at || "");
+    }
+    for (const response of Array.isArray(item.responses) ? item.responses : []) {
+      const value = await plannerOpen(conversationId, "event_rsvp", `${item.id}/${response.user_id}`, response);
+      if (!["going", "maybe", "declined"].includes(value?.status)) continue;
+      if (value.status === "going") view.going += 1;
+      if (value.status === "maybe") view.maybe += 1;
+      if (response.user_id === state.user?.id) view.mine = value.status;
+    }
+    return view;
+  }
+  async function plannerAnswer(conversationId, path, kind, itemId, value, plaintext) {
+    const body = plannerIsEncrypted(conversationId) ? await plannerSeal(conversationId, kind, `${itemId}/${state.user.id}`, value) : plaintext;
+    await request(path, { method: "POST", body: JSON.stringify(body) });
+  }
   async function openGroupPlanner() {
     const conversation = state.active;
     if (!conversation || conversation.kind !== "group") return;
@@ -1808,18 +1876,28 @@
         request(`/v1/conversations/${encodeURIComponent(conversation.id)}/planner/polls`),
         request(`/v1/conversations/${encodeURIComponent(conversation.id)}/planner/events`),
       ]);
+      const pollViews = []; for (const poll of polls) pollViews.push(await plannerPollView(conversation.id, poll));
+      const eventViews = []; for (const item of events) eventViews.push(await plannerEventView(conversation.id, item));
+      const eventTime = view => { const time = new Date(view.scheduled_at).getTime(); return Number.isNaN(time) ? Infinity : time; };
+      eventViews.sort((a, b) => eventTime(a) - eventTime(b));
       pollList.replaceChildren(); eventList.replaceChildren();
-      if (!polls.length) pollList.append(create("div", "empty-list", translate("No polls yet.")));
-      for (const poll of polls) {
-        const card = create("div", "group-member-row"); const copy = create("div", "list-copy"); copy.append(createText("strong", "", poll.question));
-        for (const option of poll.options || []) { const vote = createText("button", "button secondary", `${option.label} · ${option.votes}`); vote.disabled = poll.closed_at || poll.my_option_id === option.id; vote.onclick = async () => { try { await request(`/v1/group-polls/${encodeURIComponent(poll.id)}/vote`, { method: "POST", body: JSON.stringify({ option_id: option.id }) }); await openGroupPlanner(); } catch (error) { toast(error.message, true); } }; copy.append(vote); }
+      if (!pollViews.length) pollList.append(create("div", "empty-list", translate("No polls yet.")));
+      for (const poll of pollViews) {
+        const card = create("div", "group-member-row"); const copy = create("div", "list-copy");
+        if (poll.locked) { copy.append(create("span", "", "Encrypted item, cannot open on this device")); card.append(copy); pollList.append(card); continue; }
+        copy.append(createText("strong", "", poll.question));
+        if (poll.legacy) copy.append(create("span", "", "Stored before encryption"));
+        for (const option of poll.options) { const vote = createText("button", "button secondary", `${option.label} · ${option.votes}`); vote.disabled = poll.closed || poll.mine === option.key; vote.onclick = async () => { try { await plannerAnswer(conversation.id, `/v1/group-polls/${encodeURIComponent(poll.id)}/vote`, "poll_vote", poll.id, { option: option.key }, { option_id: option.key }); await openGroupPlanner(); } catch (error) { toast(error.message, true); } }; copy.append(vote); }
         card.append(copy); pollList.append(card);
       }
-      if (!events.length) eventList.append(create("div", "empty-list", translate("No upcoming events.")));
-      for (const item of events) {
-        const card = create("div", "group-member-row"); const copy = create("div", "list-copy"); const when = new Date(item.scheduled_at);
-        copy.append(createText("strong", "", item.title), create("span", "", Number.isNaN(when.getTime()) ? item.scheduled_at : when.toLocaleString()), create("span", "", `${translate("Going")}: ${item.going} · ${translate("Maybe")}: ${item.maybe}`));
-        const actions = create("div", "request-actions"); for (const [status, label] of [["going", "Going"], ["maybe", "Maybe"], ["declined", "Declined"]]) { const button = create("button", "button secondary", translate(label)); button.disabled = item.my_status === status; button.onclick = async () => { try { await request(`/v1/group-events/${encodeURIComponent(item.id)}/rsvp`, { method: "POST", body: JSON.stringify({ status }) }); await openGroupPlanner(); } catch (error) { toast(error.message, true); } }; actions.append(button); }
+      if (!eventViews.length) eventList.append(create("div", "empty-list", translate("No upcoming events.")));
+      for (const item of eventViews) {
+        const card = create("div", "group-member-row"); const copy = create("div", "list-copy");
+        if (item.locked) { copy.append(create("span", "", "Encrypted item, cannot open on this device")); card.append(copy); eventList.append(card); continue; }
+        const when = new Date(item.scheduled_at);
+        copy.append(createText("strong", "", item.title), createText("span", "", Number.isNaN(when.getTime()) ? item.scheduled_at : when.toLocaleString()), createText("span", "", `${translate("Going")}: ${item.going} · ${translate("Maybe")}: ${item.maybe}`));
+        if (item.legacy) copy.append(create("span", "", "Stored before encryption"));
+        const actions = create("div", "request-actions"); for (const [status, label] of [["going", "Going"], ["maybe", "Maybe"], ["declined", "Declined"]]) { const button = create("button", "button secondary", translate(label)); button.disabled = item.mine === status; button.onclick = async () => { try { await plannerAnswer(conversation.id, `/v1/group-events/${encodeURIComponent(item.id)}/rsvp`, "event_rsvp", item.id, { status }, { status }); await openGroupPlanner(); } catch (error) { toast(error.message, true); } }; actions.append(button); }
         card.append(copy, actions); eventList.append(card);
       }
       $("#groupPlannerStatus").textContent = "";
@@ -3885,7 +3963,13 @@
     if (!state.active || state.active.kind !== "group") return;
     const button = event.currentTarget; const question = $("#groupPollQuestion").value.trim(); const options = $("#groupPollOptions").value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
     button.disabled = true;
-    try { await request(`/v1/conversations/${encodeURIComponent(state.active.id)}/planner/polls`, { method: "POST", body: JSON.stringify({ question, options, closes_at: null }) }); $("#groupPollQuestion").value = ""; $("#groupPollOptions").value = ""; toast(translate("Poll created.")); await openGroupPlanner(); }
+    try {
+      const conversationId = state.active.id; let body = { question, options, closes_at: null };
+      if (plannerIsEncrypted(conversationId)) {
+        if (!plannerPollValid(question, options)) throw new Error(translate("A poll needs a question and 2 to 8 short options."));
+        const id = crypto.randomUUID(); body = { id, ...await plannerSeal(conversationId, "poll", id, { question, options }), closes_at: null };
+      }
+      await request(`/v1/conversations/${encodeURIComponent(conversationId)}/planner/polls`, { method: "POST", body: JSON.stringify(body) }); $("#groupPollQuestion").value = ""; $("#groupPollOptions").value = ""; toast(translate("Poll created.")); await openGroupPlanner(); }
     catch (error) { toast(error.message, true); }
     finally { button.disabled = false; }
   };
@@ -3893,7 +3977,13 @@
     if (!state.active || state.active.kind !== "group") return;
     const button = event.currentTarget; const title = $("#groupEventTitle").value.trim(); const details = $("#groupEventDetails").value.trim(); const scheduled_at = $("#groupEventTime").value;
     button.disabled = true;
-    try { await request(`/v1/conversations/${encodeURIComponent(state.active.id)}/planner/events`, { method: "POST", body: JSON.stringify({ title, details, scheduled_at }) }); $("#groupEventTitle").value = ""; $("#groupEventDetails").value = ""; $("#groupEventTime").value = ""; toast(translate("Event created.")); await openGroupPlanner(); }
+    try {
+      const conversationId = state.active.id; let body = { title, details, scheduled_at };
+      if (plannerIsEncrypted(conversationId)) {
+        if (!plannerEventValid(body)) throw new Error(translate("Add a short title and a valid time for this event."));
+        const id = crypto.randomUUID(); body = { id, ...await plannerSeal(conversationId, "event", id, { title, details, scheduled_at }) };
+      }
+      await request(`/v1/conversations/${encodeURIComponent(conversationId)}/planner/events`, { method: "POST", body: JSON.stringify(body) }); $("#groupEventTitle").value = ""; $("#groupEventDetails").value = ""; $("#groupEventTime").value = ""; toast(translate("Event created.")); await openGroupPlanner(); }
     catch (error) { toast(error.message, true); }
     finally { button.disabled = false; }
   };
