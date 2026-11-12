@@ -57,12 +57,19 @@ pub fn enabled(setting: Option<&str>, windows: bool) -> bool {
     windows && !disabled
 }
 
+/// A strict `major.minor.patch`: ASCII digits without leading zeros, no
+/// prefix, no whitespace, no pre-release or build suffix. The feed's version
+/// is passed on unchanged (to the new exe and to its health check), so it
+/// must already be in the one form the server reports.
 fn parse_version(version: &str) -> Option<[u64; 3]> {
-    let mut parts = version.trim().trim_start_matches('v').split('.');
+    let mut parts = version.split('.');
     let mut parsed = [0; 3];
     for slot in &mut parsed {
         let part = parts.next()?;
-        if part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit()) {
+        if part.is_empty()
+            || !part.bytes().all(|byte| byte.is_ascii_digit())
+            || (part.len() > 1 && part.starts_with('0'))
+        {
             return None;
         }
         *slot = part.parse().ok()?;
@@ -71,7 +78,7 @@ fn parse_version(version: &str) -> Option<[u64; 3]> {
 }
 
 /// Whether `candidate` is a strictly higher `major.minor.patch` than
-/// `current`. Anything that does not parse is never newer.
+/// `current`. Anything that is not a strict version is never newer.
 pub fn is_newer(candidate: &str, current: &str) -> bool {
     match (parse_version(candidate), parse_version(current)) {
         (Some(candidate), Some(current)) => candidate > current,
@@ -86,6 +93,16 @@ pub fn verify_signature(
     signature_file: &[u8],
     public_key: &str,
 ) -> Result<(), String> {
+    verify_signature_comment(data, signature_file, public_key).map(drop)
+}
+
+/// [`verify_signature`], returning the trusted comment, which the global
+/// signature authenticates.
+fn verify_signature_comment(
+    data: &[u8],
+    signature_file: &[u8],
+    public_key: &str,
+) -> Result<String, String> {
     fn base64_text(encoded: &[u8], what: &str) -> Result<String, String> {
         let encoded = std::str::from_utf8(encoded)
             .map_err(|_| format!("the {what} is not text"))?
@@ -103,7 +120,29 @@ pub fn verify_signature(
     // `true` also accepts legacy (non-prehashed) signatures, exactly as the
     // desktop's Tauri updater verifies the MSI with the same key.
     key.verify(data, &signature, true)
-        .map_err(|e| format!("the signature does not match: {e}"))
+        .map_err(|e| format!("the signature does not match: {e}"))?;
+    Ok(signature.trusted_comment().to_owned())
+}
+
+/// Verifies a `.sig` file over `data` as [`verify_signature`] does, and
+/// requires its signed trusted comment to name the server exe
+/// (`file:ghostchat-server-windows-x64.exe`, as the Tauri signer writes it),
+/// so that another file signed with the same key, such as the desktop MSI,
+/// is not accepted as the server.
+pub fn verify_server_exe(
+    data: &[u8],
+    signature_file: &[u8],
+    public_key: &str,
+) -> Result<(), String> {
+    let trusted = verify_signature_comment(data, signature_file, public_key)?;
+    let expected = format!("file:{SERVER_ASSET}");
+    if trusted.split('\t').any(|field| field == expected) {
+        Ok(())
+    } else {
+        Err(format!(
+            "the signature is not for {SERVER_ASSET} (signed comment {trusted:?})"
+        ))
+    }
 }
 
 /// Where the latest release is read from and its assets downloaded.
@@ -209,6 +248,15 @@ pub async fn try_update<R: Releases, F: Files, S: Swap>(
             return Outcome::Rejected(format!("could not read the latest release: {reason}"));
         }
     };
+    if parse_version(&latest).is_none() {
+        tracing::warn!(
+            ?latest,
+            "self-update: the latest release has no strict version"
+        );
+        return Outcome::Rejected(format!(
+            "the latest release version {latest:?} is not major.minor.patch"
+        ));
+    }
     if !is_newer(&latest, current) {
         tracing::info!(%latest, %current, "self-update: the server is up to date");
         return Outcome::UpToDate(latest);
@@ -376,11 +424,11 @@ async fn stage<R: Releases, F: Files>(
     let signature = releases
         .download(version, &format!("{SERVER_ASSET}.sig"))
         .await?;
-    verify_signature(&exe, &signature, public_key)?;
+    verify_server_exe(&exe, &signature, public_key)?;
     files.write(&paths.new, &exe)?;
     files.write(&paths.new_signature, &signature)?;
     let on_disk = files.read(&paths.new)?;
-    verify_signature(&on_disk, &files.read(&paths.new_signature)?, public_key)?;
+    verify_server_exe(&on_disk, &files.read(&paths.new_signature)?, public_key)?;
     let verified = digest(&on_disk);
     same_bytes(&exe, &verified)?;
     Ok(verified)
@@ -395,7 +443,7 @@ fn verify_staged<F: Files>(
     verified: &VerifiedDigest,
 ) -> Result<(), String> {
     let exe = files.read(&paths.new)?;
-    verify_signature(&exe, &files.read(&paths.new_signature)?, public_key)?;
+    verify_server_exe(&exe, &files.read(&paths.new_signature)?, public_key)?;
     same_bytes(&exe, verified)
 }
 
@@ -1084,7 +1132,7 @@ mod tests {
     #[test]
     fn only_strictly_higher_versions_are_newer() {
         assert!(is_newer("4.0.52", "4.0.51"));
-        assert!(is_newer("v4.1.0", "4.0.99"));
+        assert!(is_newer("4.1.0", "4.0.99"));
         assert!(is_newer("4.0.10", "4.0.9"));
         assert!(is_newer("5.0.0", "4.9.9"));
         assert!(!is_newer("4.0.51", "4.0.51"));
@@ -1093,6 +1141,116 @@ mod tests {
         assert!(!is_newer("4.0.52-beta", "4.0.51"));
         assert!(!is_newer("4.0", "4.0.51"));
         assert!(!is_newer("", "4.0.51"));
+    }
+
+    /// Only strict `major.minor.patch` versions are compared: a feed version
+    /// with a prefix, whitespace or leading zeros is never newer.
+    #[test]
+    fn feed_versions_must_be_strict_semver() {
+        for version in [
+            "v4.1.0",
+            "vv4.1.0",
+            " 4.1.0",
+            "4.1.0\n",
+            "4.01.0",
+            "04.1.0",
+            "4.1.00",
+            "+4.1.0",
+            "4.1.0.0",
+            "4.1.0-rc1",
+            "4.1.0+build",
+            "4..0",
+            "٤.1.0",
+        ] {
+            assert!(
+                !is_newer(version, "4.0.51"),
+                "{version:?} is not a strict version"
+            );
+        }
+        assert!(is_newer("4.10.0", "4.9.0"));
+        assert!(is_newer("10.0.0", "4.0.51"));
+        assert!(is_newer("4.0.52", "4.0.51"));
+        assert!(
+            !is_newer("4.0.52", "v4.0.51"),
+            "the running version must be strict too"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_non_semver_feed_version_is_rejected_without_downloading() {
+        for latest in ["v9.9.9", "09.9.9", " 9.9.9"] {
+            let paths = running_exe();
+            let releases = FakeReleases::new(latest, PAYLOAD, signature_of_payload(&test_key(9)));
+            let swap = FakeSwap::default();
+            let outcome = attempt(&releases, &swap, &paths).await;
+            assert!(
+                matches!(outcome, Outcome::Rejected(_)),
+                "{latest:?}: {outcome:?}"
+            );
+            assert!(releases.downloads.lock().unwrap().is_empty());
+            assert!(swap.calls().is_empty());
+            assert_eq!(std::fs::read(&paths.exe).unwrap(), OLD_BUILD);
+        }
+    }
+
+    /// Any file signed with the updater key verifies; only one whose signed
+    /// trusted comment names the server exe is accepted as the server exe.
+    #[test]
+    fn only_a_signature_made_for_the_server_exe_is_accepted_for_it() {
+        let key = test_key(9);
+        let public = public_key_of(&key);
+        assert_eq!(
+            verify_server_exe(PAYLOAD, &signature_of_payload(&key), &public),
+            Ok(())
+        );
+        for trusted in [
+            "timestamp:1793700000\tfile:GhostChat_9.9.9_x64_en-US.msi",
+            "timestamp:1793700000\tfile:ghostchat-server-windows-x64.exe.old",
+            "timestamp:1793700000\tfile:xghostchat-server-windows-x64.exe",
+            "timestamp:1793700000\tfile:",
+            "timestamp:1793700000",
+            "timestamp:1793700000 file:ghostchat-server-windows-x64.exe",
+        ] {
+            let signature = legacy_signature_of(&key, PAYLOAD, trusted);
+            assert_eq!(
+                verify_signature(PAYLOAD, &signature, &public),
+                Ok(()),
+                "{trusted:?}"
+            );
+            assert!(
+                verify_server_exe(PAYLOAD, &signature, &public).is_err(),
+                "{trusted:?} was accepted"
+            );
+        }
+        assert_eq!(
+            verify_server_exe(
+                PAYLOAD,
+                &legacy_signature_of(
+                    &key,
+                    PAYLOAD,
+                    "file:ghostchat-server-windows-x64.exe\ttimestamp:1"
+                ),
+                &public
+            ),
+            Ok(())
+        );
+    }
+
+    #[tokio::test]
+    async fn an_msi_signature_is_rejected_for_the_server_exe() {
+        let paths = running_exe();
+        let msi_signature = legacy_signature_of(
+            &test_key(9),
+            PAYLOAD,
+            "timestamp:1793700000\tfile:GhostChat_9.9.9_x64_en-US.msi",
+        );
+        let releases = FakeReleases::new("9.9.9", PAYLOAD, msi_signature);
+        let swap = FakeSwap::default();
+        let outcome = attempt(&releases, &swap, &paths).await;
+        assert!(matches!(outcome, Outcome::Rejected(_)), "{outcome:?}");
+        assert!(swap.calls().is_empty(), "{:?}", swap.calls());
+        assert_eq!(std::fs::read(&paths.exe).unwrap(), OLD_BUILD);
+        assert_eq!(files_in(&paths), vec![SERVER_ASSET.to_owned()]);
     }
 
     #[test]
@@ -1125,7 +1283,7 @@ mod tests {
 
     #[tokio::test]
     async fn older_or_equal_release_is_ignored_without_downloading() {
-        for latest in ["4.0.51", "4.0.50", "garbage"] {
+        for latest in ["4.0.51", "4.0.50"] {
             let paths = running_exe();
             let releases = FakeReleases::new(latest, PAYLOAD, signature_of_payload(&test_key(9)));
             let swap = FakeSwap::default();
