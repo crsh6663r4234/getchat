@@ -1834,11 +1834,44 @@
       return value && typeof value === "object" && !Array.isArray(value) ? value : null;
     } catch { return null; }
   }
+  // Sealed votes and RSVPs are counted per voter, not per row: each voter has
+  // at most one current answer per item, the one with the highest counter
+  // ("seq") inside its sealed payload. A row the server repeats counts once,
+  // an older answer cannot replace a newer one, and two different answers
+  // with the same counter count as none. This device also remembers the
+  // newest answer it has seen, so the server cannot bring an older one back
+  // while the app runs. Payloads sealed before the counter existed count as 0.
+  const plannerNewestSeen = new Map();
+  async function plannerTally(conversationId, kind, itemId, responses, answerOf) {
+    const newest = new Map();
+    for (const response of Array.isArray(responses) ? responses : []) {
+      const voter = response?.user_id;
+      if (typeof voter !== "string" || !voter) continue;
+      const value = await plannerOpen(conversationId, kind, `${itemId}/${voter}`, response);
+      const answer = value ? answerOf(value) : null;
+      if (typeof answer !== "string") continue;
+      const seq = value.seq === undefined ? 0 : value.seq;
+      if (!Number.isSafeInteger(seq) || seq < 0) continue;
+      const current = newest.get(voter);
+      if (!current || seq > current.seq) newest.set(voter, { seq, answer, conflict: false });
+      else if (seq === current.seq && answer !== current.answer) current.conflict = true;
+    }
+    const answers = new Map();
+    for (const [voter, current] of newest) {
+      const key = `${state.user?.id}\n${conversationId}\n${kind}\n${itemId}\n${voter}`;
+      const remembered = plannerNewestSeen.get(key);
+      if (remembered && remembered.seq > current.seq) { answers.set(voter, remembered); continue; }
+      if (current.conflict) continue;
+      plannerNewestSeen.set(key, { seq: current.seq, answer: current.answer });
+      answers.set(voter, { seq: current.seq, answer: current.answer });
+    }
+    return answers;
+  }
   const plannerText = (value, min, max) => typeof value === "string" && value.trim().length >= min && value.length <= max;
   function plannerPollValid(question, options) { return plannerText(question, 1, 240) && Array.isArray(options) && options.length >= 2 && options.length <= 8 && options.every(option => plannerText(option, 1, 100)); }
   function plannerEventValid(value) { return plannerText(value?.title, 2, 140) && typeof value.details === "string" && value.details.length <= 1500 && plannerText(value.scheduled_at, 1, 64); }
   async function plannerPollView(conversationId, poll) {
-    const view = { id: poll.id, closed: Boolean(poll.closed_at), legacy: false, locked: false, question: "", options: [], mine: null };
+    const view = { id: poll.id, closed: Boolean(poll.closed_at), legacy: false, locked: false, question: "", options: [], mine: null, mySeq: 0 };
     if (typeof poll.ciphertext === "string") {
       const value = await plannerOpen(conversationId, "poll", poll.id, poll);
       if (!value || !plannerPollValid(value.question, value.options)) { view.locked = true; return view; }
@@ -1848,17 +1881,15 @@
       view.question = String(poll.question || ""); view.options = (poll.options || []).map(option => ({ key: option.id, label: String(option.label), votes: Number(option.votes) || 0 }));
       view.mine = poll.my_option_id || null;
     }
-    for (const response of Array.isArray(poll.responses) ? poll.responses : []) {
-      const value = await plannerOpen(conversationId, "poll_vote", `${poll.id}/${response.user_id}`, response);
-      const option = view.options.find(item => item.key === value?.option);
-      if (!option) continue;
-      option.votes += 1;
-      if (response.user_id === state.user?.id) view.mine = option.key;
+    const answers = await plannerTally(conversationId, "poll_vote", poll.id, poll.responses, value => view.options.some(item => item.key === value.option) ? value.option : null);
+    for (const [voter, { seq, answer }] of answers) {
+      view.options.find(item => item.key === answer).votes += 1;
+      if (voter === state.user?.id) { view.mine = answer; view.mySeq = seq; }
     }
     return view;
   }
   async function plannerEventView(conversationId, item) {
-    const view = { id: item.id, legacy: false, locked: false, title: "", scheduled_at: "", going: Number(item.going) || 0, maybe: Number(item.maybe) || 0, mine: item.my_status || null };
+    const view = { id: item.id, legacy: false, locked: false, title: "", scheduled_at: "", going: Number(item.going) || 0, maybe: Number(item.maybe) || 0, mine: item.my_status || null, mySeq: 0 };
     if (typeof item.ciphertext === "string") {
       const value = await plannerOpen(conversationId, "event", item.id, item);
       if (!plannerEventValid(value)) { view.locked = true; return view; }
@@ -1867,17 +1898,20 @@
       view.legacy = plannerKnownEncrypted(conversationId);
       view.title = String(item.title || ""); view.scheduled_at = String(item.scheduled_at || "");
     }
-    for (const response of Array.isArray(item.responses) ? item.responses : []) {
-      const value = await plannerOpen(conversationId, "event_rsvp", `${item.id}/${response.user_id}`, response);
-      if (!["going", "maybe", "declined"].includes(value?.status)) continue;
-      if (value.status === "going") view.going += 1;
-      if (value.status === "maybe") view.maybe += 1;
-      if (response.user_id === state.user?.id) view.mine = value.status;
+    const answers = await plannerTally(conversationId, "event_rsvp", item.id, item.responses, value => ["going", "maybe", "declined"].includes(value.status) ? value.status : null);
+    for (const [voter, { seq, answer }] of answers) {
+      if (answer === "going") view.going += 1;
+      if (answer === "maybe") view.maybe += 1;
+      if (voter === state.user?.id) { view.mine = answer; view.mySeq = seq; }
     }
     return view;
   }
-  async function plannerAnswer(conversationId, path, kind, itemId, value, plaintext) {
-    const body = await plannerMustSeal(conversationId) ? await plannerSeal(conversationId, kind, `${itemId}/${state.user.id}`, value) : plaintext;
+  // lastSeq: the counter of this account's newest answer to the item; the new
+  // answer's counter is above it and above any answer this device has seen.
+  async function plannerAnswer(conversationId, path, kind, itemId, value, plaintext, lastSeq = 0) {
+    const remembered = plannerNewestSeen.get(`${state.user.id}\n${conversationId}\n${kind}\n${itemId}\n${state.user.id}`)?.seq || 0;
+    const seq = Math.max(Date.now(), lastSeq + 1, remembered + 1);
+    const body = await plannerMustSeal(conversationId) ? await plannerSeal(conversationId, kind, `${itemId}/${state.user.id}`, { ...value, seq }) : plaintext;
     await request(path, { method: "POST", body: JSON.stringify(body) });
   }
   async function openGroupPlanner() {
@@ -1902,7 +1936,7 @@
         if (poll.locked) { copy.append(create("span", "", "Encrypted item, cannot open on this device")); card.append(copy); pollList.append(card); continue; }
         copy.append(createText("strong", "", poll.question));
         if (poll.legacy) copy.append(create("span", "", "Stored before encryption"));
-        for (const option of poll.options) { const vote = createText("button", "button secondary", `${option.label} · ${option.votes}`); vote.disabled = poll.closed || poll.mine === option.key; vote.onclick = async () => { try { await plannerAnswer(conversation.id, `/v1/group-polls/${encodeURIComponent(poll.id)}/vote`, "poll_vote", poll.id, { option: option.key }, { option_id: option.key }); await openGroupPlanner(); } catch (error) { toast(error.message, true); } }; copy.append(vote); }
+        for (const option of poll.options) { const vote = createText("button", "button secondary", `${option.label} · ${option.votes}`); vote.disabled = poll.closed || poll.mine === option.key; vote.onclick = async () => { try { await plannerAnswer(conversation.id, `/v1/group-polls/${encodeURIComponent(poll.id)}/vote`, "poll_vote", poll.id, { option: option.key }, { option_id: option.key }, poll.mySeq); await openGroupPlanner(); } catch (error) { toast(error.message, true); } }; copy.append(vote); }
         card.append(copy); pollList.append(card);
       }
       if (!eventViews.length) eventList.append(create("div", "empty-list", translate("No upcoming events.")));
@@ -1912,7 +1946,7 @@
         const when = new Date(item.scheduled_at);
         copy.append(createText("strong", "", item.title), createText("span", "", Number.isNaN(when.getTime()) ? item.scheduled_at : when.toLocaleString()), createText("span", "", `${translate("Going")}: ${item.going} · ${translate("Maybe")}: ${item.maybe}`));
         if (item.legacy) copy.append(create("span", "", "Stored before encryption"));
-        const actions = create("div", "request-actions"); for (const [status, label] of [["going", "Going"], ["maybe", "Maybe"], ["declined", "Declined"]]) { const button = create("button", "button secondary", translate(label)); button.disabled = item.mine === status; button.onclick = async () => { try { await plannerAnswer(conversation.id, `/v1/group-events/${encodeURIComponent(item.id)}/rsvp`, "event_rsvp", item.id, { status }, { status }); await openGroupPlanner(); } catch (error) { toast(error.message, true); } }; actions.append(button); }
+        const actions = create("div", "request-actions"); for (const [status, label] of [["going", "Going"], ["maybe", "Maybe"], ["declined", "Declined"]]) { const button = create("button", "button secondary", translate(label)); button.disabled = item.mine === status; button.onclick = async () => { try { await plannerAnswer(conversation.id, `/v1/group-events/${encodeURIComponent(item.id)}/rsvp`, "event_rsvp", item.id, { status }, { status }, item.mySeq); await openGroupPlanner(); } catch (error) { toast(error.message, true); } }; actions.append(button); }
         card.append(copy, actions); eventList.append(card);
       }
       $("#groupPlannerStatus").textContent = "";

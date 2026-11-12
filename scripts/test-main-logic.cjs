@@ -1598,9 +1598,9 @@ test('the encrypted planner seals new polls, events, votes and RSVPs and never p
   assert.deepEqual(JSON.parse(sealedPoll.plaintext), { question: 'Secret question?', options: ['Left', 'Right'] });
   assert.deepEqual(JSON.parse(bridge.seals.find(args => args.kind === 'event').plaintext), { title: 'Secret party', details: 'Bring cake', scheduled_at: '2999-02-02T20:00' });
   const vote = bridge.seals.find(args => args.kind === 'poll_vote');
-  assert.equal(vote.itemId, `${POLL_ID}/me`); assert.deepEqual(JSON.parse(vote.plaintext), { option: '1' });
+  assert.equal(vote.itemId, `${POLL_ID}/me`); const { seq: voteSeq, ...voteValue } = JSON.parse(vote.plaintext); assert.deepEqual(voteValue, { option: '1' }); assert.ok(Number.isSafeInteger(voteSeq) && voteSeq > 0);
   const rsvp = bridge.seals.find(args => args.kind === 'event_rsvp');
-  assert.equal(rsvp.itemId, `${EVENT_ID}/me`); assert.deepEqual(JSON.parse(rsvp.plaintext), { status: 'maybe' });
+  assert.equal(rsvp.itemId, `${EVENT_ID}/me`); const { seq: rsvpSeq, ...rsvpValue } = JSON.parse(rsvp.plaintext); assert.deepEqual(rsvpValue, { status: 'maybe' }); assert.ok(Number.isSafeInteger(rsvpSeq) && rsvpSeq > 0);
   assert.ok(app.posts.some(post => post.url.endsWith(`/v1/group-polls/${POLL_ID}/vote`)));
 });
 
@@ -1618,6 +1618,42 @@ test('a plaintext group planner keeps posting plaintext without the crypto bridg
   assert.deepEqual(app.posts[1].body, { option_id: 'o2' });
   assert.ok(!app.created.some(node => node.textContent === 'Stored before encryption'));
   assert.equal(bridge.seals.length + bridge.opens.length, 0, 'the crypto bridge is not used');
+});
+
+test('sealed votes and RSVPs count once per voter and the newest answer wins', async () => {
+  const bridge = fakePlannerBridge();
+  const row = (kind, itemId, value) => ({ ciphertext: bridge.sealed(kind, itemId, JSON.stringify(value)), epoch: 4, key_id: 'k-1' });
+  const bobVote = { user_id: 'bob', ...row('poll_vote', `${POLL_ID}/bob`, { option: '1', seq: 5 }) };
+  const polls = [{ id: POLL_ID, question: null, options: [], my_option_id: null, closed_at: null, ...row('poll', POLL_ID, { question: 'Q?', options: ['A', 'B', 'C'] }),
+    responses: [
+      // One authentic vote returned three times.
+      bobVote, bobVote, bobVote,
+      // Two answers of one voter: the newer one (higher counter) counts, whatever the order.
+      { user_id: 'carol', ...row('poll_vote', `${POLL_ID}/carol`, { option: '2', seq: 9 }) },
+      { user_id: 'carol', ...row('poll_vote', `${POLL_ID}/carol`, { option: '0', seq: 3 }) },
+      { user_id: 'me', ...row('poll_vote', `${POLL_ID}/me`, { option: '0', seq: 1 }) },
+      { user_id: 'me', ...row('poll_vote', `${POLL_ID}/me`, { option: '2', seq: 2 }) },
+    ] }];
+  const bobRsvp = { user_id: 'bob', ...row('event_rsvp', `${EVENT_ID}/bob`, { status: 'going', seq: 4 }) };
+  const events = [{ id: EVENT_ID, title: null, details: null, scheduled_at: null, going: 0, maybe: 0, declined: 0, my_status: null, ...row('event', EVENT_ID, { title: 'Party', details: '', scheduled_at: '2999-01-01T19:00' }),
+    responses: [bobRsvp, bobRsvp,
+      { user_id: 'carol', ...row('event_rsvp', `${EVENT_ID}/carol`, { status: 'going', seq: 1 }) },
+      { user_id: 'carol', ...row('event_rsvp', `${EVENT_ID}/carol`, { status: 'maybe', seq: 2 }) }] }];
+  const app = await plannerHarness({ locked: true, polls, events, bridge });
+  await app.$('#groupPlannerButton').onclick();
+  await app.flush(() => app.created.some(node => node.textContent === 'Party'));
+  const texts = app.created.map(node => String(node.textContent));
+  assert.ok(texts.includes('A · 0') && texts.includes('B · 1') && texts.includes('C · 2'), `one vote per voter, newest wins (${texts.filter(t => t.includes(' · ')).join(' | ')})`);
+  assert.ok(texts.some(text => text.startsWith('Going: 1 · Maybe: 1')), `one RSVP per voter, newest wins (${texts.filter(t => t.startsWith('Going')).join(' | ')})`);
+  assert.equal(app.created.find(node => node.textContent === 'C · 2').disabled, true, "this account's newest vote marks its option");
+  // A new vote carries a counter above this account's newest one.
+  app.created.find(node => node.textContent === 'A · 0').onclick();
+  app.created.find(node => node.textContent === 'Maybe').onclick();
+  await app.flush(() => bridge.seals.length >= 2);
+  const vote = JSON.parse(bridge.seals.find(args => args.kind === 'poll_vote').plaintext);
+  assert.equal(vote.option, '0'); assert.ok(Number.isSafeInteger(vote.seq) && vote.seq > 2, `vote counter ${vote.seq}`);
+  const rsvp = JSON.parse(bridge.seals.find(args => args.kind === 'event_rsvp').plaintext);
+  assert.equal(rsvp.status, 'maybe'); assert.ok(Number.isSafeInteger(rsvp.seq) && rsvp.seq > 0, `rsvp counter ${rsvp.seq}`);
 });
 
 test('a server answering unlocked cannot make a device that holds the group post plaintext', async () => {
