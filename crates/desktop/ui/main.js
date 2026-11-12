@@ -1803,7 +1803,22 @@
   // crypto module (crypto_planner_*) with a key exported from the group's MLS
   // epoch; the server stores only ciphertext. Items stored before the group
   // was encrypted stay plaintext and are labelled.
-  function plannerIsEncrypted(conversationId) { return state.cryptoLocked.has(conversationId); }
+  // Whether to seal is decided on this device, never by the server's
+  // crypto-lock answer alone: a group whose MLS state this device holds is
+  // always sealed, whatever the server says.
+  function plannerKnownEncrypted(conversationId) { return state.cryptoEnabled.has(conversationId) || state.cryptoLocked.has(conversationId); }
+  // True: seal. False: this device holds no MLS group for the conversation
+  // and the server does not report it locked. Throws when the local MLS
+  // state cannot be read, so nothing is posted in plaintext by default.
+  async function plannerMustSeal(conversationId) {
+    if (plannerKnownEncrypted(conversationId)) return true;
+    if (!invoke) return false;
+    let held;
+    try { held = await invoke("crypto_has_direct_group", { userId: state.user.id, conversationId }); }
+    catch { held = null; }
+    if (typeof held !== "boolean") throw new Error(translate("The encryption state of this group could not be checked. Nothing was sent."));
+    return held;
+  }
   async function plannerSeal(conversationId, kind, itemId, value) {
     const sealed = await invoke("crypto_planner_seal", { userId: state.user.id, conversationId, kind, itemId, plaintext: JSON.stringify(value) });
     return { ciphertext: sealed.ciphertext, epoch: sealed.epoch, key_id: sealed.keyId };
@@ -1829,7 +1844,7 @@
       if (!value || !plannerPollValid(value.question, value.options)) { view.locked = true; return view; }
       view.question = value.question; view.options = value.options.map((label, index) => ({ key: String(index), label, votes: 0 }));
     } else {
-      view.legacy = plannerIsEncrypted(conversationId);
+      view.legacy = plannerKnownEncrypted(conversationId);
       view.question = String(poll.question || ""); view.options = (poll.options || []).map(option => ({ key: option.id, label: String(option.label), votes: Number(option.votes) || 0 }));
       view.mine = poll.my_option_id || null;
     }
@@ -1849,7 +1864,7 @@
       if (!plannerEventValid(value)) { view.locked = true; return view; }
       view.title = value.title; view.scheduled_at = value.scheduled_at;
     } else {
-      view.legacy = plannerIsEncrypted(conversationId);
+      view.legacy = plannerKnownEncrypted(conversationId);
       view.title = String(item.title || ""); view.scheduled_at = String(item.scheduled_at || "");
     }
     for (const response of Array.isArray(item.responses) ? item.responses : []) {
@@ -1862,7 +1877,7 @@
     return view;
   }
   async function plannerAnswer(conversationId, path, kind, itemId, value, plaintext) {
-    const body = plannerIsEncrypted(conversationId) ? await plannerSeal(conversationId, kind, `${itemId}/${state.user.id}`, value) : plaintext;
+    const body = await plannerMustSeal(conversationId) ? await plannerSeal(conversationId, kind, `${itemId}/${state.user.id}`, value) : plaintext;
     await request(path, { method: "POST", body: JSON.stringify(body) });
   }
   async function openGroupPlanner() {
@@ -3965,7 +3980,7 @@
     button.disabled = true;
     try {
       const conversationId = state.active.id; let body = { question, options, closes_at: null };
-      if (plannerIsEncrypted(conversationId)) {
+      if (await plannerMustSeal(conversationId)) {
         if (!plannerPollValid(question, options)) throw new Error(translate("A poll needs a question and 2 to 8 short options."));
         const id = crypto.randomUUID(); body = { id, ...await plannerSeal(conversationId, "poll", id, { question, options }), closes_at: null };
       }
@@ -3979,7 +3994,7 @@
     button.disabled = true;
     try {
       const conversationId = state.active.id; let body = { title, details, scheduled_at };
-      if (plannerIsEncrypted(conversationId)) {
+      if (await plannerMustSeal(conversationId)) {
         if (!plannerEventValid(body)) throw new Error(translate("Add a short title and a valid time for this event."));
         const id = crypto.randomUUID(); body = { id, ...await plannerSeal(conversationId, "event", id, { title, details, scheduled_at }) };
       }

@@ -1494,7 +1494,7 @@ function fakePlannerBridge({ heldKeys = new Set(['k-1']) } = {}) {
   };
 }
 
-function plannerHarness({ locked, polls, events, bridge }) {
+function plannerHarness({ locked, polls, events, bridge, hasGroup = () => true }) {
   return (async () => {
     const base = 'https://a.example';
     const group = { id: 'g1', kind: 'group', display_name: 'Group' };
@@ -1503,7 +1503,7 @@ function plannerHarness({ locked, polls, events, bridge }) {
       storage: { 'ghostchat.server': base, [`ghostchat.cryptoPeerTrusted.${base}.me.g1`]: 'fp-group' },
       credentials: { [await serverKey(base)]: 'token-A' },
       hooks: {
-        crypto_has_direct_group: () => true,
+        crypto_has_direct_group: hasGroup,
         crypto_group_fingerprint: () => 'fp-group',
         crypto_get_event_cursor: () => 0,
         crypto_advance_event_cursor: args => args.sequence,
@@ -1607,7 +1607,7 @@ test('the encrypted planner seals new polls, events, votes and RSVPs and never p
 test('a plaintext group planner keeps posting plaintext without the crypto bridge', async () => {
   const bridge = fakePlannerBridge();
   const polls = [{ id: POLL_ID, question: 'Lunch?', options: [{ id: 'o1', label: 'Yes', votes: 0 }, { id: 'o2', label: 'No', votes: 0 }], my_option_id: null, closed_at: null, responses: [] }];
-  const app = await plannerHarness({ locked: false, polls, events: [], bridge });
+  const app = await plannerHarness({ locked: false, polls, events: [], bridge, hasGroup: () => false });
   app.$('#groupPollQuestion').value = 'Plain?';
   app.$('#groupPollOptions').value = 'A\nB';
   await app.$('#createGroupPoll').onclick({ currentTarget: app.$('#createGroupPoll') });
@@ -1618,6 +1618,44 @@ test('a plaintext group planner keeps posting plaintext without the crypto bridg
   assert.deepEqual(app.posts[1].body, { option_id: 'o2' });
   assert.ok(!app.created.some(node => node.textContent === 'Stored before encryption'));
   assert.equal(bridge.seals.length + bridge.opens.length, 0, 'the crypto bridge is not used');
+});
+
+test('a server answering unlocked cannot make a device that holds the group post plaintext', async () => {
+  const bridge = fakePlannerBridge();
+  // The server invents a plaintext poll and claims the group is not locked;
+  // this device still holds the MLS group.
+  const polls = [{ id: POLL_ID, question: 'Injected?', options: [{ id: 'o1', label: 'Yes', votes: 0 }, { id: 'o2', label: 'No', votes: 0 }], my_option_id: null, closed_at: null, responses: [] }];
+  const app = await plannerHarness({ locked: false, polls, events: [], bridge });
+  app.$('#groupPollQuestion').value = 'Secret question?';
+  app.$('#groupPollOptions').value = 'Left\nRight';
+  await app.$('#createGroupPoll').onclick({ currentTarget: app.$('#createGroupPoll') });
+  app.$('#groupEventTitle').value = 'Secret party';
+  app.$('#groupEventDetails').value = 'Bring cake';
+  app.$('#groupEventTime').value = '2999-02-02T20:00';
+  await app.$('#createGroupEvent').onclick({ currentTarget: app.$('#createGroupEvent') });
+  await app.flush(() => app.posts.length >= 2);
+  assert.equal(app.posts.length, 2);
+  for (const post of app.posts) {
+    const body = JSON.stringify(post.body);
+    for (const secret of ['Secret', 'Left', 'Right', 'cake', '2999-02-02']) assert.ok(!body.includes(secret), `${post.url} leaks ${secret}: ${body}`);
+    assert.ok(typeof post.body.ciphertext === 'string' && post.body.ciphertext.startsWith('sealed:'), `${post.url} is sealed: ${body}`);
+  }
+  assert.equal(bridge.seals.length, 2, 'both items are sealed');
+  await app.$('#groupPlannerButton').onclick();
+  await app.flush(() => app.created.some(node => node.textContent === 'Injected?'));
+  assert.ok(app.created.some(node => node.textContent === 'Stored before encryption'), 'a plaintext item in a group this device holds is labelled');
+});
+
+test('the planner refuses to post when the device cannot tell whether it holds the group', async () => {
+  const bridge = fakePlannerBridge();
+  let fail = false;
+  const app = await plannerHarness({ locked: false, polls: [], events: [], bridge, hasGroup: () => { if (fail) throw new Error('profile database is busy'); return false; } });
+  fail = true;
+  app.$('#groupPollQuestion').value = 'Secret question?';
+  app.$('#groupPollOptions').value = 'Left\nRight';
+  await app.$('#createGroupPoll').onclick({ currentTarget: app.$('#createGroupPoll') });
+  await app.flush();
+  assert.equal(app.posts.length, 0, `nothing is posted: ${JSON.stringify(app.posts)}`);
 });
 
 (async () => {
