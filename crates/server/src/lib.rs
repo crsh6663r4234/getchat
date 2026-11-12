@@ -5210,11 +5210,155 @@ async fn ensure_group_planner_member(
     }
 }
 
+/// The refusal an older client gets when it writes plaintext planner data to
+/// an encrypted group: the server never stores it.
+const PLANNER_ENCRYPTION_REQUIRED: &str = "planner_encryption_required";
+/// Sent when ciphertext is posted to a group whose chat is not encrypted.
+const PLANNER_NOT_ENCRYPTED: &str = "planner_not_encrypted";
+/// Largest decoded ciphertext of a poll or event (its plaintext is at most
+/// 8 KB on the client) and of a vote or RSVP.
+const PLANNER_ITEM_CIPHERTEXT_LIMIT: usize = 8 * 1024 + 64;
+const PLANNER_RESPONSE_CIPHERTEXT_LIMIT: usize = 1024;
+/// "GP" 0x01, a 96-bit nonce and a 128-bit tag.
+const PLANNER_CIPHERTEXT_MINIMUM: usize = 3 + 12 + 16;
+
+/// The sealed form of a planner item or response of an encrypted group. The
+/// server checks its shape and size only; it cannot read it.
+#[derive(Deserialize, Default)]
+struct EncryptedPlannerFields {
+    #[serde(default)]
+    ciphertext: Option<String>,
+    #[serde(default)]
+    epoch: Option<i64>,
+    #[serde(default)]
+    key_id: Option<String>,
+}
+
+struct EncryptedPlannerPayload {
+    ciphertext: Vec<u8>,
+    epoch: i64,
+    key_id: String,
+}
+
+impl EncryptedPlannerFields {
+    fn is_empty(&self) -> bool {
+        self.ciphertext.is_none() && self.epoch.is_none() && self.key_id.is_none()
+    }
+
+    fn validated(&self, limit: usize) -> Result<Option<EncryptedPlannerPayload>, ApiError> {
+        if self.is_empty() {
+            return Ok(None);
+        }
+        let invalid = || ApiError::bad("The encrypted planner data is not valid.");
+        let (Some(ciphertext), Some(epoch), Some(key_id)) = (
+            self.ciphertext.as_deref(),
+            self.epoch,
+            self.key_id.as_deref(),
+        ) else {
+            return Err(invalid());
+        };
+        if ciphertext.len() > limit.div_ceil(3) * 4 + 4
+            || epoch < 0
+            || key_id.len() != 32
+            || !key_id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(invalid());
+        }
+        let decoded = URL_SAFE_NO_PAD
+            .decode(ciphertext.as_bytes())
+            .map_err(|_| invalid())?;
+        if decoded.len() < PLANNER_CIPHERTEXT_MINIMUM
+            || decoded.len() > limit
+            || !decoded.starts_with(b"GP\x01")
+        {
+            return Err(invalid());
+        }
+        Ok(Some(EncryptedPlannerPayload {
+            ciphertext: decoded,
+            epoch,
+            key_id: key_id.to_string(),
+        }))
+    }
+}
+
+fn planner_plaintext_refused() -> ApiError {
+    ApiError::conflict(
+        "This group's planner is end-to-end encrypted. Update GhostChat to add or answer polls and events here.",
+    )
+    .with_code(PLANNER_ENCRYPTION_REQUIRED)
+}
+
+fn planner_ciphertext_refused() -> ApiError {
+    ApiError::bad("This group's planner is not encrypted.").with_code(PLANNER_NOT_ENCRYPTED)
+}
+
+async fn group_planner_is_encrypted(
+    db: &SqlitePool,
+    conversation_id: &str,
+) -> Result<bool, ApiError> {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM conversation_crypto_locks WHERE conversation_id=?)",
+    )
+    .bind(conversation_id)
+    .fetch_one(db)
+    .await
+    .map_err(|_| ApiError::internal())
+}
+
+fn serialize_planner_ciphertext<S: serde::Serializer>(
+    value: &Option<Vec<u8>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match value {
+        Some(bytes) => serializer.serialize_some(&URL_SAFE_NO_PAD.encode(bytes)),
+        None => serializer.serialize_none(),
+    }
+}
+
+fn serialize_planner_response_ciphertext<S: serde::Serializer>(
+    value: &[u8],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&URL_SAFE_NO_PAD.encode(value))
+}
+
+/// A vote or RSVP of an encrypted group: the server knows who answered and
+/// when, not what.
+#[derive(Serialize, FromRow)]
+struct PlannerResponseRow {
+    user_id: String,
+    #[serde(
+        rename = "ciphertext",
+        serialize_with = "serialize_planner_response_ciphertext"
+    )]
+    payload_ciphertext: Vec<u8>,
+    #[serde(rename = "epoch")]
+    payload_epoch: i64,
+    #[serde(rename = "key_id")]
+    payload_key_id: String,
+}
+
+fn planner_item_id(id: Option<&str>) -> Result<String, ApiError> {
+    id.and_then(|id| Uuid::parse_str(id).ok())
+        .map(|id| id.to_string())
+        .ok_or_else(|| ApiError::bad("An encrypted planner item needs a valid id."))
+}
+
 #[derive(Deserialize)]
 struct CreateGroupPollRequest {
-    question: String,
-    options: Vec<String>,
+    #[serde(default)]
+    question: Option<String>,
+    #[serde(default)]
+    options: Option<Vec<String>>,
     closes_at: Option<String>,
+    /// Chosen by the client for an encrypted poll: its ciphertext is bound
+    /// to it.
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(flatten)]
+    encrypted: EncryptedPlannerFields,
 }
 
 #[derive(Serialize, FromRow)]
@@ -5231,10 +5375,18 @@ struct GroupPollRow {
     conversation_id: String,
     /// `None` once the creator deleted their account.
     creator_id: Option<String>,
-    question: String,
+    /// `None` for an encrypted poll: question and options are in its
+    /// ciphertext.
+    question: Option<String>,
     closes_at: Option<String>,
     closed_at: Option<String>,
     created_at: String,
+    #[serde(rename = "ciphertext", serialize_with = "serialize_planner_ciphertext")]
+    payload_ciphertext: Option<Vec<u8>>,
+    #[serde(rename = "epoch")]
+    payload_epoch: Option<i64>,
+    #[serde(rename = "key_id")]
+    payload_key_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -5243,6 +5395,9 @@ struct GroupPollDetail {
     poll: GroupPollRow,
     options: Vec<GroupPollOption>,
     my_option_id: Option<String>,
+    /// Encrypted votes (of an encrypted poll, or of a poll stored before its
+    /// group was encrypted), tallied by the clients.
+    responses: Vec<PlannerResponseRow>,
 }
 
 async fn group_poll_details(
@@ -5251,7 +5406,7 @@ async fn group_poll_details(
     user_id: &str,
 ) -> Result<Vec<GroupPollDetail>, ApiError> {
     let polls = sqlx::query_as::<_, GroupPollRow>(
-        "SELECT id,conversation_id,creator_id,question,closes_at,closed_at,created_at FROM group_polls WHERE conversation_id=? ORDER BY created_at DESC LIMIT 100",
+        "SELECT id,conversation_id,creator_id,question,closes_at,closed_at,created_at,payload_ciphertext,payload_epoch,payload_key_id FROM group_polls WHERE conversation_id=? ORDER BY created_at DESC LIMIT 100",
     )
     .bind(conversation_id)
     .fetch_all(db)
@@ -5266,18 +5421,27 @@ async fn group_poll_details(
         .fetch_all(db)
         .await
         .map_err(|_| ApiError::internal())?;
-        let my_option_id = sqlx::query_scalar::<_, String>(
+        let my_option_id = sqlx::query_scalar::<_, Option<String>>(
             "SELECT option_id FROM group_poll_votes WHERE poll_id=? AND user_id=?",
         )
         .bind(&poll.id)
         .bind(user_id)
         .fetch_optional(db)
         .await
+        .map_err(|_| ApiError::internal())?
+        .flatten();
+        let responses = sqlx::query_as::<_, PlannerResponseRow>(
+            "SELECT user_id,payload_ciphertext,payload_epoch,payload_key_id FROM group_poll_votes WHERE poll_id=? AND payload_ciphertext IS NOT NULL ORDER BY created_at,user_id",
+        )
+        .bind(&poll.id)
+        .fetch_all(db)
+        .await
         .map_err(|_| ApiError::internal())?;
         details.push(GroupPollDetail {
             poll,
             options,
             my_option_id,
+            responses,
         });
     }
     Ok(details)
@@ -5303,17 +5467,31 @@ async fn create_group_poll(
 ) -> Result<Json<Vec<GroupPollDetail>>, ApiError> {
     let user = authenticate(&headers, &state).await?;
     ensure_group_planner_member(&state.db, &conversation_id, &user.id).await?;
-    let question = body.question.trim();
+    let encrypted_group = group_planner_is_encrypted(&state.db, &conversation_id).await?;
+    let sealed = body.encrypted.validated(PLANNER_ITEM_CIPHERTEXT_LIMIT)?;
+    match (encrypted_group, sealed.is_some()) {
+        (true, false) => return Err(planner_plaintext_refused()),
+        (false, true) => return Err(planner_ciphertext_refused()),
+        _ => {}
+    }
+    if sealed.is_some() && (body.question.is_some() || body.options.is_some()) {
+        return Err(ApiError::bad(
+            "An encrypted poll must not carry a plaintext question or options.",
+        ));
+    }
+    let question = body.question.as_deref().unwrap_or_default().trim();
     let options: Vec<_> = body
         .options
         .iter()
+        .flatten()
         .map(|item| item.trim())
         .filter(|item| !item.is_empty())
         .collect();
-    if question.is_empty()
-        || question.len() > 240
-        || !(2..=8).contains(&options.len())
-        || options.iter().any(|item| item.len() > 100)
+    if sealed.is_none()
+        && (question.is_empty()
+            || question.len() > 240
+            || !(2..=8).contains(&options.len())
+            || options.iter().any(|item| item.len() > 100))
     {
         return Err(ApiError::bad(
             "A poll needs a question and 2 to 8 short options.",
@@ -5335,6 +5513,23 @@ async fn create_group_poll(
         if parsed.is_none() {
             return Err(ApiError::bad("The poll closing time is not valid."));
         }
+    }
+    if let Some(sealed) = sealed {
+        let poll_id = planner_item_id(body.id.as_deref())?;
+        let inserted = sqlx::query("INSERT OR IGNORE INTO group_polls(id,conversation_id,creator_id,question,closes_at,payload_ciphertext,payload_epoch,payload_key_id) VALUES(?,?,?,NULL,?,?,?,?)")
+            .bind(&poll_id).bind(&conversation_id).bind(&user.id).bind(body.closes_at.as_deref())
+            .bind(&sealed.ciphertext).bind(sealed.epoch).bind(&sealed.key_id)
+            .execute(&state.db).await.map_err(|_| ApiError::internal())?
+            .rows_affected();
+        if inserted == 0 {
+            return Err(ApiError::conflict(
+                "This planner item id is already in use.",
+            ));
+        }
+        let _ = state.events.send(ServerEvent { recipients: group_recipients(&state.db, &conversation_id).await?, event: serde_json::json!({"type":"group_planner_updated","conversation_id":conversation_id}) });
+        return Ok(Json(
+            group_poll_details(&state.db, &conversation_id, &user.id).await?,
+        ));
     }
     let poll_id = Uuid::new_v4().to_string();
     let mut tx = state.db.begin().await.map_err(|_| ApiError::internal())?;
@@ -5360,7 +5555,10 @@ async fn create_group_poll(
 
 #[derive(Deserialize)]
 struct VoteGroupPollRequest {
-    option_id: String,
+    #[serde(default)]
+    option_id: Option<String>,
+    #[serde(flatten)]
+    encrypted: EncryptedPlannerFields,
 }
 
 async fn vote_group_poll(
@@ -5383,13 +5581,39 @@ async fn vote_group_poll(
     .map_err(|_| ApiError::internal())?
     .ok_or_else(ApiError::not_found)?;
     ensure_group_planner_member(&state.db, &conversation_id, &user.id).await?;
+    let encrypted_group = group_planner_is_encrypted(&state.db, &conversation_id).await?;
+    let sealed = body
+        .encrypted
+        .validated(PLANNER_RESPONSE_CIPHERTEXT_LIMIT)?;
+    match (encrypted_group, sealed.is_some()) {
+        (true, false) => return Err(planner_plaintext_refused()),
+        (false, true) => return Err(planner_ciphertext_refused()),
+        _ => {}
+    }
     if expired {
         return Err(ApiError::conflict("This poll is closed."));
     }
+    if let Some(sealed) = sealed {
+        if body.option_id.is_some() {
+            return Err(ApiError::bad(
+                "An encrypted vote must not carry a plaintext option.",
+            ));
+        }
+        // A vote on a poll stored before the group was encrypted replaces
+        // that voter's plaintext vote, if any, with an encrypted one.
+        sqlx::query("INSERT INTO group_poll_votes(poll_id,user_id,option_id,payload_ciphertext,payload_epoch,payload_key_id) VALUES(?,?,NULL,?,?,?) ON CONFLICT(poll_id,user_id) DO UPDATE SET option_id=NULL,payload_ciphertext=excluded.payload_ciphertext,payload_epoch=excluded.payload_epoch,payload_key_id=excluded.payload_key_id,created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+            .bind(&poll_id).bind(&user.id).bind(&sealed.ciphertext).bind(sealed.epoch).bind(&sealed.key_id)
+            .execute(&state.db).await.map_err(|_| ApiError::internal())?;
+        let _ = state.events.send(ServerEvent { recipients: group_recipients(&state.db, &conversation_id).await?, event: serde_json::json!({"type":"group_planner_updated","conversation_id":conversation_id}) });
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    let Some(option_id) = body.option_id.as_deref() else {
+        return Err(ApiError::bad("Choose an option from this poll."));
+    };
     let valid = sqlx::query_scalar::<_, i64>(
         "SELECT count(*) FROM group_poll_options WHERE id=? AND poll_id=?",
     )
-    .bind(&body.option_id)
+    .bind(option_id)
     .bind(&poll_id)
     .fetch_one(&state.db)
     .await
@@ -5397,22 +5621,34 @@ async fn vote_group_poll(
     if valid == 0 {
         return Err(ApiError::bad("Choose an option from this poll."));
     }
-    sqlx::query("INSERT INTO group_poll_votes(poll_id,user_id,option_id) VALUES(?,?,?) ON CONFLICT(poll_id,user_id) DO UPDATE SET option_id=excluded.option_id,created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')")
-        .bind(&poll_id).bind(&user.id).bind(&body.option_id).execute(&state.db).await.map_err(|_| ApiError::internal())?;
+    sqlx::query("INSERT INTO group_poll_votes(poll_id,user_id,option_id) VALUES(?,?,?) ON CONFLICT(poll_id,user_id) DO UPDATE SET option_id=excluded.option_id,payload_ciphertext=NULL,payload_epoch=NULL,payload_key_id=NULL,created_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+        .bind(&poll_id).bind(&user.id).bind(option_id).execute(&state.db).await.map_err(|_| ApiError::internal())?;
     let _ = state.events.send(ServerEvent { recipients: group_recipients(&state.db, &conversation_id).await?, event: serde_json::json!({"type":"group_planner_updated","conversation_id":conversation_id}) });
     Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
 struct CreateGroupEventRequest {
-    title: String,
-    details: String,
-    scheduled_at: String,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    details: Option<String>,
+    #[serde(default)]
+    scheduled_at: Option<String>,
+    /// Chosen by the client for an encrypted event: its ciphertext is bound
+    /// to it.
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(flatten)]
+    encrypted: EncryptedPlannerFields,
 }
 
 #[derive(Deserialize)]
 struct GroupEventRsvpRequest {
-    status: String,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(flatten)]
+    encrypted: EncryptedPlannerFields,
 }
 
 #[derive(Serialize, FromRow)]
@@ -5421,32 +5657,63 @@ struct GroupEventRow {
     conversation_id: String,
     /// `None` once the creator deleted their account.
     creator_id: Option<String>,
-    title: String,
-    details: String,
-    scheduled_at: String,
+    /// `None` for an encrypted event, like `details` and `scheduled_at`:
+    /// they are in its ciphertext.
+    title: Option<String>,
+    details: Option<String>,
+    scheduled_at: Option<String>,
     cancelled_at: Option<String>,
     created_at: String,
     going: i64,
     maybe: i64,
     declined: i64,
     my_status: Option<String>,
+    #[serde(rename = "ciphertext", serialize_with = "serialize_planner_ciphertext")]
+    payload_ciphertext: Option<Vec<u8>>,
+    #[serde(rename = "epoch")]
+    payload_epoch: Option<i64>,
+    #[serde(rename = "key_id")]
+    payload_key_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct GroupEventDetail {
+    #[serde(flatten)]
+    event: GroupEventRow,
+    /// Encrypted RSVPs, counted by the clients (the counts above are the
+    /// plaintext RSVPs stored before the group was encrypted).
+    responses: Vec<PlannerResponseRow>,
 }
 
 async fn group_event_details(
     db: &SqlitePool,
     conversation_id: &str,
     user_id: &str,
-) -> Result<Vec<GroupEventRow>, ApiError> {
-    sqlx::query_as::<_, GroupEventRow>(
-        "SELECT e.id,e.conversation_id,e.creator_id,e.title,e.details,e.scheduled_at,e.cancelled_at,e.created_at,(SELECT count(*) FROM group_event_rsvps r WHERE r.event_id=e.id AND r.status='going') AS going,(SELECT count(*) FROM group_event_rsvps r WHERE r.event_id=e.id AND r.status='maybe') AS maybe,(SELECT count(*) FROM group_event_rsvps r WHERE r.event_id=e.id AND r.status='declined') AS declined,(SELECT status FROM group_event_rsvps r WHERE r.event_id=e.id AND r.user_id=?) AS my_status FROM group_events e WHERE e.conversation_id=? ORDER BY e.scheduled_at ASC LIMIT 100",
-    ).bind(user_id).bind(conversation_id).fetch_all(db).await.map_err(|_| ApiError::internal())
+) -> Result<Vec<GroupEventDetail>, ApiError> {
+    // An encrypted event's time is in its ciphertext; it is ordered by its
+    // creation time here and by its time on the clients.
+    let events = sqlx::query_as::<_, GroupEventRow>(
+        "SELECT e.id,e.conversation_id,e.creator_id,e.title,e.details,e.scheduled_at,e.cancelled_at,e.created_at,(SELECT count(*) FROM group_event_rsvps r WHERE r.event_id=e.id AND r.status='going') AS going,(SELECT count(*) FROM group_event_rsvps r WHERE r.event_id=e.id AND r.status='maybe') AS maybe,(SELECT count(*) FROM group_event_rsvps r WHERE r.event_id=e.id AND r.status='declined') AS declined,(SELECT status FROM group_event_rsvps r WHERE r.event_id=e.id AND r.user_id=?) AS my_status,e.payload_ciphertext,e.payload_epoch,e.payload_key_id FROM group_events e WHERE e.conversation_id=? ORDER BY COALESCE(e.scheduled_at,e.created_at) ASC LIMIT 100",
+    ).bind(user_id).bind(conversation_id).fetch_all(db).await.map_err(|_| ApiError::internal())?;
+    let mut details = Vec::with_capacity(events.len());
+    for event in events {
+        let responses = sqlx::query_as::<_, PlannerResponseRow>(
+            "SELECT user_id,payload_ciphertext,payload_epoch,payload_key_id FROM group_event_rsvps WHERE event_id=? AND payload_ciphertext IS NOT NULL ORDER BY updated_at,user_id",
+        )
+        .bind(&event.id)
+        .fetch_all(db)
+        .await
+        .map_err(|_| ApiError::internal())?;
+        details.push(GroupEventDetail { event, responses });
+    }
+    Ok(details)
 }
 
 async fn list_group_events(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(conversation_id): Path<String>,
-) -> Result<Json<Vec<GroupEventRow>>, ApiError> {
+) -> Result<Json<Vec<GroupEventDetail>>, ApiError> {
     let user = authenticate(&headers, &state).await?;
     ensure_group_planner_member(&state.db, &conversation_id, &user.id).await?;
     Ok(Json(
@@ -5459,12 +5726,41 @@ async fn create_group_event(
     headers: HeaderMap,
     Path(conversation_id): Path<String>,
     Json(body): Json<CreateGroupEventRequest>,
-) -> Result<Json<Vec<GroupEventRow>>, ApiError> {
+) -> Result<Json<Vec<GroupEventDetail>>, ApiError> {
     let user = authenticate(&headers, &state).await?;
     ensure_group_planner_member(&state.db, &conversation_id, &user.id).await?;
-    let title = body.title.trim();
-    let details = body.details.trim();
-    let scheduled_at = body.scheduled_at.trim();
+    let encrypted_group = group_planner_is_encrypted(&state.db, &conversation_id).await?;
+    let sealed = body.encrypted.validated(PLANNER_ITEM_CIPHERTEXT_LIMIT)?;
+    match (encrypted_group, sealed.is_some()) {
+        (true, false) => return Err(planner_plaintext_refused()),
+        (false, true) => return Err(planner_ciphertext_refused()),
+        _ => {}
+    }
+    if let Some(sealed) = sealed {
+        if body.title.is_some() || body.details.is_some() || body.scheduled_at.is_some() {
+            return Err(ApiError::bad(
+                "An encrypted event must not carry a plaintext title, notes or time.",
+            ));
+        }
+        let event_id = planner_item_id(body.id.as_deref())?;
+        let inserted = sqlx::query("INSERT OR IGNORE INTO group_events(id,conversation_id,creator_id,title,details,scheduled_at,payload_ciphertext,payload_epoch,payload_key_id) VALUES(?,?,?,NULL,NULL,NULL,?,?,?)")
+            .bind(&event_id).bind(&conversation_id).bind(&user.id)
+            .bind(&sealed.ciphertext).bind(sealed.epoch).bind(&sealed.key_id)
+            .execute(&state.db).await.map_err(|_| ApiError::internal())?
+            .rows_affected();
+        if inserted == 0 {
+            return Err(ApiError::conflict(
+                "This planner item id is already in use.",
+            ));
+        }
+        let _ = state.events.send(ServerEvent { recipients: group_recipients(&state.db, &conversation_id).await?, event: serde_json::json!({"type":"group_planner_updated","conversation_id":conversation_id}) });
+        return Ok(Json(
+            group_event_details(&state.db, &conversation_id, &user.id).await?,
+        ));
+    }
+    let title = body.title.as_deref().unwrap_or_default().trim();
+    let details = body.details.as_deref().unwrap_or_default().trim();
+    let scheduled_at = body.scheduled_at.as_deref().unwrap_or_default().trim();
     if !(2..=140).contains(&title.len())
         || details.len() > 1_500
         || scheduled_at.is_empty()
@@ -5490,7 +5786,15 @@ async fn rsvp_group_event(
     Json(body): Json<GroupEventRsvpRequest>,
 ) -> Result<StatusCode, ApiError> {
     let user = authenticate(&headers, &state).await?;
-    if !matches!(body.status.as_str(), "going" | "maybe" | "declined") {
+    let sealed = body
+        .encrypted
+        .validated(PLANNER_RESPONSE_CIPHERTEXT_LIMIT)?;
+    if sealed.is_some() && body.status.is_some() {
+        return Err(ApiError::bad(
+            "An encrypted RSVP must not carry a plaintext answer.",
+        ));
+    }
+    if sealed.is_none() && !matches!(body.status.as_deref(), Some("going" | "maybe" | "declined")) {
         return Err(ApiError::bad("Choose going, maybe, or declined."));
     }
     let conversation_id = sqlx::query_scalar::<_, String>(
@@ -5502,8 +5806,21 @@ async fn rsvp_group_event(
     .map_err(|_| ApiError::internal())?
     .ok_or_else(ApiError::not_found)?;
     ensure_group_planner_member(&state.db, &conversation_id, &user.id).await?;
-    sqlx::query("INSERT INTO group_event_rsvps(event_id,user_id,status) VALUES(?,?,?) ON CONFLICT(event_id,user_id) DO UPDATE SET status=excluded.status,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')")
-        .bind(&event_id).bind(&user.id).bind(&body.status).execute(&state.db).await.map_err(|_| ApiError::internal())?;
+    let encrypted_group = group_planner_is_encrypted(&state.db, &conversation_id).await?;
+    match (encrypted_group, sealed.is_some()) {
+        (true, false) => return Err(planner_plaintext_refused()),
+        (false, true) => return Err(planner_ciphertext_refused()),
+        _ => {}
+    }
+    if let Some(sealed) = sealed {
+        sqlx::query("INSERT INTO group_event_rsvps(event_id,user_id,status,payload_ciphertext,payload_epoch,payload_key_id) VALUES(?,?,NULL,?,?,?) ON CONFLICT(event_id,user_id) DO UPDATE SET status=NULL,payload_ciphertext=excluded.payload_ciphertext,payload_epoch=excluded.payload_epoch,payload_key_id=excluded.payload_key_id,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+            .bind(&event_id).bind(&user.id).bind(&sealed.ciphertext).bind(sealed.epoch).bind(&sealed.key_id)
+            .execute(&state.db).await.map_err(|_| ApiError::internal())?;
+        let _ = state.events.send(ServerEvent { recipients: group_recipients(&state.db, &conversation_id).await?, event: serde_json::json!({"type":"group_planner_updated","conversation_id":conversation_id}) });
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    sqlx::query("INSERT INTO group_event_rsvps(event_id,user_id,status) VALUES(?,?,?) ON CONFLICT(event_id,user_id) DO UPDATE SET status=excluded.status,payload_ciphertext=NULL,payload_epoch=NULL,payload_key_id=NULL,updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+        .bind(&event_id).bind(&user.id).bind(body.status.as_deref()).execute(&state.db).await.map_err(|_| ApiError::internal())?;
     let _ = state.events.send(ServerEvent { recipients: group_recipients(&state.db, &conversation_id).await?, event: serde_json::json!({"type":"group_planner_updated","conversation_id":conversation_id}) });
     Ok(StatusCode::NO_CONTENT)
 }
@@ -9723,6 +10040,562 @@ mod tests {
             received.contains(&relayed_from(&alice.id, &audio)),
             "the audio frame after a video burst is forwarded"
         );
+    }
+
+    /// A well-formed sealed planner payload (opaque to the server).
+    fn sealed_planner(bytes: usize) -> serde_json::Value {
+        let mut payload = b"GP\x01".to_vec();
+        payload.extend((0..bytes).map(|index| (index % 251) as u8));
+        serde_json::json!({
+            "ciphertext": URL_SAFE_NO_PAD.encode(payload),
+            "epoch": 3,
+            "key_id": "0123456789abcdef0123456789abcdef",
+        })
+    }
+
+    fn with_fields(mut value: serde_json::Value, extra: serde_json::Value) -> serde_json::Value {
+        for (key, item) in extra.as_object().unwrap() {
+            value[key] = item.clone();
+        }
+        value
+    }
+
+    async fn lock_group_crypto(app: &TestApp, group: &str, owner: &TestUser) {
+        sqlx::query(
+            "INSERT INTO conversation_crypto_locks(conversation_id,locked_by,setup_complete) VALUES(?,?,1)",
+        )
+        .bind(group)
+        .bind(&owner.id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn encrypted_group_planner_stores_only_ciphertext_and_refuses_plaintext() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let outsider = app.user("outsider").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        lock_group_crypto(&app, &group, &alice).await;
+        let polls_path = format!("/v1/conversations/{group}/planner/polls");
+        let events_path = format!("/v1/conversations/{group}/planner/events");
+        let post = |path: &str, user: &TestUser, body: serde_json::Value| {
+            app.request(Method::POST, path, user).json(&body).send()
+        };
+
+        // An older client's plaintext writes are refused with a stable code.
+        for (path, body) in [
+            (
+                polls_path.as_str(),
+                serde_json::json!({"question": "Secret?", "options": ["A", "B"], "closes_at": null}),
+            ),
+            (
+                events_path.as_str(),
+                serde_json::json!({"title": "Secret party", "details": "", "scheduled_at": "2999-01-01T19:00:00Z"}),
+            ),
+        ] {
+            let response = post(path, &bob, body).await.unwrap();
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(body["code"], "planner_encryption_required", "{body}");
+        }
+
+        // The shape and size of sealed data are checked.
+        let poll_id = Uuid::new_v4().to_string();
+        for bad in [
+            sealed_planner(40),
+            with_fields(sealed_planner(40), serde_json::json!({"id": "not-a-uuid"})),
+            with_fields(
+                sealed_planner(40),
+                serde_json::json!({"id": poll_id, "key_id": "NOT-HEX"}),
+            ),
+            with_fields(
+                sealed_planner(40),
+                serde_json::json!({"id": poll_id, "epoch": -1}),
+            ),
+            with_fields(sealed_planner(9 * 1024), serde_json::json!({"id": poll_id})),
+            with_fields(sealed_planner(2), serde_json::json!({"id": poll_id})),
+            with_fields(
+                sealed_planner(40),
+                serde_json::json!({"id": poll_id, "ciphertext": "!!!"}),
+            ),
+            with_fields(
+                sealed_planner(40),
+                serde_json::json!({"id": poll_id, "question": "Leak?"}),
+            ),
+            serde_json::json!({"id": poll_id, "ciphertext": sealed_planner(40)["ciphertext"]}),
+        ] {
+            let status = post(&polls_path, &bob, bad.clone()).await.unwrap().status();
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+        }
+
+        let created: serde_json::Value = post(
+            &polls_path,
+            &bob,
+            with_fields(
+                sealed_planner(64),
+                serde_json::json!({"id": poll_id, "closes_at": "2999-01-01T00:00:00.000Z"}),
+            ),
+        )
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+        let poll = &created[0];
+        assert_eq!(poll["id"], poll_id);
+        assert_eq!(poll["question"], serde_json::Value::Null);
+        assert_eq!(poll["options"], serde_json::json!([]));
+        assert_eq!(poll["ciphertext"], sealed_planner(64)["ciphertext"]);
+        assert_eq!(poll["epoch"], 3);
+        assert_eq!(poll["key_id"], "0123456789abcdef0123456789abcdef");
+        assert_eq!(poll["creator_id"], bob.id.as_str());
+        assert_eq!(poll["closes_at"], "2999-01-01T00:00:00.000Z");
+        let status = post(
+            &polls_path,
+            &carol,
+            with_fields(sealed_planner(64), serde_json::json!({"id": poll_id})),
+        )
+        .await
+        .unwrap()
+        .status();
+        assert_eq!(status, StatusCode::CONFLICT, "an item id is used once");
+        let status = post(
+            &polls_path,
+            &outsider,
+            with_fields(
+                sealed_planner(64),
+                serde_json::json!({"id": Uuid::new_v4().to_string()}),
+            ),
+        )
+        .await
+        .unwrap()
+        .status();
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        // Votes: plaintext is refused, ciphertext is stored per voter.
+        let vote_path = format!("/v1/group-polls/{poll_id}/vote");
+        let response = post(&vote_path, &carol, serde_json::json!({"option_id": "x"}))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["code"], "planner_encryption_required");
+        let status = post(
+            &vote_path,
+            &carol,
+            with_fields(sealed_planner(32), serde_json::json!({"option_id": "x"})),
+        )
+        .await
+        .unwrap()
+        .status();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let status = post(&vote_path, &carol, sealed_planner(2 * 1024))
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::BAD_REQUEST, "a vote is small");
+        for user in [&carol, &alice, &carol] {
+            let status = post(&vote_path, user, sealed_planner(32))
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, StatusCode::NO_CONTENT);
+        }
+        let polls: serde_json::Value = app
+            .request(Method::GET, &polls_path, &bob)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let responses = polls[0]["responses"].as_array().unwrap();
+        assert_eq!(responses.len(), 2, "one encrypted vote per voter");
+        let mut voters: Vec<_> = responses
+            .iter()
+            .map(|row| row["user_id"].as_str().unwrap().to_string())
+            .collect();
+        voters.sort();
+        let mut expected = vec![alice.id.clone(), carol.id.clone()];
+        expected.sort();
+        assert_eq!(voters, expected);
+        assert_eq!(responses[0]["ciphertext"], sealed_planner(32)["ciphertext"]);
+        assert_eq!(responses[0]["key_id"], "0123456789abcdef0123456789abcdef");
+        assert_eq!(polls[0]["my_option_id"], serde_json::Value::Null);
+
+        // Events and RSVPs.
+        let event_id = Uuid::new_v4().to_string();
+        let status = post(
+            &events_path,
+            &alice,
+            with_fields(
+                sealed_planner(80),
+                serde_json::json!({"id": event_id, "title": "Leak"}),
+            ),
+        )
+        .await
+        .unwrap()
+        .status();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let events: serde_json::Value = post(
+            &events_path,
+            &alice,
+            with_fields(sealed_planner(80), serde_json::json!({"id": event_id})),
+        )
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+        assert_eq!(events[0]["id"], event_id);
+        assert_eq!(events[0]["title"], serde_json::Value::Null);
+        assert_eq!(events[0]["scheduled_at"], serde_json::Value::Null);
+        assert_eq!(events[0]["ciphertext"], sealed_planner(80)["ciphertext"]);
+        let rsvp_path = format!("/v1/group-events/{event_id}/rsvp");
+        let response = post(&rsvp_path, &bob, serde_json::json!({"status": "going"}))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["code"], "planner_encryption_required");
+        let status = post(&rsvp_path, &bob, sealed_planner(28))
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let events: serde_json::Value = app
+            .request(Method::GET, &events_path, &carol)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(events[0]["going"], 0, "the server cannot count answers");
+        assert_eq!(events[0]["responses"][0]["user_id"], bob.id.as_str());
+
+        // Nothing readable reached the database.
+        let plaintext = sqlx::query_scalar::<_, i64>(
+            "SELECT (SELECT count(*) FROM group_polls WHERE question IS NOT NULL)+(SELECT count(*) FROM group_poll_options)+(SELECT count(*) FROM group_poll_votes WHERE option_id IS NOT NULL)+(SELECT count(*) FROM group_events WHERE title IS NOT NULL OR details IS NOT NULL OR scheduled_at IS NOT NULL)+(SELECT count(*) FROM group_event_rsvps WHERE status IS NOT NULL)",
+        )
+        .fetch_one(&app.state.db)
+        .await
+        .unwrap();
+        assert_eq!(plaintext, 0);
+    }
+
+    #[tokio::test]
+    async fn plaintext_group_planner_is_unchanged_and_refuses_ciphertext() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let polls_path = format!("/v1/conversations/{group}/planner/polls");
+        let response = app
+            .request(Method::POST, &polls_path, &alice)
+            .json(&with_fields(
+                sealed_planner(40),
+                serde_json::json!({"id": Uuid::new_v4().to_string()}),
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["code"], "planner_not_encrypted");
+        let polls: serde_json::Value = app
+            .request(Method::POST, &polls_path, &alice)
+            .json(&serde_json::json!({"question": "When?", "options": ["Mon", "Tue"], "closes_at": null}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(polls[0]["question"], "When?");
+        assert_eq!(polls[0]["ciphertext"], serde_json::Value::Null);
+        let vote_path = format!("/v1/group-polls/{}/vote", polls[0]["id"].as_str().unwrap());
+        let status = app
+            .request(Method::POST, &vote_path, &bob)
+            .json(&sealed_planner(32))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let status = app
+            .request(Method::POST, &vote_path, &bob)
+            .json(&serde_json::json!({"option_id": polls[0]["options"][1]["id"]}))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let events: serde_json::Value = app
+            .request(
+                Method::POST,
+                &format!("/v1/conversations/{group}/planner/events"),
+                &alice,
+            )
+            .json(&serde_json::json!({"title": "Dinner", "details": "Bring food", "scheduled_at": "2999-01-01T19:00:00Z"}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(events[0]["title"], "Dinner");
+        let rsvp_path = format!(
+            "/v1/group-events/{}/rsvp",
+            events[0]["id"].as_str().unwrap()
+        );
+        for (body, expected) in [
+            (
+                serde_json::json!({"status": "nope"}),
+                StatusCode::BAD_REQUEST,
+            ),
+            (sealed_planner(28), StatusCode::BAD_REQUEST),
+            (
+                serde_json::json!({"status": "maybe"}),
+                StatusCode::NO_CONTENT,
+            ),
+        ] {
+            let status = app
+                .request(Method::POST, &rsvp_path, &bob)
+                .json(&body)
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, expected, "{body}");
+        }
+        let polls: serde_json::Value = app
+            .request(Method::GET, &polls_path, &bob)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(polls[0]["options"][1]["votes"], 1);
+        assert_eq!(polls[0]["my_option_id"], polls[0]["options"][1]["id"]);
+        assert_eq!(polls[0]["responses"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn items_stored_before_encryption_stay_and_take_encrypted_answers() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        let polls_path = format!("/v1/conversations/{group}/planner/polls");
+        let polls: serde_json::Value = app
+            .request(Method::POST, &polls_path, &alice)
+            .json(&serde_json::json!({"question": "Before?", "options": ["Yes", "No"], "closes_at": null}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let vote_path = format!("/v1/group-polls/{}/vote", polls[0]["id"].as_str().unwrap());
+        app.request(Method::POST, &vote_path, &bob)
+            .json(&serde_json::json!({"option_id": polls[0]["options"][0]["id"]}))
+            .send()
+            .await
+            .unwrap();
+        lock_group_crypto(&app, &group, &alice).await;
+        let polls: serde_json::Value = app
+            .request(Method::GET, &polls_path, &bob)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            polls[0]["question"], "Before?",
+            "the old item is not rewritten"
+        );
+        assert_eq!(polls[0]["options"][0]["votes"], 1);
+        let status = app
+            .request(Method::POST, &vote_path, &bob)
+            .json(&serde_json::json!({"option_id": polls[0]["options"][1]["id"]}))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::CONFLICT, "no new plaintext answers");
+        let status = app
+            .request(Method::POST, &vote_path, &bob)
+            .json(&sealed_planner(32))
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let polls: serde_json::Value = app
+            .request(Method::GET, &polls_path, &bob)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(
+            polls[0]["options"][0]["votes"], 0,
+            "the encrypted vote replaced the plaintext one"
+        );
+        assert_eq!(polls[0]["my_option_id"], serde_json::Value::Null);
+        assert_eq!(polls[0]["responses"][0]["user_id"], bob.id.as_str());
+    }
+
+    #[tokio::test]
+    async fn account_deletion_keeps_encrypted_planner_items_with_an_anonymous_creator() {
+        use reqwest::{Method, StatusCode};
+        let app = TestApp::new().await;
+        let alice = app.user("alice").await;
+        let bob = app.user("bob").await;
+        let carol = app.user("carol").await;
+        let group = app.group(&alice, &[&bob, &carol]).await;
+        lock_group_crypto(&app, &group, &alice).await;
+        let poll_id = Uuid::new_v4().to_string();
+        let event_id = Uuid::new_v4().to_string();
+        for (path, id) in [
+            (format!("/v1/conversations/{group}/planner/polls"), &poll_id),
+            (
+                format!("/v1/conversations/{group}/planner/events"),
+                &event_id,
+            ),
+        ] {
+            let status = app
+                .request(Method::POST, &path, &carol)
+                .json(&with_fields(
+                    sealed_planner(40),
+                    serde_json::json!({"id": id}),
+                ))
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, StatusCode::OK);
+        }
+        for user in [&alice, &carol] {
+            for path in [
+                format!("/v1/group-polls/{poll_id}/vote"),
+                format!("/v1/group-events/{event_id}/rsvp"),
+            ] {
+                let status = app
+                    .request(Method::POST, &path, user)
+                    .json(&sealed_planner(28))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status();
+                assert_eq!(status, StatusCode::NO_CONTENT);
+            }
+        }
+        let status = app
+            .request(Method::DELETE, "/v1/me/account", &carol)
+            .send()
+            .await
+            .unwrap()
+            .status();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        for path in [
+            format!("/v1/conversations/{group}/planner/polls"),
+            format!("/v1/conversations/{group}/planner/events"),
+        ] {
+            let items: serde_json::Value = app
+                .request(Method::GET, &path, &bob)
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            assert_eq!(items.as_array().unwrap().len(), 1, "the item survives");
+            assert_eq!(items[0]["creator_id"], serde_json::Value::Null);
+            let responses = items[0]["responses"].as_array().unwrap();
+            assert_eq!(responses.len(), 1, "the deleted account's answer is gone");
+            assert_eq!(responses[0]["user_id"], alice.id.as_str());
+        }
+    }
+
+    #[tokio::test]
+    async fn migration_0033_keeps_planner_rows() {
+        let dir = std::env::temp_dir().join(format!("ghostchat-migrate-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("db.sqlite");
+        let old = database_migrated_to(&path, 32).await;
+        for user in ["u-a", "u-b"] {
+            seed_user(&old, user).await;
+        }
+        seed_group(&old, "g-1", &["u-a", "u-b"]).await;
+        for statement in [
+            "INSERT INTO group_polls(id,conversation_id,creator_id,question,closes_at,created_at) VALUES('p-1','g-1','u-a','When?','2999-01-01T00:00:00Z','2026-01-01T00:00:00.000Z')",
+            "INSERT INTO group_poll_options(id,poll_id,label,position) VALUES('o-1','p-1','Mon',0),('o-2','p-1','Tue',1)",
+            "INSERT INTO group_poll_votes(poll_id,user_id,option_id,created_at) VALUES('p-1','u-b','o-2','2026-01-01T00:00:01.000Z')",
+            "INSERT INTO group_events(id,conversation_id,creator_id,title,details,scheduled_at,created_at) VALUES('e-1','g-1',NULL,'Dinner','Food','2999-01-01T19:00:00Z','2026-01-01T00:00:02.000Z')",
+            "INSERT INTO group_event_rsvps(event_id,user_id,status,updated_at) VALUES('e-1','u-a','maybe','2026-01-01T00:00:03.000Z')",
+        ] {
+            sqlx::query(statement).execute(&old).await.unwrap();
+        }
+        let dump = "SELECT json_array((SELECT json_group_array(json_array(id,conversation_id,creator_id,question,closes_at,closed_at,created_at)) FROM group_polls),(SELECT json_group_array(json_array(id,poll_id,label,position)) FROM group_poll_options),(SELECT json_group_array(json_array(poll_id,user_id,option_id,created_at)) FROM group_poll_votes),(SELECT json_group_array(json_array(id,conversation_id,creator_id,title,details,scheduled_at,cancelled_at,created_at)) FROM group_events),(SELECT json_group_array(json_array(event_id,user_id,status,updated_at)) FROM group_event_rsvps))";
+        let before: String = sqlx::query_scalar(dump).fetch_one(&old).await.unwrap();
+        old.close().await;
+
+        let db = open_database(&path.to_string_lossy()).await.unwrap();
+        let after: String = sqlx::query_scalar(dump).fetch_one(&db).await.unwrap();
+        assert_eq!(after, before);
+        let violations = sqlx::query("PRAGMA foreign_key_check")
+            .fetch_all(&db)
+            .await
+            .unwrap();
+        assert!(violations.is_empty());
+        let leftovers = sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM sqlite_master WHERE name LIKE '%0033%'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(leftovers, 0);
+        // A row is plaintext or ciphertext, never both or neither.
+        assert!(sqlx::query(
+            "INSERT INTO group_polls(id,conversation_id,question,payload_ciphertext,payload_epoch,payload_key_id) VALUES('p-2','g-1','Both',x'00',1,'k')",
+        )
+        .execute(&db)
+        .await
+        .is_err());
+        assert!(
+            sqlx::query("INSERT INTO group_polls(id,conversation_id) VALUES('p-3','g-1')")
+                .execute(&db)
+                .await
+                .is_err()
+        );
+        // Deleting a poll still cascades into its options and votes.
+        sqlx::query("DELETE FROM group_polls WHERE id='p-1'")
+            .execute(&db)
+            .await
+            .unwrap();
+        let children = sqlx::query_scalar::<_, i64>(
+            "SELECT (SELECT count(*) FROM group_poll_options)+(SELECT count(*) FROM group_poll_votes)",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(children, 0);
+        db.close().await;
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
