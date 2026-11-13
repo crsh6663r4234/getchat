@@ -43,6 +43,7 @@ use tokio::{
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 mod api_error;
+mod app_state;
 mod database;
 pub mod device_proof;
 mod media_relay;
@@ -51,6 +52,8 @@ pub mod ratelimit;
 pub mod self_update;
 
 use api_error::*;
+use app_state::*;
+pub use app_state::{build_state, build_state_with_attachment_dir, AppState};
 use database::*;
 pub use database::{is_pre_upgrade_backup_error, open_database, PreUpgradeBackupError};
 
@@ -63,59 +66,6 @@ const ATTACHMENT_MARKER: &str = "file:";
 const PAGE_SIZE: i64 = 50;
 const TURN_CREDENTIAL_TTL_SECONDS: u64 = 12 * 60 * 60;
 
-#[derive(Clone)]
-pub struct AppState {
-    db: SqlitePool,
-    attachment_dir: PathBuf,
-    attachment_ticket_key: [u8; 32],
-    events: broadcast::Sender<ServerEvent>,
-    limiter: Arc<Mutex<HashMap<String, VecDeque<Instant>>>>,
-    online_users: Arc<Mutex<HashMap<String, usize>>>,
-    voice: VoiceServerConfig,
-    distributed_limiter: Result<Option<ratelimit::RateLimiter>, ratelimit::LimitError>,
-    /// GHOSTCHAT_REQUIRE_REDIS=1, read once at startup.
-    require_redis: bool,
-    /// Call rooms of the server media relay (`/v1/media/ws`).
-    media_rooms: media_relay::Rooms,
-    /// WebSocket keepalive for `/v1/ws` and `/v1/media/ws`.
-    keepalive: Keepalive,
-}
-
-/// Server-side WebSocket keepalive. Tunnels such as Cloudflare close a
-/// WebSocket that carries nothing for about 100 s, so the server pings every
-/// `interval`, and closes a socket that has sent nothing (not even a pong)
-/// for `timeout`.
-#[derive(Clone, Copy, Debug)]
-struct Keepalive {
-    interval: Duration,
-    timeout: Duration,
-}
-
-impl Default for Keepalive {
-    fn default() -> Self {
-        Self {
-            interval: Duration::from_secs(30),
-            timeout: Duration::from_secs(90),
-        }
-    }
-}
-
-#[derive(Clone)]
-struct VoiceServerConfig {
-    stun_urls: Vec<String>,
-    turn_urls: Vec<String>,
-    turn_shared_secret: Option<String>,
-    livekit_url: Option<String>,
-    livekit_api_key: Option<String>,
-    livekit_api_secret: Option<String>,
-}
-
-#[derive(Clone, Serialize)]
-struct ServerEvent {
-    recipients: Vec<String>,
-    event: serde_json::Value,
-}
-
 fn validate_crypto_payload(payload: &str) -> Result<(), ApiError> {
     if payload.is_empty() || payload.len() > MAX_CRYPTO_PAYLOAD_BYTES * 4 / 3 + 8 {
         return Err(ApiError::crypto_payload_too_large());
@@ -127,74 +77,6 @@ fn validate_crypto_payload(payload: &str) -> Result<(), ApiError> {
         return Err(ApiError::crypto_payload_too_large());
     }
     Ok(())
-}
-
-pub async fn build_state(db: SqlitePool) -> AppState {
-    let attachment_dir = env::var_os("GHOSTCHAT_ATTACHMENT_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("ghostchat-attachments"));
-    build_state_with_attachment_dir(db, attachment_dir).await
-}
-
-pub async fn build_state_with_attachment_dir(db: SqlitePool, attachment_dir: PathBuf) -> AppState {
-    let (events, _) = broadcast::channel(256);
-    let mut attachment_ticket_key = [0u8; 32];
-    OsRng.fill_bytes(&mut attachment_ticket_key);
-    let stun_urls = env::var("GHOSTCHAT_STUN_URLS")
-        .ok()
-        .map(|value| parse_server_urls(&value, &["stun:", "stuns:"]))
-        .filter(|urls| !urls.is_empty())
-        .unwrap_or_else(|| vec!["stun:stun.l.google.com:19302".into()]);
-    let turn_urls = env::var("GHOSTCHAT_TURN_URLS")
-        .ok()
-        .map(|value| parse_server_urls(&value, &["turn:", "turns:"]))
-        .unwrap_or_default();
-    let turn_shared_secret = env::var("GHOSTCHAT_TURN_SHARED_SECRET")
-        .ok()
-        .filter(|secret| !secret.trim().is_empty());
-    let livekit_url = env::var("GHOSTCHAT_LIVEKIT_URL")
-        .ok()
-        .map(|url| url.trim().trim_end_matches('/').to_owned())
-        .filter(|url| {
-            url.starts_with("wss://")
-                || url.starts_with("ws://localhost:")
-                || url.starts_with("ws://127.0.0.1:")
-        });
-    let livekit_api_key = env::var("GHOSTCHAT_LIVEKIT_API_KEY")
-        .ok()
-        .filter(|key| !key.trim().is_empty());
-    let livekit_api_secret = env::var("GHOSTCHAT_LIVEKIT_API_SECRET")
-        .ok()
-        .filter(|secret| !secret.trim().is_empty());
-    AppState {
-        db,
-        attachment_dir,
-        attachment_ticket_key,
-        events,
-        limiter: Arc::new(Mutex::new(HashMap::new())),
-        online_users: Arc::new(Mutex::new(HashMap::new())),
-        voice: VoiceServerConfig {
-            stun_urls,
-            turn_urls,
-            turn_shared_secret,
-            livekit_url,
-            livekit_api_key,
-            livekit_api_secret,
-        },
-        distributed_limiter: ratelimit::RateLimiter::from_env(),
-        require_redis: env::var("GHOSTCHAT_REQUIRE_REDIS").as_deref() == Ok("1"),
-        media_rooms: media_relay::Rooms::default(),
-        keepalive: Keepalive::default(),
-    }
-}
-
-fn parse_server_urls(value: &str, allowed_schemes: &[&str]) -> Vec<String> {
-    value
-        .split(',')
-        .map(str::trim)
-        .filter(|url| allowed_schemes.iter().any(|scheme| url.starts_with(scheme)))
-        .map(str::to_owned)
-        .collect()
 }
 
 /// The version this server binary was built as; `/health` reports it so
