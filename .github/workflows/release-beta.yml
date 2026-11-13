@@ -1,0 +1,210 @@
+name: Release GhostChat beta
+
+# The beta channel (docs/UPDATES.md). Pushes to the `beta` branch build the
+# same signed MSI and server exe as the stable release (release.yml), but
+# publish them as a GitHub prerelease tagged `v<version>-beta.<run number>`
+# and put their latest.json on the fixed `beta` release, the beta feed:
+# https://github.com/<repository>/releases/download/beta/latest.json
+# This workflow never creates, edits or uploads to a stable `v<version>`
+# release, and never marks a release as latest, so the stable feed
+# (releases/latest/download/latest.json) cannot point at a beta build.
+
+on:
+  push:
+    branches:
+      - beta
+    paths:
+      - "Cargo.toml"
+      - "crates/desktop/tauri.conf.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  # One beta publish at a time: each run rewrites the beta feed.
+  group: release-beta
+  cancel-in-progress: false
+
+jobs:
+  publish-windows-beta:
+    runs-on: windows-latest
+    env:
+      GHOSTCHAT_REQUIRE_WINDOWS_CODESIGN: ${{ vars.GHOSTCHAT_REQUIRE_WINDOWS_CODESIGN || 'false' }}
+      GHOSTCHAT_CODESIGN_CERT_SHA1: ${{ vars.GHOSTCHAT_CODESIGN_CERT_SHA1 }}
+      GHOSTCHAT_CODESIGN_TIMESTAMP_URL: ${{ vars.GHOSTCHAT_CODESIGN_TIMESTAMP_URL }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build files
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: . -> target
+
+      - name: Check beta prerelease tag and app versions
+        id: tag
+        shell: pwsh
+        run: |
+          $config = Get-Content -Raw "crates/desktop/tauri.conf.json" | ConvertFrom-Json
+          $cargoToml = Get-Content -Raw "Cargo.toml"
+          $match = [regex]::Match($cargoToml, '(?ms)^\[workspace\.package\]\s*version\s*=\s*"([^"]+)"')
+          if (-not $match.Success -or $config.version -ne $match.Groups[1].Value) {
+            throw "The workspace and Tauri app versions must match before publishing."
+          }
+          if ($env:GITHUB_REF_NAME -ne "beta") {
+            throw "Publish GhostChat beta releases from the beta branch."
+          }
+          # The version string is published unchanged: updaters compare plain
+          # major.minor.patch, so only the tag says "beta".
+          if ($config.version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "The app version must be a plain major.minor.patch."
+          }
+          $releaseTag = "v$($config.version)-beta.$env:GITHUB_RUN_NUMBER"
+          if ($releaseTag -notmatch '^v\d+\.\d+\.\d+-beta\.\d+$' -or $releaseTag -eq "v$($config.version)") {
+            throw "Refusing to publish a beta build under the tag $releaseTag."
+          }
+          "RELEASE_TAG=$releaseTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Set the GitHub Releases update feed
+        shell: pwsh
+        env:
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          # The compiled-in default stays the stable feed; the desktop picks
+          # the beta feed at check time when "Get beta updates" is on.
+          $configPath = "crates/desktop/tauri.conf.json"
+          $config = Get-Content -Raw $configPath | ConvertFrom-Json
+          $config.plugins.updater.endpoints = @("https://github.com/$env:RELEASE_REPOSITORY/releases/latest/download/latest.json")
+          $config | ConvertTo-Json -Depth 100 | Set-Content -Encoding utf8 $configPath
+
+      - name: Verify voice engine and relay policy
+        shell: pwsh
+        run: |
+          node scripts/test-audio-routing.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Audio routing regression." }
+          node scripts/test-media-relay.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Media relay regression." }
+          npm install --prefix "$env:RUNNER_TEMP/ghostchat-audio-tests" --ignore-scripts --no-audit --no-fund playwright@1.56.1
+          if ($LASTEXITCODE -ne 0) { throw "Could not install audio test tooling." }
+          $env:NODE_PATH = "$env:RUNNER_TEMP/ghostchat-audio-tests/node_modules"
+          node scripts/test-audio-browser.cjs
+          if ($LASTEXITCODE -ne 0) { throw "Real AudioWorklet test failed." }
+          $env:GHOSTCHAT_TEST_ENGINE = "deepfilter"
+          node scripts/test-audio-browser.cjs
+          if ($LASTEXITCODE -ne 0) { throw "DeepFilterNet AudioWorklet test failed." }
+
+      - name: Build standalone Windows server binary
+        shell: pwsh
+        run: cargo build --release --locked --package ghostchat-server
+
+      # As in release.yml: no automatic updater signing; the updater
+      # signature is generated over the Authenticode-final MSI below.
+      - name: Build unsigned Windows MSI for release signing
+        uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # action-v1.0.0
+        with:
+          projectPath: crates/desktop
+          args: >-
+            --bundles msi --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+      - name: Authenticode-sign final Windows artifacts before updater signing
+        shell: pwsh
+        run: |
+          $msi = Get-ChildItem -LiteralPath "target/release/bundle/msi" -Filter "*.msi" -File | Select-Object -First 1
+          if (-not $msi) { throw "The Windows MSI bundle was not built." }
+          $sourcePath = "target/release/ghostchat-server.exe"
+          $releasePath = "target/release/ghostchat-server-windows-x64.exe"
+          if (-not (Test-Path -LiteralPath $sourcePath)) { throw "The standalone server binary was not built." }
+          Copy-Item -LiteralPath $sourcePath -Destination $releasePath -Force
+          $arguments = @{ Path = @($msi.FullName, $releasePath) }
+          if ($env:GHOSTCHAT_REQUIRE_WINDOWS_CODESIGN -eq "true") { $arguments.Required = $true }
+          & .\scripts\sign-windows.ps1 @arguments
+
+      - name: Sign final MSI and server for the Tauri updater
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+            throw "TAURI_SIGNING_PRIVATE_KEY is required to publish an updater artifact."
+          }
+          $msi = Get-ChildItem -LiteralPath "target/release/bundle/msi" -Filter "*.msi" -File | Select-Object -First 1
+          if (-not $msi) { throw "The Windows MSI bundle was not built." }
+          & npx.cmd --yes "@tauri-apps/cli@2.12.4" signer sign $msi.FullName
+          if ($LASTEXITCODE -ne 0) { throw "The Tauri updater signer failed." }
+          if (-not (Test-Path -LiteralPath "$($msi.FullName).sig")) {
+            throw "The Tauri updater signature was not produced."
+          }
+          $serverPath = "target/release/ghostchat-server-windows-x64.exe"
+          & npx.cmd --yes "@tauri-apps/cli@2.12.4" signer sign $serverPath
+          if ($LASTEXITCODE -ne 0) { throw "The Tauri updater signer failed for the server." }
+          if (-not (Test-Path -LiteralPath "$serverPath.sig")) {
+            throw "The server updater signature was not produced."
+          }
+
+      - name: Publish the signed beta prerelease and the beta feed
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.tag.outputs.RELEASE_TAG }}
+        run: |
+          $releaseTag = $env:RELEASE_TAG
+          if ($releaseTag -notmatch '^v\d+\.\d+\.\d+-beta\.\d+$') {
+            throw "Refusing to publish a beta build under the tag $releaseTag."
+          }
+          $msi = Get-ChildItem -LiteralPath "target/release/bundle/msi" -Filter "*.msi" -File | Select-Object -First 1
+          if (-not $msi) { throw "The Windows MSI bundle was not built." }
+          $signaturePath = "$($msi.FullName).sig"
+          $releasePath = "target/release/ghostchat-server-windows-x64.exe"
+          $checksumPath = "$releasePath.sha256"
+          $serverSignaturePath = "$releasePath.sig"
+          if (-not (Test-Path -LiteralPath $signaturePath) -or -not (Test-Path -LiteralPath $releasePath) -or -not (Test-Path -LiteralPath $serverSignaturePath)) {
+            throw "The signed release assets are incomplete."
+          }
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $releasePath).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath $checksumPath -Value "$hash  ghostchat-server-windows-x64.exe" -NoNewline
+          $config = Get-Content -Raw "crates/desktop/tauri.conf.json" | ConvertFrom-Json
+          $msiName = $msi.Name
+          $signature = (Get-Content -LiteralPath $signaturePath -Raw).Trim()
+          if ([string]::IsNullOrWhiteSpace($signature)) { throw "The Tauri updater signature is empty." }
+          # release_tag tells the standalone server which prerelease holds
+          # the exe of this version; the desktop reads the MSI url.
+          $latest = [ordered]@{
+            version = $config.version
+            notes = "GhostChat $($config.version) beta ($releaseTag)"
+            pub_date = [DateTime]::UtcNow.ToString("o")
+            release_tag = $releaseTag
+            platforms = [ordered]@{
+              "windows-x86_64" = [ordered]@{
+                signature = $signature
+                url = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$releaseTag/$msiName"
+              }
+            }
+          }
+          $latestPath = "target/release/latest-beta.json"
+          $latest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $latestPath -Encoding utf8
+          @"
+          ## GhostChat $($config.version) beta ($releaseTag)
+
+          A prerelease from the beta branch, offered only to desktops with "Get beta updates" turned on and to servers run with GHOSTCHAT_UPDATE_CHANNEL=beta. Stable installs never receive it. See docs/UPDATES.md.
+          "@ | Set-Content -LiteralPath "target/release/RELEASE_NOTES.md" -Encoding utf8
+          # The prerelease of this build, tagged at the built commit.
+          gh release view "$releaseTag" *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "$releaseTag" --target "$env:GITHUB_SHA" --title "GhostChat $releaseTag" --notes-file "target/release/RELEASE_NOTES.md" --prerelease --latest=false
+            if ($LASTEXITCODE -ne 0) { throw "Could not create the beta prerelease." }
+          }
+          gh release upload "$releaseTag" "$($msi.FullName)#$msiName" "$signaturePath#$msiName.sig" "$latestPath#latest.json" "$releasePath#ghostchat-server-windows-x64.exe" "$checksumPath#ghostchat-server-windows-x64.exe.sha256" "$serverSignaturePath#ghostchat-server-windows-x64.exe.sig"
+          if ($LASTEXITCODE -ne 0) { throw "Could not upload the beta release assets." }
+          # The beta feed: one fixed prerelease whose latest.json is replaced
+          # by every run, so its download URL never changes.
+          gh release view "beta" *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "beta" --target "$env:GITHUB_SHA" --title "GhostChat beta feed" --notes "The beta update feed. Builds are the v<version>-beta.<n> prereleases; see docs/UPDATES.md." --prerelease --latest=false
+            if ($LASTEXITCODE -ne 0) { throw "Could not create the beta feed release." }
+          }
+          gh release upload "beta" "$latestPath#latest.json" --clobber
+          if ($LASTEXITCODE -ne 0) { throw "Could not update the beta feed." }
