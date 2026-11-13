@@ -42,11 +42,14 @@ use tokio::{
 };
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
+mod api_error;
 pub mod device_proof;
 mod media_relay;
 mod media_revocation;
 pub mod ratelimit;
 pub mod self_update;
+
+use api_error::*;
 
 const MESSAGE_LIMIT: usize = 4_000;
 const MAX_CRYPTO_PAYLOAD_BYTES: usize = 64 * 1024;
@@ -108,78 +111,6 @@ struct VoiceServerConfig {
 struct ServerEvent {
     recipients: Vec<String>,
     event: serde_json::Value,
-}
-
-#[derive(Debug)]
-struct ApiError {
-    status: StatusCode,
-    message: &'static str,
-    /// A stable identifier for refusals a client must tell apart from other
-    /// errors with the same status (sent as `code` next to `error`).
-    code: Option<&'static str>,
-}
-
-impl ApiError {
-    fn new(status: StatusCode, message: &'static str) -> Self {
-        Self {
-            status,
-            message,
-            code: None,
-        }
-    }
-    fn with_code(mut self, code: &'static str) -> Self {
-        self.code = Some(code);
-        self
-    }
-    fn bad(message: &'static str) -> Self {
-        Self::new(StatusCode::BAD_REQUEST, message)
-    }
-    fn unauthorized() -> Self {
-        Self::new(StatusCode::UNAUTHORIZED, "Invalid or expired session.")
-    }
-    fn forbidden() -> Self {
-        Self::new(
-            StatusCode::FORBIDDEN,
-            "You do not have access to this resource.",
-        )
-    }
-    fn not_found() -> Self {
-        Self::new(StatusCode::NOT_FOUND, "The requested item was not found.")
-    }
-    fn conflict(message: &'static str) -> Self {
-        Self::new(StatusCode::CONFLICT, message)
-    }
-    fn too_large() -> Self {
-        Self::new(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "Files must be 5 GB or smaller.",
-        )
-    }
-    fn crypto_payload_too_large() -> Self {
-        Self::new(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "Cryptographic payloads must be 64 KB or smaller.",
-        )
-    }
-    fn internal() -> Self {
-        Self::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "The server could not complete this request.",
-        )
-    }
-    fn unavailable(message: &'static str) -> Self {
-        Self::new(StatusCode::SERVICE_UNAVAILABLE, message)
-    }
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        let mut body = serde_json::json!({"error": self.message});
-        if let Some(code) = self.code {
-            body["code"] = code.into();
-        }
-        (self.status, Json(body)).into_response()
-    }
 }
 
 fn validate_crypto_payload(payload: &str) -> Result<(), ApiError> {
