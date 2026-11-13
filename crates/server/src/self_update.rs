@@ -26,6 +26,90 @@ pub const SERVER_ASSET: &str = "ghostchat-server-windows-x64.exe";
 /// How often a running server looks for a newer release.
 pub const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
+/// Selects the release channel the standalone server follows: `stable`
+/// (the default) or `beta` (docs/UPDATES.md).
+pub const UPDATE_CHANNEL_ENV: &str = "GHOSTCHAT_UPDATE_CHANNEL";
+
+/// The release feed the self-updater reads. Both channels are signed with
+/// the same updater key and follow the same no-downgrade rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateChannel {
+    /// What `main` releases: `latest.json` of the latest (non-pre)release.
+    Stable,
+    /// Prereleases built from the `beta` branch: `latest.json` of the fixed
+    /// `beta` release tag.
+    Beta,
+}
+
+impl UpdateChannel {
+    /// Parses [`UPDATE_CHANNEL_ENV`]. Unset or blank is stable; anything
+    /// other than `stable` or `beta` is an `Err` with the warning to log.
+    pub fn from_setting(setting: Option<&str>) -> Result<Self, String> {
+        let value = setting.map(str::trim).unwrap_or_default();
+        if value.is_empty() || value.eq_ignore_ascii_case("stable") {
+            Ok(Self::Stable)
+        } else if value.eq_ignore_ascii_case("beta") {
+            Ok(Self::Beta)
+        } else {
+            Err(format!(
+                "{UPDATE_CHANNEL_ENV}={value:?} is not `stable` or `beta`; following the stable channel"
+            ))
+        }
+    }
+
+    /// The `latest.json` this channel reads.
+    pub fn feed_url(self) -> String {
+        match self {
+            Self::Stable => format!(
+                "https://github.com/{RELEASE_REPOSITORY}/releases/latest/download/latest.json"
+            ),
+            Self::Beta => format!(
+                "https://github.com/{RELEASE_REPOSITORY}/releases/download/beta/latest.json"
+            ),
+        }
+    }
+
+    /// The release tag whose assets belong to `version` of this channel's
+    /// `feed`. Stable releases are tagged `v<version>`, whatever the feed
+    /// says. A beta feed names its prerelease in `release_tag`, which must
+    /// be exactly `v<version>-beta.<run number>`.
+    pub fn release_tag(self, version: &str, feed: &serde_json::Value) -> Result<String, String> {
+        let plain = format!("v{version}");
+        match self {
+            Self::Stable => Ok(plain),
+            Self::Beta => {
+                let tag = feed["release_tag"]
+                    .as_str()
+                    .ok_or("the beta feed names no release_tag")?;
+                let run = tag
+                    .strip_prefix(&plain)
+                    .and_then(|rest| rest.strip_prefix("-beta."))
+                    .ok_or_else(|| format!("the beta release tag {tag:?} is not for {version}"))?;
+                if run.is_empty() || !run.bytes().all(|byte| byte.is_ascii_digit()) {
+                    return Err(format!(
+                        "the beta release tag {tag:?} is not v<version>-beta.<n>"
+                    ));
+                }
+                Ok(tag.to_owned())
+            }
+        }
+    }
+}
+
+/// The channel named by [`UPDATE_CHANNEL_ENV`]; an invalid value logs a
+/// warning and follows the stable channel.
+pub fn update_channel(setting: Option<&str>) -> UpdateChannel {
+    UpdateChannel::from_setting(setting).unwrap_or_else(|warning| {
+        tracing::warn!(%warning, "self-update: invalid update channel");
+        UpdateChannel::Stable
+    })
+}
+
+/// Where `asset` of the release tagged `tag` is downloaded from.
+pub fn asset_url(tag: &str, asset: &str) -> String {
+    format!("https://github.com/{RELEASE_REPOSITORY}/releases/download/{tag}/{asset}")
+}
+
 /// Set by the updater on the exe it starts: the version that exe must be.
 /// The updater signature covers the bytes but not the version, so a validly
 /// signed older exe served under a newer tag stops at this check (`main.rs`)
@@ -520,17 +604,24 @@ const MAX_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
 /// the release workflow) names the version; assets are read from its tag.
 pub struct GithubReleases {
     client: reqwest::Client,
+    channel: UpdateChannel,
+    /// The version and release tag the feed named last.
+    latest: std::sync::Mutex<Option<(String, String)>>,
 }
 
 impl GithubReleases {
-    pub fn new() -> Result<Self, String> {
+    pub fn new(channel: UpdateChannel) -> Result<Self, String> {
         let client = reqwest::Client::builder()
             .user_agent(concat!("ghostchat-server/", env!("CARGO_PKG_VERSION")))
             .connect_timeout(Duration::from_secs(30))
             .timeout(Duration::from_secs(15 * 60))
             .build()
             .map_err(|e| e.to_string())?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            channel,
+            latest: std::sync::Mutex::new(None),
+        })
     }
 
     async fn get(&self, url: &str) -> Result<reqwest::Response, String> {
@@ -555,26 +646,46 @@ impl GithubReleases {
 
 impl Releases for GithubReleases {
     async fn latest_version(&self) -> Result<String, String> {
-        let url =
-            format!("https://github.com/{RELEASE_REPOSITORY}/releases/latest/download/latest.json");
+        let url = self.channel.feed_url();
         let feed: serde_json::Value = self
             .get(&url)
             .await?
             .json()
             .await
             .map_err(|e| format!("{url}: {e}"))?;
-        feed["version"]
+        let version = feed["version"]
             .as_str()
             .map(str::to_owned)
-            .ok_or_else(|| format!("{url}: no version"))
+            .ok_or_else(|| format!("{url}: no version"))?;
+        let tag = self
+            .channel
+            .release_tag(&version, &feed)
+            .map_err(|e| format!("{url}: {e}"))?;
+        *self
+            .latest
+            .lock()
+            .map_err(|_| "the release cache is poisoned".to_owned())? =
+            Some((version.clone(), tag));
+        Ok(version)
     }
 
     async fn download(&self, version: &str, asset: &str) -> Result<Vec<u8>, String> {
         if parse_version(version).is_none() {
             return Err(format!("invalid release version {version:?}"));
         }
-        let url =
-            format!("https://github.com/{RELEASE_REPOSITORY}/releases/download/v{version}/{asset}");
+        let tag = match self.channel {
+            UpdateChannel::Stable => format!("v{version}"),
+            // The prerelease tag the beta feed named for this version.
+            UpdateChannel::Beta => self
+                .latest
+                .lock()
+                .map_err(|_| "the release cache is poisoned".to_owned())?
+                .as_ref()
+                .filter(|(latest, _)| latest == version)
+                .map(|(_, tag)| tag.clone())
+                .ok_or_else(|| format!("the beta feed did not name a release for {version}"))?,
+        };
+        let url = asset_url(&tag, asset);
         let bytes = self
             .get(&url)
             .await?
@@ -817,6 +928,7 @@ pub fn start(
     address: std::net::SocketAddr,
     control: ServeControl,
     calls_active: CallsActive,
+    channel: UpdateChannel,
 ) {
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
@@ -826,7 +938,7 @@ pub fn start(
         }
     };
     remove_leftovers(&exe);
-    let releases = match GithubReleases::new() {
+    let releases = match GithubReleases::new(channel) {
         Ok(releases) => releases,
         Err(error) => {
             tracing::warn!(%error, "self-update: no HTTP client; not updating");
@@ -835,6 +947,7 @@ pub fn start(
     };
     tracing::info!(
         exe = %exe.display(),
+        ?channel,
         "self-update: on (set GHOSTCHAT_AUTO_UPDATE=false to turn it off)"
     );
     let swap = ProcessSwap::new(db, database_path, address, control.clone(), calls_active);
@@ -1547,5 +1660,110 @@ mod tests {
         assert_eq!(outcome, Outcome::UpToDate("9.9.9".into()));
         assert!(releases.downloads.lock().unwrap().is_empty());
         assert!(swap.calls().is_empty());
+    }
+
+    #[test]
+    fn the_update_channel_defaults_to_stable() {
+        assert_eq!(UpdateChannel::from_setting(None), Ok(UpdateChannel::Stable));
+        assert_eq!(
+            UpdateChannel::from_setting(Some("")),
+            Ok(UpdateChannel::Stable)
+        );
+        assert_eq!(
+            UpdateChannel::from_setting(Some("  ")),
+            Ok(UpdateChannel::Stable)
+        );
+        assert_eq!(
+            UpdateChannel::from_setting(Some("stable")),
+            Ok(UpdateChannel::Stable)
+        );
+        assert_eq!(update_channel(None), UpdateChannel::Stable);
+    }
+
+    #[test]
+    fn the_update_channel_env_selects_beta() {
+        assert_eq!(UPDATE_CHANNEL_ENV, "GHOSTCHAT_UPDATE_CHANNEL");
+        assert_eq!(
+            UpdateChannel::from_setting(Some("beta")),
+            Ok(UpdateChannel::Beta)
+        );
+        assert_eq!(
+            UpdateChannel::from_setting(Some(" BETA ")),
+            Ok(UpdateChannel::Beta)
+        );
+        assert_eq!(update_channel(Some("beta")), UpdateChannel::Beta);
+    }
+
+    #[test]
+    fn an_invalid_update_channel_falls_back_to_stable_with_a_warning() {
+        for setting in ["nightly", "betа", "beta1", "prerelease", "1"] {
+            let warning = UpdateChannel::from_setting(Some(setting))
+                .expect_err(&format!("{setting:?} is not a channel"));
+            assert!(warning.contains(UPDATE_CHANNEL_ENV), "{warning}");
+            assert!(warning.contains("stable"), "{warning}");
+            assert_eq!(update_channel(Some(setting)), UpdateChannel::Stable);
+        }
+    }
+
+    #[test]
+    fn the_feed_url_follows_the_channel() {
+        assert_eq!(
+            UpdateChannel::Stable.feed_url(),
+            "https://github.com/crsh6663r4234/getchat/releases/latest/download/latest.json"
+        );
+        assert_eq!(
+            UpdateChannel::Beta.feed_url(),
+            "https://github.com/crsh6663r4234/getchat/releases/download/beta/latest.json"
+        );
+    }
+
+    #[test]
+    fn stable_assets_are_read_from_the_version_tag() {
+        let feed = serde_json::json!({ "version": "4.0.57", "release_tag": "beta" });
+        assert_eq!(
+            UpdateChannel::Stable.release_tag("4.0.57", &feed),
+            Ok("v4.0.57".to_owned()),
+            "the stable feed's tag is never taken from the feed"
+        );
+        assert_eq!(
+            asset_url("v4.0.57", SERVER_ASSET),
+            "https://github.com/crsh6663r4234/getchat/releases/download/v4.0.57/ghostchat-server-windows-x64.exe"
+        );
+    }
+
+    #[test]
+    fn beta_assets_are_read_from_the_prerelease_tag_of_the_same_version() {
+        let feed = serde_json::json!({ "version": "4.0.57", "release_tag": "v4.0.57-beta.12" });
+        assert_eq!(
+            UpdateChannel::Beta.release_tag("4.0.57", &feed),
+            Ok("v4.0.57-beta.12".to_owned())
+        );
+        for tag in [
+            serde_json::Value::Null,
+            serde_json::json!(""),
+            serde_json::json!("v4.0.57"),
+            serde_json::json!("beta"),
+            serde_json::json!("v4.0.56-beta.12"),
+            serde_json::json!("v4.0.57-beta."),
+            serde_json::json!("v4.0.57-beta.1a"),
+            serde_json::json!("v4.0.57-beta.12/../v1.0.0"),
+            serde_json::json!("v4.0.57-beta.12?x"),
+            serde_json::json!(12),
+        ] {
+            let feed = serde_json::json!({ "version": "4.0.57", "release_tag": tag });
+            assert!(
+                UpdateChannel::Beta.release_tag("4.0.57", &feed).is_err(),
+                "{feed} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn a_beta_build_of_the_same_version_is_not_an_update() {
+        // The beta workflow publishes the plain version under a prerelease
+        // tag, so the no-downgrade rule stays semver on major.minor.patch.
+        assert!(!is_newer("4.0.56", "4.0.56"));
+        assert!(is_newer("4.0.57", "4.0.56"));
+        assert!(!is_newer("4.0.57-beta.12", "4.0.56"));
     }
 }

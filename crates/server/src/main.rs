@@ -30,5 +30,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if cfg!(windows) && !self_update {
         tracing::info!("self-update: off (GHOSTCHAT_AUTO_UPDATE)");
     }
-    ghostchat_server::run_standalone(address, &database, self_update).await
+    // `stable` unless GHOSTCHAT_UPDATE_CHANNEL=beta; an invalid value warns.
+    let channel = self_update.then(|| {
+        let setting = env::var(ghostchat_server::self_update::UPDATE_CHANNEL_ENV).ok();
+        ghostchat_server::self_update::update_channel(setting.as_deref())
+    });
+    ghostchat_server::run_standalone(address, &database, channel).await
 }

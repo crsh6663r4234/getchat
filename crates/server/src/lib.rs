@@ -7400,20 +7400,20 @@ pub async fn bind_default(
     addr: SocketAddr,
     database_path: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    run_standalone(addr, database_path, false).await
+    run_standalone(addr, database_path, None).await
 }
 
 /// How long in-flight requests may finish when the self-updater stops the
 /// listener; WebSockets keep running until this process exits.
 const SELF_UPDATE_DRAIN: Duration = Duration::from_secs(10);
 
-/// The standalone server (`main.rs`). With `self_update` it also runs the
-/// self-updater, which may stop the listener to swap the exe and start it
-/// again if the new exe fails (see `self_update`).
+/// The standalone server (`main.rs`). With `self_update` (its release
+/// channel) it also runs the self-updater, which may stop the listener to
+/// swap the exe and start it again if the new exe fails (see `self_update`).
 pub async fn run_standalone(
     addr: SocketAddr,
     database_path: &str,
-    self_update: bool,
+    self_update: Option<self_update::UpdateChannel>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let db = open_database(database_path).await?;
     let attachment_dir = env::var_os("GHOSTCHAT_ATTACHMENT_DIR")
@@ -7429,7 +7429,7 @@ pub async fn run_standalone(
     let _background = BackgroundTasks::spawn(&state);
     // `control` lives as long as this loop, so `wanted` never closes.
     let (control, mut signals) = self_update::ServeControl::new();
-    if self_update {
+    if let Some(channel) = self_update {
         let rooms = state.media_rooms.clone();
         self_update::start(
             db,
@@ -7437,6 +7437,7 @@ pub async fn run_standalone(
             addr,
             control.clone(),
             std::sync::Arc::new(move || rooms.any_active()),
+            channel,
         );
     }
     let served = serve_standalone(addr, state, &mut signals).await;
@@ -7929,7 +7930,7 @@ mod tests {
             .local_addr()
             .unwrap();
         let database = dir.join("ghostchat.sqlite").to_string_lossy().into_owned();
-        let serving = tokio::spawn(async move { run_standalone(addr, &database, false).await });
+        let serving = tokio::spawn(async move { run_standalone(addr, &database, None).await });
         let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
         while stale.exists() && tokio::time::Instant::now() < deadline {
             tokio::time::sleep(Duration::from_millis(50)).await;
