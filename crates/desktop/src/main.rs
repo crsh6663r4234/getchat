@@ -52,23 +52,34 @@ struct UpdateStatus {
     notes: Option<String>,
 }
 
-fn update_endpoint() -> Option<&'static str> {
-    // Release builds used to require a CI-only compile-time variable even
-    // though the signed GitHub feed is part of this application's stable
-    // public configuration. That made otherwise valid installed builds report
-    // that Releases were not connected. Keep the environment override for
-    // staging, but always retain the production feed as a safe fallback.
+/// The stable channel: `latest.json` of the latest (non-pre)release.
+const STABLE_UPDATE_FEED: &str =
+    "https://github.com/crsh6663r4234/getchat/releases/latest/download/latest.json";
+/// The beta channel: `latest.json` of the fixed `beta` prerelease, which the
+/// beta release workflow replaces on every beta build (docs/UPDATES.md).
+const BETA_UPDATE_FEED: &str =
+    "https://github.com/crsh6663r4234/getchat/releases/download/beta/latest.json";
+
+/// The update feed of `channel`, chosen at each check from the UI's local
+/// "Get beta updates" setting: `beta` reads the beta feed, anything else the
+/// stable one. Release builds used to require a CI-only compile-time variable
+/// even though the signed GitHub feed is part of this application's stable
+/// public configuration. Keep that override for staging the stable channel,
+/// but always retain the production feed as a safe fallback.
+fn update_endpoint(channel: Option<&str>) -> &'static str {
+    if channel == Some("beta") {
+        return BETA_UPDATE_FEED;
+    }
     option_env!("GHOSTCHAT_UPDATE_ENDPOINT")
         .filter(|endpoint| !endpoint.trim().is_empty())
-        .or(Some(
-            "https://github.com/crsh6663r4234/getchat/releases/latest/download/latest.json",
-        ))
+        .unwrap_or(STABLE_UPDATE_FEED)
 }
 
-fn make_updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
-    let endpoint = update_endpoint()
-        .ok_or_else(|| "The GitHub Releases feed is not configured for this build.".to_string())?;
-    let endpoint = endpoint
+fn make_updater(
+    app: &tauri::AppHandle,
+    channel: Option<&str>,
+) -> Result<tauri_plugin_updater::Updater, String> {
+    let endpoint = update_endpoint(channel)
         .parse()
         .map_err(|error| format!("Invalid update feed URL: {error}"))?;
     app.updater_builder()
@@ -79,18 +90,11 @@ fn make_updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater,
 }
 
 #[tauri::command]
-async fn check_for_update(app: tauri::AppHandle) -> Result<UpdateStatus, String> {
-    if update_endpoint().is_none() {
-        return Ok(UpdateStatus {
-            configured: false,
-            current_version: env!("CARGO_PKG_VERSION"),
-            available: false,
-            version: None,
-            notes: None,
-        });
-    }
-
-    let update = make_updater(&app)?
+async fn check_for_update(
+    app: tauri::AppHandle,
+    channel: Option<String>,
+) -> Result<UpdateStatus, String> {
+    let update = make_updater(&app, channel.as_deref())?
         .check()
         .await
         .map_err(|error| error.to_string())?;
@@ -104,8 +108,13 @@ async fn check_for_update(app: tauri::AppHandle) -> Result<UpdateStatus, String>
 }
 
 #[tauri::command]
-async fn install_update(app: tauri::AppHandle, expected_version: String) -> Result<(), String> {
-    let update = make_updater(&app)?
+async fn install_update(
+    app: tauri::AppHandle,
+    expected_version: String,
+    channel: Option<String>,
+) -> Result<(), String> {
+    // The channel of the check that offered `expected_version`.
+    let update = make_updater(&app, channel.as_deref())?
         .check()
         .await
         .map_err(|error| error.to_string())?
@@ -1256,5 +1265,41 @@ mod windows_credential {
     }
     pub fn delete_recovery(_: &str) -> Result<(), String> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod update_channel_tests {
+    use super::*;
+
+    #[test]
+    fn the_update_feed_defaults_to_stable() {
+        assert_eq!(update_endpoint(None), STABLE_UPDATE_FEED);
+        assert_eq!(update_endpoint(Some("stable")), STABLE_UPDATE_FEED);
+        assert_eq!(update_endpoint(Some("")), STABLE_UPDATE_FEED);
+        assert_eq!(update_endpoint(Some("nightly")), STABLE_UPDATE_FEED);
+        assert_eq!(
+            STABLE_UPDATE_FEED,
+            "https://github.com/crsh6663r4234/getchat/releases/latest/download/latest.json"
+        );
+    }
+
+    #[test]
+    fn the_beta_setting_selects_the_beta_feed() {
+        assert_eq!(update_endpoint(Some("beta")), BETA_UPDATE_FEED);
+        assert_eq!(
+            BETA_UPDATE_FEED,
+            "https://github.com/crsh6663r4234/getchat/releases/download/beta/latest.json"
+        );
+    }
+
+    #[test]
+    fn the_stable_feed_matches_the_bundled_updater_config() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(
+            config["plugins"]["updater"]["endpoints"][0].as_str(),
+            Some(STABLE_UPDATE_FEED)
+        );
     }
 }

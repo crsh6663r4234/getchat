@@ -1694,6 +1694,64 @@ test('the planner refuses to post when the device cannot tell whether it holds t
   assert.equal(app.posts.length, 0, `nothing is posted: ${JSON.stringify(app.posts)}`);
 });
 
+const updateChecks = app => app.invokes.filter(item => item.command === 'check_for_update');
+
+test('update checks follow the stable channel by default', async () => {
+  const app = harness({ storage: { 'ghostchat.server': 'https://a.example' } });
+  await app.flush(() => updateChecks(app).length > 0);
+  assert.equal(updateChecks(app)[0].args.channel, 'stable', 'the startup check reads the stable feed');
+  await app.$('#checkUpdates').onclick();
+  assert.equal(updateChecks(app).at(-1).args.channel, 'stable');
+});
+
+test('the beta setting switches the next update check to the beta feed', async () => {
+  const app = harness({ storage: { 'ghostchat.server': 'https://a.example', 'ghostchat.update.beta': 'true' } });
+  await app.flush(() => updateChecks(app).length > 0);
+  assert.equal(updateChecks(app)[0].args.channel, 'beta', 'a saved beta opt-in applies at startup');
+  app.$('#betaUpdatesEnabled').onchange({ target: { checked: false } });
+  assert.equal(app.store.get('ghostchat.update.beta'), 'false');
+  await app.$('#checkUpdates').onclick();
+  assert.equal(updateChecks(app).at(-1).args.channel, 'stable', 'turning beta off applies to the next check');
+  app.$('#betaUpdatesEnabled').onchange({ target: { checked: true } });
+  assert.equal(app.store.get('ghostchat.update.beta'), 'true');
+  await app.$('#checkUpdates').onclick();
+  assert.equal(updateChecks(app).at(-1).args.channel, 'beta', 'turning beta on applies to the next check');
+});
+
+test('an update is installed from the channel that offered it, and switching channel withdraws it', async () => {
+  let offer = false;
+  const app = harness({
+    storage: { 'ghostchat.server': 'https://a.example', 'ghostchat.update.beta': 'true' },
+    hooks: { check_for_update: () => (offer ? { configured: true, currentVersion: '4.0.56', available: true, version: '4.0.57', notes: 'beta' } : undefined) },
+  });
+  await app.flush(() => updateChecks(app).length > 0);
+  offer = true;
+  await app.$('#checkUpdates').onclick();
+  await app.$('#installUpdate').onclick();
+  const install = app.invokes.find(item => item.command === 'install_update');
+  assert.deepEqual({ ...install.args }, { expectedVersion: '4.0.57', channel: 'beta' });
+  await app.$('#checkUpdates').onclick();
+  app.$('#betaUpdatesEnabled').onchange({ target: { checked: false } });
+  const installs = () => app.invokes.filter(item => item.command === 'install_update').length;
+  await app.$('#installUpdate').onclick();
+  assert.equal(installs(), 1, 'a beta offer is not installed after beta is turned off');
+});
+
+test('the settings checkbox shows the saved beta choice', async () => {
+  const app = harness({ storage: { 'ghostchat.server': 'https://a.example', 'ghostchat.update.beta': 'true' } });
+  await app.flush(() => updateChecks(app).length > 0);
+  assert.equal(app.$('#betaUpdatesEnabled').checked, true);
+  const off = harness({ storage: { 'ghostchat.server': 'https://a.example' } });
+  await off.flush(() => updateChecks(off).length > 0);
+  assert.equal(off.$('#betaUpdatesEnabled').checked, false, 'beta is off by default');
+});
+
+test('the beta setting has Turkish and English labels', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../crates/desktop/ui/index.html'), 'utf8');
+  assert.match(html, /<span data-en="Get beta updates" data-tr="Beta güncellemeleri al">Get beta updates<\/span><input id="betaUpdatesEnabled" type="checkbox"><\/label>/);
+  assert.ok(!/id="betaUpdatesEnabled"[^>]*checked/.test(html), 'beta is off by default');
+});
+
 (async () => {
   let failed = 0;
   for (const { name, fn } of tests) {

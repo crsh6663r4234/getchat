@@ -912,13 +912,32 @@
         : translate("Friends");
     $("#friendsNavButton")?.setAttribute("aria-label", requestLabel);
   }
+  // "Get beta updates" (off by default) is a local setting of this app; the
+  // desktop picks the beta or stable feed from it at each check.
+  const BETA_UPDATES_KEY = "ghostchat.update.beta";
+  function updateChannel() { return localStorage.getItem(BETA_UPDATES_KEY) === "true" ? "beta" : "stable"; }
+  function setBetaUpdates(enabled) {
+    localStorage.setItem(BETA_UPDATES_KEY, String(!!enabled));
+    // An offer found on the other channel is withdrawn; the next check
+    // reads the newly chosen feed.
+    state.updateVersion = null;
+    state.updateChannel = null;
+    state.updateNotifiedVersion = null;
+    $("#updateNotes")?.classList.add("hidden");
+    $("#installUpdate")?.classList.add("hidden");
+    setUpdateStatus("Updates are checked automatically.");
+  }
   async function checkForUpdates(quiet = false) {
     const statusNode = $("#updateStatus");
     const checkButton = $("#checkUpdates");
     setUpdateStatus("Checking for updates…");
     if (checkButton) checkButton.disabled = true;
     try {
-      const result = await invoke("check_for_update");
+      const channel = updateChannel();
+      const result = await invoke("check_for_update", { channel });
+      // The beta setting changed while this check ran: its answer is for the
+      // other channel, so the next check decides.
+      if (channel !== updateChannel()) { setUpdateStatus("Updates are checked automatically."); return; }
       if (!result.configured) {
         setUpdateStatus("GitHub Releases are not connected yet. Current version: {version}.", { version: result.currentVersion });
         $("#installUpdate")?.classList.add("hidden");
@@ -927,6 +946,7 @@
       if (result.available) {
         const newlyAvailable = state.updateNotifiedVersion !== result.version;
         state.updateVersion = result.version;
+        state.updateChannel = channel;
         state.updateNotifiedVersion = result.version;
         setUpdateStatus("GhostChat {version} is ready to install.", { version: result.version });
         const notes = $("#updateNotes");
@@ -961,7 +981,8 @@
     $("#startupUpdateProgress").style.setProperty("--progress", "0.24");
     if (!invoke) { gate.classList.add("hidden"); return true; }
     let result;
-    try { result = await invoke("check_for_update"); }
+    const channel = updateChannel();
+    try { result = await invoke("check_for_update", { channel }); }
     catch (error) {
       // An unreachable update host must not lock the user out of the app;
       // only a found update is mandatory. Warn and keep booting.
@@ -974,9 +995,10 @@
     if (!result?.configured || !result.available) { gate.classList.add("hidden"); return true; }
     try {
       state.updateVersion = result.version;
+      state.updateChannel = channel;
       title.textContent = translate("Update required"); status.textContent = `${translate("This app version is out of date.")} GhostChat ${result.version} ${translate("is downloading")}…`;
       $("#startupUpdateProgress").style.setProperty("--progress", "0.42");
-      await invoke("install_update", { expectedVersion: result.version });
+      await invoke("install_update", { expectedVersion: result.version, channel });
       return false;
     } catch (error) {
       title.textContent = translate("Update failed"); status.textContent = error.message || translate("Could not check or install the required update.");
@@ -990,7 +1012,7 @@
     const button = $("#installUpdate");
     button.disabled = true;
     setUpdateStatus("Preparing the update…");
-    try { await invoke("install_update", { expectedVersion: state.updateVersion }); }
+    try { await invoke("install_update", { expectedVersion: state.updateVersion, channel: state.updateChannel || updateChannel() }); }
     catch (error) {
       setUpdateStatus(error.message || "The update could not be installed.");
       button.disabled = false;
@@ -4244,6 +4266,7 @@
     setAvatar($("#profileAvatarPreview"), state.user?.display_name, profileAvatarData);
     $("#languageSelect").value = tr() ? "tr" : "en";
     $("#desktopNotificationsEnabled").checked = localStorage.getItem("ghostchat.desktopNotifications") !== "false";
+    $("#betaUpdatesEnabled").checked = updateChannel() === "beta";
     try { $("#startWithWindows").checked = !!(await invoke("get_start_at_login")); }
     catch (error) { console.warn("Could not read the Windows startup setting", error); $("#startWithWindows").checked = false; }
     populateVoiceSettings();
@@ -4831,6 +4854,8 @@
   $("#deleteAccount").onclick = async () => { if (!await askConfirm({ title: state.language === "tr" ? "Hesabı sil" : "Delete account", message: state.language === "tr" ? "Hesabın, oturumların, arkadaşlıkların, sohbetlerin ve kayıtlı mesajların kalıcı olarak silinecek." : "Your account, sessions, friends, conversations, and stored messages will be permanently deleted.", confirmText: state.language === "tr" ? "Devam et" : "Continue", dangerous: true })) return; if ((await askUser({ title: state.language === "tr" ? "Son onay" : "Final confirmation", message: state.language === "tr" ? "Hesabı kalıcı olarak silmek için DELETE yaz." : "Type DELETE to permanently erase this account.", confirmText: state.language === "tr" ? "Hesabı sil" : "Delete account", dangerous: true, input: { label: "DELETE", placeholder: "DELETE" } })) !== "DELETE") return; try { await request("/v1/me/account", { method: "DELETE" }); voiceClient?.hangup(); await groupVoiceClient?.leave(); if (state.socket) state.socket.close(); await clearToken(); await clearPendingRecovery(); try { await invoke("credential_delete_recovery", { serverKey: await serverKey(activeBase()) }); } catch {} state.recoveryKey = ""; state.cryptoDevice = null; state.user = null; state.blockedUserIds.clear(); state.active = null; state.friends = []; state.conversations = []; resetCryptoViewState(); $("#settingsDialog").close(); show("authView"); toast("Account and data deleted."); } catch (error) { toast(error.message, true); } };
   $("#logoutButton").onclick = async () => { try { await request("/v1/sessions", { method: "DELETE" }); } catch {} voiceClient?.hangup(); await groupVoiceClient?.leave(); if (state.socket) state.socket.close(); await clearToken(); state.recoveryKey = ""; state.cryptoDevice = null; state.user = null; state.blockedUserIds.clear(); state.active = null; state.conversations = []; resetCryptoViewState(); show("authView"); toast("You are logged out."); };
   $("#checkUpdates").onclick = () => checkForUpdates(false);
+  $("#betaUpdatesEnabled").checked = updateChannel() === "beta";
+  $("#betaUpdatesEnabled").onchange = event => setBetaUpdates(event.target.checked);
   $("#installUpdate").onclick = installUpdate;
   $("#jumpToLatest").onclick = jumpToLatest;
   $("#messages").addEventListener("scroll", updateJumpToLatest, { passive: true });
