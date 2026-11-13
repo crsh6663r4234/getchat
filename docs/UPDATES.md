@@ -44,6 +44,23 @@ The update also applies any new database migrations, with the automatic `pre-<mi
 
 Servers on 4.0.53 and older (including 4.0.52 and 4.0.53) do not contain the self-updater: replace `ghostchat-server-windows-x64.exe` by hand once with 4.0.54 or newer. From then on the server keeps itself current.
 
+## Update channels: stable and beta
+
+There are two update channels. Both are signed with the same updater key, and both install only a strictly higher `major.minor.patch` than the running version.
+
+- **Stable** (the default) is what `main` releases: the GitHub release marked latest, feed `https://github.com/crsh6663r4234/getchat/releases/latest/download/latest.json`.
+- **Beta** is built from the `beta` branch and published as a GitHub *prerelease* tagged `v<version>-beta.<run number>`. Its feed is the `latest.json` of the fixed prerelease `beta`, `https://github.com/crsh6663r4234/getchat/releases/download/beta/latest.json`, which every beta build replaces. A prerelease is never the latest release, so stable installs never see a beta build.
+
+Beta builds reach the opted-in installs before everyone else and may have more bugs. Opt in only on a PC or server where a failed update can be restored from the backups above.
+
+**Desktop.** In **Settings → Updates**, turn on **Get beta updates** (Turkish: **Beta güncellemeleri al**). The setting is off by default and stored only on this PC. It takes effect at the next update check (**Check now**, the six-hourly check or the next start); turning it on or off withdraws an update the other channel offered. Turning beta off does not go back to an older version: the app stays on the beta build until stable publishes a higher version.
+
+**Standalone server.** Set `GHOSTCHAT_UPDATE_CHANNEL=beta` in the server's environment (`stable`, the default, when unset or blank). Any other value logs a warning and follows stable. A beta server reads the exe from the prerelease the beta feed names (`release_tag`, which must be `v<version>-beta.<n>` for the feed's version) and applies the same signature, backup and rollback steps as stable.
+
+**Same version on both channels.** The beta workflow does not change the version string; it only publishes it under a prerelease tag. A beta and a stable build of the same version are therefore equal, and the updaters ignore equal versions. A beta build reaches installs only after its version is bumped above the one they run, and a stable release of that same version later is not installed over the beta build (the next higher stable version is).
+
+**Branch flow.** The controller fast-forwards `beta` from `main`; no feature work lands on `beta` directly. Promotion from beta to stable is the same fast-forward of `main` to the tested `beta` commit, which runs the stable release.
+
 ## Going back to an older build
 
 Stop the server (or quit GhostChat, including from the tray), keep the current database aside, delete its `-wal` and `-shm` files, copy the backup over the database file and start the older build. Data written since the backup is lost. On a PC, the `pre-<version>.bak` and `pre-account-binding.bak` files written by one upgrade hold the same pre-upgrade state: restore either one. The server keeps only the three newest `pre-<version>.bak` files per database; the single `pre-account-binding.bak` is never deleted automatically, so delete it once the upgrade is confirmed.
@@ -57,6 +74,8 @@ The source and release workflow are published at [crsh6663r4234/getchat](https:/
 1. In the repository's **Settings → Secrets and variables → Actions**, add a repository secret named `TAURI_SIGNING_PRIVATE_KEY`. Its value is the full contents of the local `crates/desktop/secrets/ghostchat-updater.key` file. Do not commit or share that file. The matching public key is already embedded in `crates/desktop/tauri.conf.json`.
 2. Increase the version in the workspace `Cargo.toml`, `Cargo.lock`, and `crates/desktop/tauri.conf.json`, then push the change to `main`. A matching `vX.Y.Z` release is created automatically.
 3. The release workflow ("Release GhostChat") builds and signs the Windows MSI, creates and publishes a GitHub Release marked as latest, uploads Tauri's `latest.json` updater feed, and attaches a standalone Windows x64 server with its SHA-256 checksum and its updater signature (`ghostchat-server-windows-x64.exe.sig`, made with the same key as the MSI's), which the server's self-updater requires.
+
+Beta builds come from a second workflow, "Release GhostChat beta" (`.github/workflows/release-beta.yml`), which runs for pushes to the `beta` branch that change the same version files. It builds and signs the same MSI and server exe, publishes them as the prerelease `v<version>-beta.<run number>` (never marked latest) at the built commit, and replaces `latest.json` on the fixed `beta` prerelease. It never creates or uploads to a `vX.Y.Z` release. Note that the `beta` tag of the feed release and the `beta` branch share a name; in git commands name them in full (`refs/heads/beta`, `refs/tags/beta`).
 
 For later releases, increment the version in the root `Cargo.toml`, `Cargo.lock`, and `crates/desktop/tauri.conf.json` before pushing to `main`. Keep the same signing key.
 

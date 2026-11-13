@@ -12,7 +12,7 @@ GhostChat is a Windows desktop chat app (Tauri 2) with a self-hostable Rust serv
 
 Download `GhostChat_<version>_x64_en-US.msi` from the [latest GitHub release](https://github.com/crsh6663r4234/getchat/releases/latest) and run it. GhostChat needs Windows 10 or 11 (x64) and the Microsoft Edge WebView2 Runtime; the MSI installs WebView2 if it is missing. The MSI is not Authenticode-signed unless the signing gate in [docs/RELEASE_SECURITY.md](docs/RELEASE_SECURITY.md) is configured, so Windows may show a SmartScreen prompt.
 
-The installed app checks for signed updates at startup and every six hours, and from **Settings → Updates**.
+The installed app checks for signed updates at startup and every six hours, and from **Settings → Updates**, where **Get beta updates** opts in to the beta channel ([docs/UPDATES.md](docs/UPDATES.md#update-channels-stable-and-beta)).
 
 > **One-time manual update.** Desktop app 4.0.48 to 4.0.53: the automatic update cannot install (the app closes and does not start again). Install `GhostChat_4.0.54_x64_en-US.msi` from the 4.0.54 release once by hand, with GhostChat closed; later updates install automatically. Standalone server 4.0.53 and older: replace `ghostchat-server-windows-x64.exe` by hand once; from 4.0.54 on it updates itself. Back up the server database and each PC's `%APPDATA%\app.ghostchat.desktop\` folder first. Updates are one-way; see [docs/UPDATES.md](docs/UPDATES.md).
 
@@ -32,6 +32,7 @@ Out of the box the app runs a private server on the PC (loopback only). To chat 
 | `GHOSTCHAT_TURN_URLS`, `GHOSTCHAT_TURN_SHARED_SECRET` | Optional coturn relay for one-to-one calls. |
 | `GHOSTCHAT_LIVEKIT_URL`, `GHOSTCHAT_LIVEKIT_API_KEY`, `GHOSTCHAT_LIVEKIT_API_SECRET` | Optional LiveKit SFU for group calls and screen sharing. |
 | `GHOSTCHAT_AUTO_UPDATE` | `false` turns off self-update. |
+| `GHOSTCHAT_UPDATE_CHANNEL` | `stable` (default) or `beta`; see the update channels in [docs/UPDATES.md](docs/UPDATES.md#update-channels-stable-and-beta). |
 | `RUST_LOG` | Log level. |
 
 [server.env.example](server.env.example) has placeholders; never commit real secrets.
