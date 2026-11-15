@@ -1,0 +1,29 @@
+{
+ "provenance": {
+  "run": "GSTA-92 /ship #3433 focused run 1 (local, 2026-10-26T01:37Z, head 62c0fa1; the same question at a65d492 on 2026-10-25)",
+  "note": "pending Step 0D focus menu titled 'D1: Should the review cover all 7 dimensions?' (header Focus): the floor assessment classified it setup and pickDesignFocusAll returned null because neither the title nor the question sentence held the word focus, so no finding question arrived before the 600 s deadline (outcome timeout at 609-610 s, twice; the rerun at the same tree passed)",
+  "floorAssessment": {
+   "kind": "setup",
+   "seedQuote": "",
+   "questionQuote": "",
+   "optionIndex": null,
+   "optionQuote": "",
+   "reason": "Question asks about review mode/focus (scope of design dimensions to cover) rather than asking the user to decide on a concrete plan defect; seed-3 already instructs to review all seven dimensions."
+  }
+ },
+ "question": {
+  "question": "D1: Should the review cover all 7 dimensions?\nProject/branch/task: reviewing PLAN.md, the marketing landing page plan, on main.\nELI10: I rated this plan 2/10 on design completeness. The biggest gaps: the main button looks no more important than the 'Learn more' link beside it, the headline is crammed 8px above the subhead, and all text is centered. On top of that the plan has no fonts, colors, mobile or accessibility specs. I'll walk the 7 design dimensions one at a time and ask you about each gap. The designer isn't installed, so there are no mockups this time.\nStakes if we pick wrong: narrowing the focus leaves mobile, accessibility and proof gaps undecided, and the engineer will guess at them.\nRecommendation: A because your instructions say to review all seven, and a 2/10 plan has gaps in every one of them.\nCompleteness: A=10/10, B=6/10\nNet: all 7 dimensions take more questions, but each gap gets decided.",
+  "header": "Focus",
+  "multiSelect": false,
+  "options": [
+   {
+    "label": "A) All 7 dimensions (recommended)",
+    "description": "✅ Every dimension gets checked: hierarchy, states, journey, slop, system, responsive/a11y, decisions. ✅ Matches your stated instruction to review all seven dimensions. ❌ More questions, one per gap, before the plan is final."
+   },
+   {
+    "label": "B) Hero hierarchy only",
+    "description": "✅ Fast: only the CTA weight, h1 spacing and alignment get decided now. ✅ Fixes the three defects the plan already names in its text. ❌ Leaves mobile, accessibility, proof and tokens unspecified for the engineer."
+   }
+  ]
+ }
+}

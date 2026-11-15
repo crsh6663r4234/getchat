@@ -1,0 +1,1719 @@
+# Skill Deep Dives
+
+Detailed guides for every gstack skill — philosophy, workflow, and examples.
+
+| Skill | Your specialist | What they do |
+|-------|----------------|--------------|
+| [`/office-hours`](#office-hours) | **YC Office Hours** | Start here. Six forcing questions that reframe your product before you write code. Pushes back on your framing, challenges premises, generates implementation alternatives. Design doc feeds into every downstream skill. |
+| [`/spec`](#spec) | **Spec Author** | Turn vague intent into a precise, executable spec in five phases. Backlog-ready output that downstream skills can pick up. Optional agent spawn at the end. |
+| [`/plan-ceo-review`](#plan-ceo-review) | **CEO / Founder** | Rethink the problem. Find the 10-star product hiding inside the request. Four modes: Expansion, Selective Expansion, Hold Scope, Reduction. |
+| [`/plan-eng-review`](#plan-eng-review) | **Eng Manager** | Lock in architecture, data flow, diagrams, edge cases, and tests. Forces hidden assumptions into the open. |
+| [`/plan-design-review`](#plan-design-review) | **Senior Designer** | Interactive plan-mode design review. Rates each dimension 0-10, explains what a 10 looks like, fixes the plan. Works in plan mode. |
+| [`/design-consultation`](#design-consultation) | **Design Partner** | Build a complete design system from scratch. Knows the landscape, proposes creative risks, generates realistic product mockups. Design at the heart of all other phases. |
+| [`/review`](#review) | **Staff Engineer** | Find the bugs that pass CI but blow up in production. Auto-fixes the obvious ones. Flags completeness gaps. Advisory simplification lens flags over-built code — never blocks, never auto-applies. |
+| [`/verify`](#verify) | **Build Loop** | Run the repo's checks and the tests `/ship`'s pre-gate would pick for your change, fix, repeat until green, then hand off to `/ship`. Never green on an unmapped change. |
+| [`/design-review`](#design-review) | **Designer Who Codes** | Live-site visual audit + fix loop. 80-item audit, then fixes what it finds. Atomic commits, before/after screenshots. |
+| [`/design-shotgun`](#design-shotgun) | **Design Explorer** | Generate multiple AI design variants, open a comparison board in your browser, and iterate until you approve a direction. Taste memory biases toward your preferences. |
+| [`/design-html`](#design-html) | **Design Engineer** | Generates production-quality Pretext-native HTML. Works with approved mockups, CEO plans, design reviews, or from scratch. Text reflows on resize, heights adjust to content. Smart API routing per design type. Framework detection for React/Svelte/Vue. Previews render through your Aside browser. |
+| [`/design-motion`](#design-motion) | **Motion Designer** | Turns an approved design into a showcase loop: rebuilds the exact frame, loads it from empty, one story per visual, then an MP4 for X, a website GIF and an 800×500 GIF after seam, rest and overflow checks. |
+| [`/qa`](#qa) | **QA Lead** | Explore browser and functional behavior (APIs, CLIs, jobs, workers, webhooks), reproduce defects, prove regressions fail before repair, then fix and re-verify. |
+| [`/qa-only`](#qa) | **QA Reporter** | Explore the same surfaces and propose regression cases with evidence, without changing product code or tests. |
+| [`/scrape`](#browse) | **Browser Data Extractor** | Pull structured data off a web page — tables, lists, prices — in your Aside browser with the page's real logged-in state. Same driver contract as `/browse`. On the fallback browser, a codified browser-skill answers a repeat intent in ~200ms. |
+| [`/skillify`](#browse) | **Skill Codifier** | Fallback-browser skill: walks back through your conversation, finds the last `/scrape` prototype, synthesizes script + test + fixture, runs the test, asks before committing. On Aside, durable per-site automation belongs to Aside's own skills. |
+| [`/ship`](#ship) | **Release Engineer** | Sync main, run tests, explore changed behavior within a bound, audit coverage and docs before final verification, then push and open or update a PR. Bootstraps test frameworks when appropriate. |
+| [`/land-and-deploy`](#land-and-deploy) | **Release Engineer** | Merge the PR, wait for CI and deploy, verify production health. One command from "approved" to "verified in production." |
+| [`/modernize`](#modernize) | **Stale-PR Maintainer** | Bring an aging PR onto its current base and decide whether it should still exist: MODERNIZE, REWORK or CLOSE. Reads what moved under the PR for conflicts in meaning, proves the rebase with `git range-diff`, pushes with a lease pinned to the observed head, and never closes a PR on its own. |
+| [`/canary`](#canary) | **SRE** | Post-deploy monitoring loop. Watches for console errors, performance regressions, and page failures in your Aside browser. |
+| [`/benchmark`](#benchmark) | **Performance Engineer** | Baseline page load times, Core Web Vitals, and resource sizes. Compare before/after on every PR. Track trends over time. |
+| [`/ubicloud`](#ubicloud) | **Remote Runner** | Run a heavy suite, build or eval on an ephemeral 16-vCPU Ubicloud VM: TTL-named VMs with a reaper, quota preflight, a hang watchdog and one committed verify per repository. |
+| [`/runaway-stopper`](#runaway-stopper) | **Spend Warden** | Find runaway Capy threads and subagents, stop or rotate them at a clean point, and set the defaults that keep them from coming back. |
+| [`/cso`](#cso) | **Chief Security Officer** | Supported security findings with explicit coverage. Static assessment remains available without catalog profiles; contained runtime/scanner execution requires matching qualified profiles. Runtime-tested bundles authenticate separate external assertions. Project-test completion remains `self_reported` because target code controls the test process; `tested` is reserved for a future target-independent completion witness. |
+| [`/document-release`](#document-release) | **Technical Writer** | Audit relevant docs on every ship before final verification; standalone runs can also update docs after a PR exists. Catches stale READMEs and reports unresolved gaps. |
+| [`/document-generate`](#document-generate) | **Technical Writer** | Generate Diataxis docs (tutorial / how-to / reference / explanation) for a feature from code. |
+| [`/retro`](#retro) | **Eng Manager** | Team-aware weekly retro. Per-person breakdowns, shipping streaks, test health trends, growth opportunities. |
+| [`/browse`](#browse) | **QA Engineer** | Give the agent eyes. Drives your Aside browser first — real sessions, real clicks, real screenshots — through deterministic `aside repl` scripts, and falls back to gstack's own Chromium (~100ms per command) when Aside isn't there. |
+| [`/setup-browser-cookies`](#setup-browser-cookies) | **Session Manager** | Copy selected cookies from Chrome, Chromium, Brave, Edge, Windows-only Opera and Opera GX, or macOS-only Comet and Arc into the fallback browser. Choose your profile and domains; check sign-in separately. Unnecessary on Aside, which already has your sessions. |
+| [`/autoplan`](#autoplan) | **Review Pipeline** | One command, reviewed plan. In an interactive session it runs CEO → design → DX → eng review from each skill's own method (eng always last, so the shipping gate reviews the final amended plan) with encoded decision principles, and surfaces only taste decisions for your approval. A run driven by `gstack-autoplan` (the Capy default) gives its reviewers short checklists instead of those methods: the lean run is one reviewer, `--full` one per phase ([what each run loads](#what-each-run-loads)). |
+| [`/plan-devex-review`](#plan-devex-review) | **DX Reviewer** | Plan-stage DX review. TTHW (time-to-hello-world), magical moments, friction points, persona traces, and error messages scored for the agents that read them ([agent-ready errors](agent-ready-errors.md)). Three modes: Expansion, Polish, Triage. |
+| [`/devex-review`](#devex-review) | **DX Reviewer (live)** | Live developer experience audit. Walks the actual onboarding flow, measures TTHW, catches the docs lies, and triggers CLI errors the way an agent meets them (no terminal, contained, redacted) through `gstack-error-capture`. |
+| [`/plan-tune`](#plan-tune) | **Question Tuner** | Self-tune AskUserQuestion sensitivity per question. Mark questions as never-ask, always-ask, or only-for-one-way. |
+| [`/spec`](#spec) | **Spec Author** | Turn vague intent into a precise, executable spec in five phases. Files a GitHub issue, optionally spawns a Claude Code agent in a fresh worktree, and lets `/ship` close the source issue on merge. |
+| [`/learn`](#learn) | **Memory** | Manage what gstack learned across sessions. Review, search, prune, and export project-specific patterns and preferences. |
+| [`/context-save`](#context-save) | **Save State** | Save working context (git state, decisions, remaining work) so any future session can resume. |
+| [`/context-restore`](#context-restore) | **Restore State** | Resume from a saved context, even across Conductor workspace handoffs. |
+| [`/health`](#health) | **Code Quality Dashboard** | Wraps type checker, linter, tests, dead code detection. Computes a weighted 0-10 score; tracks trends over time. |
+| [`/deslop-shared-libs`](#deslop-shared-libs) | **Shared Code Reviewer** | Find worthwhile shared-code extractions in recent work. Recommendations only. |
+| [`/write-skill`](#write-skill) | **Skill Editor** | Write or improve an agent skill without bloat: edit ladder, size per level, skill-to-bin drift check, full diets with a before/after test. |
+| [`/test-audit`](#test-audit) | **Test Auditor** | Sweep existing tests for low-value, implementation-coupled or duplicate tests. Report-only unless you approve a batch. |
+| [`/landing-report`](#landing-report) | **Ship Queue Dashboard** | Read-only snapshot of the workspace-aware ship queue. Which version slots are claimed, which sibling workspaces have WIP. |
+| [`/captain`](#captain) | **Crew Controller** (Capy only: [crew/](../crew/README.md)) | Run many coding agents from one controller. Lanes build and send a READY block; the controller validates it, merges through trains (stamp on call, verify, merge with the expected head, verify again; `train land` per slot under `changelog_fragments`), keeps the digest, relays approvals in three fixed shapes and runs a daily flaky-fix pass. Also answers to `/crew`. |
+| [`/benchmark-models`](#benchmark-models) | **Model Benchmark** | Side-by-side cross-model benchmark for skills (Claude vs GPT vs Gemini, plus particle-1 and DeepSeek V4.1 Flash through OpenRouter). Latency, tokens, cost, optional LLM-judged quality. |
+| [`/eval-plan`](#eval-plan) | **Eval Planner** | Preregister a paid eval (bars, arms, decoys, stop rules), dry-run it for $0 with the stub model, pilot three priced items, then approve the spend from the extrapolation table. |
+| | | |
+| **Multi-AI** | | |
+| [`/codex`](#codex) | **Second Opinion** | OpenAI Codex review, challenge, and consultation. Available outside the Codex harness. |
+| [`/claude-code`](#claude-code) | **Second Opinion** | Claude Code review, challenge, and consultation. Available outside the Claude Code harness; used for automatic outside reviews in Codex. |
+| [`/pair-agent`](#browse) | **Remote Agent Bridge** | Pair a remote AI agent (OpenClaw, Codex, Cursor, Hermes) with gstack's own browser. Scoped tunnel, locked allowlist, session token. Fallback-browser skill; agents driving Aside open their own tabs. |
+| [`/setup-gbrain`](#setup-gbrain) | **Memory Sync** | Set up gbrain for cross-machine session memory sync. One command from zero to live. |
+| [`/sync-gbrain`](#sync-gbrain) | **Keep Brain Current** | Refresh gbrain against this repo's code; teach the agent when to use `gbrain search`/`code-def` over Grep. Idempotent; safe to re-run. |
+| | | |
+| **Safety & Utility** | | |
+| [`/careful`](#safety--guardrails) | **Safety Guardrails** | Warns before destructive commands (rm -rf, DROP TABLE, force-push, git reset --hard). Override any MEDIUM warning; root/home recursive deletes and default-branch force-pushes are hard-denied. Common build cleanups whitelisted. |
+| [`/freeze`](#safety--guardrails) | **Edit Lock** | Restrict all file edits to a single directory. Blocks Edit, Write and NotebookEdit outside the boundary. Accident prevention for debugging. |
+| [`/guard`](#safety--guardrails) | **Full Safety** | Combines /careful + /freeze in one command. Maximum safety for prod work. |
+| [`/unfreeze`](#safety--guardrails) | **Unlock** | Remove the /freeze boundary, allowing edits everywhere again. |
+| [`/open-gstack-browser`](#open-gstack-browser) | **GStack Browser** | Launch gstack's own browser headed, with sidebar, anti-bot stealth, auto model routing, cookie import, and Claude Code integration. The visible face of the fallback engine; with Aside open you watch the agent's tabs there. |
+| [`/setup-deploy`](#setup-deploy) | **Deploy Configurator** | One-time setup for `/land-and-deploy`. Detects your platform, production URL, and deploy commands. |
+| [`/gstack-upgrade`](#gstack-upgrade) | **Self-Updater** | Upgrade gstack to the latest version. Detects global vs vendored install, syncs both, shows what changed. |
+| [`/make-pdf`](#make-pdf) | **PDF Generator** | Turn any markdown file into a publication-quality PDF. Proper margins, page numbers, cover pages, clickable TOC. Mermaid/excalidraw fences render as vector diagrams; `--to html\|docx` for other formats. Prints through your Aside browser (macOS 15+), or gstack's bundled browser when Aside is absent. |
+| [`/diagram`](#diagram) | **Diagram Maker** | English in, diagram out: mermaid source + editable `.excalidraw` (open it on excalidraw.com, hand-drawn style) + rendered SVG/PNG. Fully offline, rendered through your Aside browser (macOS 15+) or gstack's bundled browser when Aside is absent. |
+| [`/ios-qa`](#ios-qa) | **iOS QA Lead** | Live-device iOS QA via USB CoreDevice tunnel + embedded StateServer. Reads Swift source, codegens accessors, drives the real iPhone or iPad. Optionally exposes the device over Tailscale for remote agents. |
+| [`/ios-fix`](#ios-fix) | **iOS Autonomous Fixer** | Closes the find→fix→verify loop on a real iPhone. Captures a reproducing snapshot, fixes the source, rebuilds, redeploys, verifies. |
+| [`/ios-design-review`](#ios-design-review) | **iOS Designer's Eye** | 10-dimension Apple HIG audit on a real iPhone. Rates each screen, says what would make it a 10. |
+| [`/ios-clean`](#ios-clean) | **iOS Bridge Cleanup** | Convenience wrapper to strip DebugBridge SPM + `#if DEBUG` wiring. The structural Release-build guard is in Package.swift + CI; this skill is for guided manual removals. |
+| [`/ios-sync`](#ios-sync) | **iOS Bridge Resync** | Regenerate accessors and Swift templates against the latest upstream gstack. Run when you add new `@Observable` classes or upgrade gstack. |
+
+---
+
+## `/office-hours`
+
+This is where every project should start.
+
+Before you plan, before you review, before you write code — sit down with a YC-style partner and think about what you're actually building. Not what you think you're building. What you're *actually* building.
+
+### The reframe
+
+Here's what happened on a real project. The user said: "I want to build a daily briefing app for my calendar." Reasonable request. Then it asked about the pain — specific examples, not hypotheticals. They described an assistant missing things, calendar items across multiple Google accounts with stale info, prep docs that were AI slop, events with wrong locations that took forever to track down.
+
+It came back with: *"I'm going to push back on the framing, because I think you've outgrown it. You said 'daily briefing app for multi-Google-Calendar management.' But what you actually described is a personal chief of staff AI."*
+
+Then it extracted five capabilities the user didn't realize they were describing:
+
+1. **Watches your calendar** across all accounts and detects stale info, missing locations, permission gaps
+2. **Generates real prep work** — not logistics summaries, but *the intellectual work* of preparing for a board meeting, a podcast, a fundraiser
+3. **Manages your CRM** — who are you meeting, what's the relationship, what do they want, what's the history
+4. **Prioritizes your time** — flags when prep needs to start early, blocks time proactively, ranks events by importance
+5. **Trades money for leverage** — actively looks for ways to delegate or automate
+
+That reframe changed the entire project. They were about to build a calendar app. Now they're building something ten times more valuable — because the skill listened to their pain instead of their feature request.
+
+### Premise challenge
+
+After the reframe, it presents premises for you to validate. Not "does this sound good?" — actual falsifiable claims about the product:
+
+1. The calendar is the anchor data source, but the value is in the intelligence layer on top
+2. The assistant doesn't get replaced — they get superpowered
+3. The narrowest wedge is a daily briefing that actually works
+4. CRM integration is a must-have, not a nice-to-have
+
+You agree, disagree, or adjust. Every premise you accept becomes load-bearing in the design doc.
+
+### Implementation alternatives
+
+Then it generates 2-3 concrete implementation approaches with honest effort estimates:
+
+- **Approach A: Daily Briefing First** — narrowest wedge, ships tomorrow, M effort (human: ~3 weeks / CC: ~2 days)
+- **Approach B: CRM-First** — build the relationship graph first, L effort (human: ~6 weeks / CC: ~4 days)
+- **Approach C: Full Vision** — everything at once, XL effort (human: ~3 months / CC: ~1.5 weeks)
+
+Recommends A because you learn from real usage. CRM data comes naturally in week two.
+
+### Two modes
+
+**Startup mode** — for founders and intrapreneurs building a business. You get six forcing questions distilled from how YC partners evaluate products: demand reality, status quo, desperate specificity, narrowest wedge, observation & surprise, and future-fit. These questions are uncomfortable on purpose. If you can't name a specific human who needs your product, that's the most important thing to learn before writing any code.
+
+**Builder mode** — for hackathons, side projects, open source, learning, and having fun. You get an enthusiastic collaborator who helps you find the coolest version of your idea. What would make someone say "whoa"? What's the fastest path to something you can share? The questions are generative, not interrogative.
+
+### The design doc
+
+Both modes end with a design doc written to `~/.gstack/projects/` — and that doc feeds directly into `/plan-ceo-review` and `/plan-eng-review`. The full lifecycle is now: `office-hours → plan → implement → review → QA → ship → retro`.
+
+After the design doc is approved, `/office-hours` reflects on what it noticed about how you think — not generic praise, but specific callbacks to things you said during the session. The observations appear in the design doc too, so you re-encounter them when you re-read later.
+
+---
+
+## `/plan-ceo-review`
+
+This is my **founder mode**.
+
+This is where I want the model to think with taste, ambition, user empathy, and a long time horizon. I do not want it taking the request literally. I want it asking a more important question first:
+
+**What is this product actually for?**
+
+I think of this as **Brian Chesky mode**.
+
+The point is not to implement the obvious ticket. The point is to rethink the problem from the user's point of view and find the version that feels inevitable, delightful, and maybe even a little magical.
+
+### Example
+
+Say I am building a Craigslist-style listing app and I say:
+
+> "Let sellers upload a photo for their item."
+
+A weak assistant will add a file picker and save an image.
+
+That is not the real product.
+
+In `/plan-ceo-review`, I want the model to ask whether "photo upload" is even the feature. Maybe the real feature is helping someone create a listing that actually sells.
+
+If that is the real job, the whole plan changes.
+
+Now the model should ask:
+
+* Can we identify the product from the photo?
+* Can we infer the SKU or model number?
+* Can we search the web and draft the title and description automatically?
+* Can we pull specs, category, and pricing comps?
+* Can we suggest which photo will convert best as the hero image?
+* Can we detect when the uploaded photo is ugly, dark, cluttered, or low-trust?
+* Can we make the experience feel premium instead of like a dead form from 2007?
+
+That is what `/plan-ceo-review` does for me.
+
+It does not just ask, "how do I add this feature?"
+It asks, **"what is the 10-star product hiding inside this request?"**
+
+### Four modes
+
+- **SCOPE EXPANSION** — dream big. The agent proposes the ambitious version. Every expansion is presented as an individual decision you opt into. Recommends enthusiastically.
+- **SELECTIVE EXPANSION** — hold your current scope as the baseline, but see what else is possible. The agent surfaces opportunities one by one with neutral recommendations — you cherry-pick the ones worth doing.
+- **HOLD SCOPE** — maximum rigor on the existing plan. No expansions surfaced.
+- **SCOPE REDUCTION** — find the minimum viable version. Cut everything else.
+
+Visions and decisions are persisted to `~/.gstack/projects/` so they survive beyond the conversation. Exceptional visions can be promoted to `docs/designs/` in your repo for the team.
+
+---
+
+## `/plan-eng-review`
+
+This is my **eng manager mode**.
+
+Once the product direction is right, I want a different kind of intelligence entirely. I do not want more sprawling ideation. I do not want more "wouldn't it be cool if." I want the model to become my best technical lead.
+
+This mode should nail:
+
+* architecture
+* system boundaries
+* data flow
+* state transitions
+* failure modes
+* edge cases
+* trust boundaries
+* test coverage
+
+And one surprisingly big unlock for me: **diagrams**.
+
+LLMs get way more complete when you force them to draw the system. Sequence diagrams, state diagrams, component diagrams, data-flow diagrams, even test matrices. Diagrams force hidden assumptions into the open. They make hand-wavy planning much harder.
+
+So `/plan-eng-review` is where I want the model to build the technical spine that can carry the product vision.
+
+### Example
+
+Take the same listing app example.
+
+Let's say `/plan-ceo-review` already did its job. We decided the real feature is not just photo upload. It is a smart listing flow that:
+
+* uploads photos
+* identifies the product
+* enriches the listing from the web
+* drafts a strong title and description
+* suggests the best hero image
+
+Now `/plan-eng-review` takes over.
+
+Now I want the model to answer questions like:
+
+* What is the architecture for upload, classification, enrichment, and draft generation?
+* Which steps happen synchronously, and which go to background jobs?
+* Where are the boundaries between app server, object storage, vision model, search/enrichment APIs, and the listing database?
+* What happens if upload succeeds but enrichment fails?
+* What happens if product identification is low-confidence?
+* How do retries work?
+* How do we prevent duplicate jobs?
+* What gets persisted when, and what can be safely recomputed?
+
+And this is where I want diagrams — architecture diagrams, state models, data-flow diagrams, test matrices. Diagrams force hidden assumptions into the open. They make hand-wavy planning much harder.
+
+That is `/plan-eng-review`.
+
+Not "make the idea smaller."
+**Make the idea buildable.**
+
+One note on invocation: in plan mode, the skill skips the "what should I review?" scope question and reviews your active plan automatically, announcing its pick in one line ("Scope gate: plan mode — auto-selected B") so you can redirect it. Name a target explicitly ("review PLAN.md") and your choice wins in any mode. Outside plan mode with nothing named, it asks first — that gate is a hard stop.
+
+### Review Readiness Dashboard
+
+Every review (CEO, Eng, Design) logs its result. At the end of each review, you see a dashboard:
+
+```
++====================================================================+
+|                    REVIEW READINESS DASHBOARD                       |
++====================================================================+
+| Review          | Runs | Last Run            | Status    | Required |
+|-----------------|------|---------------------|-----------|----------|
+| Eng Review      |  1   | 2026-03-16 15:00    | CLEAR     | YES      |
+| CEO Review      |  1   | 2026-03-16 14:30    | CLEAR     | no       |
+| Design Review   |  0   | —                   | —         | no       |
++--------------------------------------------------------------------+
+| VERDICT: CLEARED — Eng Review passed                                |
++====================================================================+
+```
+
+Eng Review is the only required gate (disable with `gstack-config set skip_eng_review true`). CEO and Design are informational — recommended for product and UI changes respectively.
+
+Diff reviews use the `review_freshness` grade computed by `gstack-review-read`, shared by `/ship` and `/land-and-deploy`. CURRENT requires a clean, reviewer-reported completed and converged pass whose captured start and finish fingerprints match the current working-tree content. Tracked edits and non-ignored untracked source both count; an identical commit hash or zero commits since review is not a fallback.
+
+A captured pass with different start/end content grades STALE, as does a previously verified pass whose fingerprint no longer matches. Missing or reused start receipts, legacy log-only records, incomplete or nonconverged passes, and unresolved findings cannot grade CURRENT; missing evidence grades UNVERIFIED. Ship telemetry is not a review pass. After fixes, run a genuine full re-review with a new start receipt rather than capturing one only to log the result. Completion remains reviewer-reported, not independent proof that a model read the source.
+
+Plan-file reviews retain their existing seven-day freshness handling and optional plan-hash comparison; repository-content rules do not apply to them. A diff review must grade CURRENT before it can clear Eng Review, in addition to the dashboard's existing age and clean-status requirements.
+
+### Plan-to-QA flow
+
+When `/plan-eng-review` finishes the test review section, it writes a test plan artifact to `~/.gstack/projects/`. When you later run `/qa`, it picks up that test plan automatically — your engineering review feeds directly into QA testing with no manual copy-paste.
+
+---
+
+## `/plan-design-review`
+
+This is my **senior designer reviewing your plan** — before you write a single line of code.
+
+Most plans describe what the backend does but never specify what the user actually sees. Empty states? Error states? Loading states? Mobile layout? AI slop risk? These decisions get deferred to "figure it out during implementation" — and then an engineer ships "No items found." as the empty state because nobody specified anything better.
+
+`/plan-design-review` catches all of this during planning, when it's cheap to fix.
+
+It works like `/plan-ceo-review` and `/plan-eng-review` — interactive, one issue at a time, with the **STOP + AskUserQuestion** pattern. It rates each design dimension 0-10, explains what a 10 looks like, then edits the plan to get there. The rating drives the work: rate low = lots of fixes, rate high = quick pass. Like `/plan-eng-review`, it skips the "what should I review?" scope question in plan mode and targets your active plan automatically (announced in one line so you can redirect); an explicitly named target wins in any mode.
+
+Seven passes over the plan: information architecture, interaction state coverage, user journey, AI slop risk, design system alignment, responsive/accessibility, and unresolved design decisions. For each pass, it finds gaps and either fixes them directly (obvious ones) or asks you to make a design choice (genuine tradeoffs).
+
+### Example
+
+```
+You:   /plan-design-review
+
+Claude: Initial Design Rating: 4/10
+
+        "This plan describes a user dashboard but never specifies
+         what the user sees first. It says 'cards with icons' —
+         which looks like every SaaS template. It mentions zero
+         loading states, zero empty states, and no mobile behavior."
+
+        Pass 1 (Info Architecture): 3/10
+        "A 10 would define primary/secondary/tertiary content
+         hierarchy for every screen."
+        → Added information hierarchy section to plan
+
+        Pass 2 (Interaction States): 2/10
+        "The plan has 4 UI features but specifies 0 out of 20
+         interaction states (4 features × 5 states each)."
+        → Added interaction state table to plan
+
+        Pass 4 (AI Slop): 4/10
+        "The plan says 'clean, modern UI with cards and icons'
+         and 'hero section with gradient'. These are the top 2
+         AI-generated-looking patterns."
+        → Rewrote UI descriptions with specific, intentional alternatives
+
+        Overall: 4/10 → 8/10 after fixes
+        "Plan is design-complete. Run /design-review after
+         implementation for visual QA."
+```
+
+When you re-run it, sections already at 8+ get a quick pass. Sections below 8 get full treatment. For live-site visual audits post-implementation, use `/design-review`.
+
+---
+
+## `/design-consultation`
+
+This is my **design partner mode**.
+
+`/plan-design-review` audits a site that already exists. `/design-consultation` is for when you have nothing yet — no design system, no font choices, no color palette. You are starting from zero and you want a senior designer to sit down with you and build the whole visual identity together.
+
+It is a conversation, not a form. The agent asks about your product, your users, and your audience. It thinks about what your product needs to communicate — trust, speed, craft, warmth, whatever fits — and works backward from that to concrete choices. Then it proposes a complete, coherent design system: aesthetic direction, typography (3+ fonts with specific roles), color palette with hex values, spacing scale, layout approach, and motion strategy. Every recommendation comes with a rationale. Every choice reinforces every other choice.
+
+But coherence is table stakes. Every dev tool dashboard looks the same — clean sans-serif, muted grays, a blue accent. They are all coherent. They are all forgettable. The difference between a product that looks "nice" and one that people actually recognize is the **deliberate creative risks**: the unexpected serif for headings, the bold accent nobody else in your category uses, the tighter spacing that makes your data feel authoritative instead of airy.
+
+That is what `/design-consultation` is really about. It does not just propose a safe system. It proposes safe choices AND risks — and tells you which is which. "Here are the choices that keep you literate in your category. And here is where I think you should break from convention, and why." You pick which risks to take. The agent checks that the whole system still coheres either way.
+
+If you want, the agent will research what's already out there in your space — take screenshots of real sites, analyze their fonts and colors and spacing — so you can see the landscape before you make choices. This is not about copying. It is about getting in the ballpark so you know what the conventions are, and then deciding which ones are worth breaking.
+
+After you agree on the system, it generates an interactive HTML preview page — not just swatches and font samples, but realistic product pages. If you are building a dashboard, you see a dashboard with a sidebar, data tables, and stat cards. If you are building a marketing site, you see a hero section with real copy and a CTA. Everything rendered in your design system, with your product name, in light and dark mode. You see what your product could feel like before a single line of production code is written.
+
+Then it writes `DESIGN.md` to your repo root — your project's design source of truth — and updates `CLAUDE.md` so every future Claude Code session respects the system. From that point on, `/design-review` can audit against it, and any agent working on your frontend knows the rules.
+
+The file is written in the open DESIGN.md format ([google-labs-code/design.md](https://github.com/google-labs-code/design.md)): every token in YAML front matter (`colors`, `typography`, `rounded`, `spacing`, `components`), the rationale in the spec's canonical sections, so impeccable, Google Stitch, and anything else that reads the format share one file. If you already have a legacy gstack `DESIGN.md`, the skill offers a conversion once (a backup is kept) and records your answer in the file so it never asks again. A `PRODUCT.md` in the repo root prefills the product questions instead of re-asking them.
+
+### Example
+
+```
+You:   /design-consultation
+
+Claude: From the README, this looks like a developer analytics dashboard
+        for engineering teams. Sound right? Tell me about the feeling
+        you want — and would you like me to look at what's out there
+        first so we can see the landscape?
+
+You:    Yes, it's for eng managers. Show me what's out there.
+
+Claude: [browses Linear, Vercel, Datadog, Posthog — takes screenshots]
+
+        Here's the landscape. They all converge on clean sans-serifs
+        and muted blue-gray palettes. Linear stands out with dark-first
+        and tight spacing. The rest feel interchangeable.
+
+        Here's my proposal — and where I'd play it safe vs. take risks:
+
+        AESTHETIC: Industrial/Utilitarian — data-first, every pixel earns its place
+        TYPOGRAPHY: Geist (body + UI), Instrument Serif (display), JetBrains Mono (data)
+        COLOR: Restrained — slate neutrals, single teal accent (#0D9488)
+        SPACING: 4px base, compact density
+        LAYOUT: Grid-disciplined, 12-column
+        MOTION: Minimal-functional — only transitions that aid comprehension
+
+        SAFE CHOICES (match category expectations):
+          Geist for body — your users already know this font from Vercel
+          Slate neutrals — warm grays feel right for data-heavy UIs
+          Grid-disciplined layout — dashboards need predictable alignment
+
+        RISKS (where you'd stand out):
+          Instrument Serif for display headings — nobody in dev tools
+            uses a serif. It creates instant hierarchy contrast and
+            signals "we care about craft" in a space full of sans-serifs.
+          Single teal accent instead of blue — everyone else in this space uses blue.
+            Teal is close enough to feel trustworthy, different enough
+            to be recognizable.
+          4px compact density — tighter than Linear, says "we respect
+            your screen real estate."
+
+        The safe choices keep you literate. The risks are where your
+        product gets its own face. Which risks appeal to you?
+
+You:    Love the serif risk. Let's see it.
+
+Claude: Preview opened in your browser.
+        [/tmp/design-consultation-preview-1710000000.html]
+
+        The page shows a realistic dashboard: sidebar nav, header with
+        avatar, stat cards, data table — all in your design system.
+        Instrument Serif at hero scale, Geist in body text, JetBrains
+        Mono in the data table. Teal accent on buttons and active states.
+        Light and dark mode toggle in the corner.
+
+        How does it feel? Want to adjust anything before I write DESIGN.md?
+
+You:    Ship it.
+
+Claude: Wrote DESIGN.md (typography, color, spacing, layout, motion).
+        Updated CLAUDE.md with design system guidelines.
+        All future sessions will respect these choices.
+```
+
+---
+
+## `/design-review`
+
+This is my **designer who codes mode**.
+
+`/plan-design-review` reviews your plan before implementation. `/design-review` audits and fixes the live site after.
+
+It runs an 80-item visual audit on your live site — in your Aside browser, so it sees exactly what a logged-in you sees — then enters a fix loop: for each design finding, it locates the source file, makes the minimal CSS/styling change, commits with `style(design): FINDING-NNN`, re-navigates to verify, and takes before/after screenshots. One commit per fix, fully bisectable.
+
+**`--build` (opt-in, for UI you are building).** `/design-review --build <preview url>` skips the clean-tree check and never commits: it lists the states your change can show, serves them on a loopback preview with canned API answers ([preview recipe](howto-preview-a-frontend.md)), lints each one with `gstack-design-lint --scope app` at 1440 and 375, screenshots them, fixes what fails for up to three rounds, then runs one read-only final pass. `gstack-design-build` turns that evidence into one `DESIGN_BUILD:` line (clean, waived, open, incomplete or unrendered); a skipped render, a state it could not reach or an API call the preview could not answer is never clean.
+
+The self-regulation heuristic is tuned for design work — CSS-only changes get a free pass (they are inherently safe and reversible), but changes to component JSX/TSX files count against the risk budget. Hard cap at 30 fixes. If the risk score exceeds 20%, it stops and asks.
+
+**Design detector.** When you have [impeccable](https://impeccable.style) installed, its engine runs first: on a URL the page's rendered DOM is dumped (linked styles inlined) and scanned; on a feature branch with no URL the changed frontend files are scanned (`.dart` files excepted: they count as frontend scope, but the engine reads web sources). Every mechanical finding arrives as a `FINDING-NNN` tagged with its rule id (`[nested-cards]`, `[low-contrast]`), and the report closes with `Detector: N → M`. gstack never runs impeccable's installer; when no engine is present it offers, once, to download the engine binary (checksum-pinned, logged in the egress ledger) and remembers the answer; without it the audit is unchanged. `gstack-config set design_detector off` disables the pre-pass.
+
+### Example
+
+```
+You:   /design-review https://myapp.com
+
+Claude: [Runs full 80-item visual audit on the live site]
+        Design Score: C  |  AI Slop Score: D
+        12 findings (4 high, 5 medium, 3 polish)
+
+        Fixing 9 design issues...
+
+        style(design): FINDING-001 — replace 3-column icon grid with asymmetric layout
+        style(design): FINDING-002 — add heading scale 48/32/24/18/16
+        style(design): FINDING-003 — remove gradient hero, use bold typography
+        style(design): FINDING-004 — add second font for headings
+        style(design): FINDING-005 — vary border-radius by element role
+        style(design): FINDING-006 — left-align body text, reserve center for headings
+        style(design): FINDING-007 — add hover/focus states to all interactive elements
+        style(design): FINDING-008 — add prefers-reduced-motion media query
+        style(design): FINDING-009 — set max content width to 680px for body text
+
+        Final audit:
+        Design Score: C → B+  |  AI Slop Score: D → A
+        9 fixes applied (8 verified, 1 best-effort). 3 deferred.
+
+        [Report with before/after screenshots saved to ~/.gstack/projects/<slug>/designs/design-audit-<date>/]
+```
+
+Nine commits, each touching one concern. The AI Slop score went from D to A because the three most recognizable patterns (gradient hero, 3-column grid, uniform radius) are gone.
+
+---
+
+## `/design-shotgun`
+
+This is my **design exploration mode**.
+
+You know the feeling. You have a feature, a page, a landing screen... and you're not sure what it should look like. You could describe it to Claude and get one answer. But one answer means one perspective, and design is a taste game. You need to see options.
+
+`/design-shotgun` generates 3 visual design variants using the GPT Image API, opens a comparison board in your browser, and waits for your feedback. You pick a direction, request changes, or ask for entirely new variants. The board supports remix, regenerate, and approval actions.
+
+### The loop
+
+1. You describe what you want (or point at an existing page)
+2. The skill reads your `DESIGN.md` for brand constraints (if it exists)
+3. It generates 3 distinct design variants as PNGs
+4. A comparison board opens in your browser with all 3 side-by-side
+5. You click "Approve" on the one you like, or give feedback for another round
+6. The approved variant saves to `~/.gstack/projects/$SLUG/designs/` with an `approved.json`; for a landing, pricing or campaign screen, it also records the page archetype you picked (`classic-hero`, `long-form-story`, `minimal-conversion` or `comparison`) and its section outline
+
+That `approved.json` is one way to feed `/design-html`. The design pipeline chains: shotgun picks the direction, design-html renders it as working code. But `/design-html` also works with CEO plans, design reviews, or just a description.
+
+### Taste memory
+
+The skill remembers your preferences across sessions. If you consistently prefer minimal designs over busy ones, it biases future generations. This isn't a setting you configure... it emerges from your approvals.
+
+### Example
+
+```
+You:   /design-shotgun — hero section for a developer tools landing page
+
+Claude: [Generates 3 variants]
+        Variant A: Bold typography, dark background, code snippet hero
+        Variant B: Split layout, product screenshot left, copy right
+        Variant C: Minimal, centered headline, gradient accent
+
+        [Opens comparison board at localhost:PORT]
+
+You:    [Clicks "Approve" on Variant A in the browser]
+
+Claude: Approved Variant A. Saved to ~/.gstack/projects/myapp/designs/
+        Next: run /design-html to generate production HTML from this mockup.
+```
+
+---
+
+## `/design-html`
+
+This is my **design-to-code mode**.
+
+Every AI code generation tool produces static CSS. Hardcoded heights. Text that overflows on resize. Breakpoints that snap instead of flowing. The output looks right at exactly one viewport size and breaks at every other.
+
+`/design-html` fixes this. It generates HTML using [Pretext](https://github.com/chenglou/pretext) by Cheng Lou (ex-React core, Midjourney frontend). Pretext is a 15KB library that computes text layout without DOM measurement. Text reflows. Heights adjust to content. Cards size themselves. Chat bubbles shrinkwrap. All sub-millisecond, all dynamic.
+
+It works with multiple input sources: an approved mockup from `/design-shotgun`, a CEO plan from `/plan-ceo-review`, design review context from `/plan-design-review`, a PNG you provide, or just a description of what you want. It detects what context exists and asks how you want to proceed.
+
+### Smart API routing
+
+Not every page needs the full Pretext engine. The skill reads the design and picks the right tools:
+
+- **Simple layouts** (landing, marketing): `prepare()` + `layout()` for resize-aware heights
+- **Card grids** (dashboard, listing): `prepare()` + `layout()` for self-sizing cards
+- **Chat UIs**: `walkLineRanges()` for tight-fit bubbles with zero wasted pixels
+- **Editorial layouts**: `layoutNextLine()` for text flowing around obstacles
+- **Complex editorial**: Full engine with `layoutWithLines()` for manual line rendering
+
+### The refinement loop
+
+1. Reads the approved mockup from `approved.json`, plus any page archetype and section outline you picked on the board, which it builds as given instead of asking again
+2. Extracts an implementation spec (colors, typography, layout) with the provider's vision model (OpenAI gpt-5.5, or Gemini when only a Gemini key is set; `GSTACK_DESIGN_MODEL` overrides)
+3. Generates self-contained HTML with Pretext inlined (15KB, zero network dependency)
+4. Spins up a live-reload server so you see changes instantly
+5. Screenshots at 3 viewports (mobile, tablet, desktop) to verify layout
+6. AskUserQuestion: what needs to change?
+7. Surgical edits via the Edit tool (not full regeneration)
+8. Repeat until you say "done"
+
+**Slop gate.** If you have [impeccable](https://impeccable.style) installed, the finalized page gets one scan through its engine before the verification screenshots: findings trigger a single surgical fix pass over the non-advisory rules, then one more scan. Whatever remains is presented as accepted-with-reason (the approved mockup contains it, `DESIGN.md` blesses it, or you agreed to an inline `impeccable-disable` comment). One pass, never a loop; without impeccable the step is skipped silently. The skill's never-include list carries the same rule ids the detector reports, from `lib/design-catalog.ts`.
+
+### Framework detection
+
+If your project uses React, Svelte, or Vue (detected from `package.json`), the skill offers to generate a framework component instead of vanilla HTML. Framework output uses `npm install @chenglou/pretext` instead of inline vendoring.
+
+### Example
+
+```
+You:   /design-html
+
+Claude: Found approved mockup: variant-A.png (hero section)
+        Design type: simple layout → using prepare() + layout()
+
+        [Generates HTML with Pretext, opens live-reload server]
+        [Screenshots at 375px, 768px, 1440px — all verified]
+
+        The HTML is live at localhost:3456. Resize your browser.
+        Text reflows dynamically. What needs to change?
+
+You:    Make the headline bigger and add more spacing below the CTA
+
+Claude: [Edits font-size and margin, browser auto-reloads]
+        Updated. Two changes applied.
+
+You:    Done
+
+Claude: Saved to ~/.gstack/projects/myapp/designs/hero-20260330/finalized.html
+```
+
+---
+
+## `/design-motion`
+
+This is my **showcase mode**.
+
+A launch post on X wants the product moving, not a static mockup. Screen-recording a page in real time gives you dropped frames, a loop that jumps at the seam, and a card that drifts out of its container halfway through.
+
+`/design-motion` takes an approved mockup from `/design-shotgun`, a `finalized.html` from `/design-html`, or a URL. It rebuilds the exact frame as one self-contained page, starts it from an empty state, loads it in with a soft rise-and-resolve, and gives each visual one story: a chart gets read, a list receives a new item, a prompt retypes itself. Then it dissolves and repeats.
+
+Nothing is recorded in real time. `bin/gstack-motion-capture.ts` drives the page on Playwright's fake clock in whole-millisecond steps that average 1000/60, so frame N is always the same pixels. `bin/gstack-motion-encode check` then proves the loop with ffmpeg's PSNR: the first frame equals the frame one cycle later (seam), the empty beat equals the frame before the start (no JS state left over), the last frame before the dissolve equals the still design (every story came home), and nothing moves outside the containers (overflow). Only then does `export` write an MP4 for X, a 960 px website GIF and an 800×500 GIF.
+
+On a website it follows gstack's design rules instead: one authored motion moment per page, content visible without script, and no pulsing dots or marquees left running. ffmpeg is optional; without it the skill builds the page and tells you how to install it. A Figma source works when a `FIGMA_TOKEN` is set.
+
+Adapted from Elaya's [design-to-motion](https://github.com/elayadesign/ai-design-skills) (MIT, © 2026 Elaya).
+
+### Example
+
+```
+You:   /design-motion
+
+Claude: Found approved mockup: variant-B.png (analytics bento, 1440×990)
+        Context: showcase. Layout: separate cards (4).
+        Stories: chart scrubber, a new lead lands on the stack, KPI counts up.
+        Cycle: 12 s.
+
+        [Rebuilds the frame, still matches the mockup at 37 dB]
+        [Captures 744 frames on a fake clock]
+
+        MOTION_CHECK: seam pass
+        MOTION_CHECK: empty-beat pass
+        MOTION_CHECK: rest pass
+        MOTION_CHECK: overflow pass
+
+        bento-x.mp4 (1744×1200, 60 fps, 12 s), bento-loop.gif, bento-800x500.gif
+```
+
+---
+
+## `/review`
+
+This is my **paranoid staff engineer mode**.
+
+Passing tests do not mean the branch is safe.
+
+`/review` exists because there is a whole class of bugs that can survive CI and still punch you in the face in production. This mode is not about dreaming bigger. It is not about making the plan prettier. It is about asking:
+
+**What can still break?**
+
+This is a structural audit, not a style nitpick pass. I want the model to look for things like:
+
+* N+1 queries
+* stale reads
+* race conditions
+* bad trust boundaries
+* missing indexes
+* escaping bugs
+* broken invariants
+* bad retry logic
+* tests that pass while missing the real failure mode
+* forgotten enum handlers — add a new status or type constant, and `/review` traces it through every switch statement and allowlist in your codebase, not just the files you changed
+
+### Fix-First
+
+Findings get action, not just listed. Obvious mechanical fixes (dead code, stale comments, N+1 queries) are applied automatically — you see `[AUTO-FIXED] file:line Problem → what was done` for each one. Genuinely ambiguous issues (security, race conditions, design decisions) get surfaced for your call.
+
+### Completeness gaps
+
+`/review` now flags shortcut implementations where the complete version costs less than 30 minutes of CC time. If you chose the 80% solution and the 100% solution is a lake, not an ocean, the review will call it out.
+
+One exception: a shortcut you took deliberately and logged. A `gstack-shortcut(dec-<id>)` marker whose decision id resolves in the decision ledger downgrades the finding to acknowledged debt. An orphan marker — one with no ledger entry behind it — doesn't suppress anything; the gap is reported normally and the marker itself gets flagged.
+
+**Design pass.** When the diff touches frontend files, the Design specialist reads `review/design-checklist.md`, which is generated from `lib/design-catalog.ts`, so `/review`, `/ship`, and `/design-review` flag the same patterns under the same rule ids. If you have [impeccable](https://impeccable.style) installed, its engine scans the changed frontend files first (`.dart` files get the checklist pass only): its rows bucket by tier (auto-fix, ask, possible), a detector hit and a checklist hit at the same file:line collapse into one row, and your repo's `.impeccable/config*.json` ignores are read as settled decisions. Without it, the checklist pass runs alone.
+
+**PR type.** The checklist starts by naming the kind of PR from the changed paths: docs-only, CI/infra, scripts/tooling, application or mixed, and the review's first line says which (`PR type: <type>`). Application and mixed diffs run every category as before. A CI/infra, scripts/tooling or docs-only diff always gets Gate Integrity, Shell Injection, Completeness Gaps, Distribution & CI/CD Pipeline and Repo Conventions & Platform Fit; every other category with nothing to check is listed once, in one line, as not applicable, and never counts as passed. Repo Conventions & Platform Fit flags new files that don't match the languages and tools the repo already uses or the platforms its CI runs on, such as a `.bat` build script in a bash-and-Makefile repo.
+
+### Example
+
+Suppose the smart listing flow is implemented and the tests are green.
+
+`/review` should still ask:
+
+* Did I introduce an N+1 query when rendering listing photos or draft suggestions?
+* Am I trusting client-provided file metadata instead of validating the actual file?
+* Can two tabs race and overwrite cover-photo selection or item details?
+* Do failed uploads leave orphaned files in storage forever?
+* Can the "exactly one hero image" rule break under concurrency?
+* If enrichment APIs partially fail, do I degrade gracefully or save garbage?
+* Did I accidentally create a prompt injection or trust-boundary problem by pulling web data into draft generation?
+
+That is the point of `/review`.
+
+I do not want flattery here.
+I want the model imagining the production incident before it happens.
+
+---
+
+## `/investigate` (cut)
+
+`/investigate` was cut on 2026-11-07 (GST-1717) after a preregistered eval found no gain. On 18 real bug-fix tasks that plain Opus 5.5 solves about half the time, 20 trials each, Opus told to use /investigate passed 50.0% of trials against 47.2% with no skill: +2.8 points (95% CI -5.8 to +11.4), below the 10-point lift the run could detect. A passing fix cost about 43% more with the skill. The evidence is GEVA-380's R3c result, [gstack-evals c90ab277, wiki/board/2026-11-07-geva-380-r3c-results.md](https://github.com/garrytan/gstack-evals/blob/c90ab277/wiki/board/2026-11-07-geva-380-r3c-results.md).
+
+The skill no longer installs, and `./setup` removes an existing gstack-owned `investigate` / `gstack-investigate` entry on every host, along with the opt-in /investigate gate's hooks. For a bug, fix it directly: check the cause once, and when it is still unclear, write a focused test that fails on the bug before any edit, then fix the root cause and rerun the test. `/verify` runs the repo's checks while you build, and `/qa` tests a running site, API or CLI and fixes what it finds.
+
+---
+
+## `/verify`
+
+`/verify` is the loop you run while you build: change something, run the repo's checks, fix what broke, run again. `gstack-checks detect` finds the checks the repo already declares (a `gstack:verify:` line or a `## Health Stack` section in CLAUDE.md, else package.json scripts, tsconfig, eslint or biome, pyproject, Cargo.toml, go.mod) and never makes one up. `gstack-checks run` runs them plus the tests `/ship`'s pre-gate selects for your change, using pregate's own selector, so a green `/verify` predicts a green pre-gate. `/health` finds its tools with the same detector (`gstack-checks detect --for health`), which adds its test, knip, shellcheck and gbrain dimensions.
+
+It asks once before running any repo command (`gstack-checks trust`) and asks again when a command changes. A touched file no test covers is `UNMAPPED`, a selection that ran zero tests is `ZERO_RUN`, and neither counts as green. A missing tool or service is reported, not worked around. It stops after five runs or when the same failure comes back twice, and asks for a focused failing test and a root-cause trace before another fix to a stubborn red. When everything passes, `gstack-checks status` prints `READY_FOR_SHIP tree=<tree>` without rerunning anything, and you run `/ship`. It never reviews, bumps versions, pushes or opens a PR.
+
+---
+
+## `/qa`
+
+This is my **QA lead mode**.
+
+`/browse` gives the agent eyes. `/qa` gives it a testing methodology.
+
+The most common use case: you're on a feature branch, you just finished coding, and you want to verify everything works. Just say `/qa` — it uses your request, repository contracts, test plan and diff to select browser, functional (API, CLI, job, worker or webhook), or mixed surfaces. No URL or manual test plan is required. Browser targets still open affected pages in Aside tabs (or gstack's fallback browser); functional-only targets use documented native commands and isolated local fixtures without starting a browser.
+
+Choose Full, Quick or Regression depth; diff-aware selects what to test:
+
+- **Diff-aware** (automatic on feature branches) — selects changed and adjacent behavior. Standalone `/qa` first resolves a dirty working tree through its commit/stash/abort question; it tests the resulting checkout. For browser targets it identifies affected pages and tests them specifically.
+- **Full** — browser QA systematically explores the entire app (typically 5-15 minutes, documenting 5-10 well-evidenced issues); functional QA covers applicable documented contracts and reports blocked or untested ones separately.
+- **Quick** (`--quick`) — browser QA keeps its 30-second homepage + top-five-navigation smoke; functional QA checks a successful operation and the highest-risk changed edge, marking other contracts not run.
+- **Regression** (`--regression <previous-report-or-baseline>`) — browser QA runs full mode and diffs against a previous `baseline.json`; functional QA requires a readable prior functional report and replay evidence, repeats its failed probes against the intended contract, then checks changed adjacent behavior. A browser-only baseline is not a functional baseline.
+
+Exploration retains a written trail: before each next discovery probe, QA saves an
+`exploration-NNN.json` checkpoint in its owned report directory with the previous
+command and result, the hypothesis and the next exact command. The final report
+links those files. `/qa-only` and the bounded review/ship pass use the same evidence
+contract without gaining permission to edit product code or tests.
+
+Time limits include checkpoint and evidence work; unfinished probes remain untested.
+New runs preserve prior reports and baselines, using a fresh owned run directory when
+the selected output directory already contains artifacts. Mixed runs put browser and
+functional results in separate sections of one report; browser scores never apply to
+functional coverage. Conflicting Quick/Regression requests are resolved before probing.
+
+### Automatic regression tests
+
+For a reproduced defect, `/qa` writes a native regression test when infrastructure is available and proves it fails for that defect before the repair; CSS-only defects may use browser evidence instead. After the root-cause repair, it requires the original probe, adjacent happy path and native regression when available to pass before calling the fix verified. Tests trace back to the QA report. `/qa-only` can propose the case and retain replayable evidence but never changes product code or tests; missing native test infrastructure remains an explicit coverage limit, not permission to install a new framework for functional QA.
+
+### Example
+
+```
+You:   /qa https://staging.myapp.com
+
+Claude: [Explores 12 pages, fills 3 forms, tests 2 flows]
+
+        QA Report: staging.myapp.com — Health Score: 72/100
+
+        Top 3 Issues:
+        1. CRITICAL: Checkout form submits with empty required fields
+        2. HIGH: Mobile nav menu doesn't close after selecting an item
+        3. MEDIUM: Dashboard chart overlaps sidebar below 1024px
+
+        [Full report with screenshots saved to .gstack/qa-reports/]
+```
+
+**Testing authenticated pages:** with Aside, nothing to set up. Aside is your browser, so `/qa` already has your sessions; if it hits a sign-in wall, sign in inside Aside and tell it you're done — it re-runs the step. It never types a password for you. On the fallback browser, run `/setup-browser-cookies` first to import your real sessions, or log in once in headed mode.
+
+---
+
+## `/ship`
+
+This is my **release machine mode**.
+
+Once I have decided what to build, nailed the technical plan, and run a serious review, I do not want more talking. I want execution.
+
+`/ship` is for the final mile. It is for a ready branch, not for deciding what to build.
+
+This is where the model should stop behaving like a brainstorm partner and start behaving like a disciplined release engineer: sync with main, run the right tests, make sure the branch state is sane, update changelog or versioning if the repo expects it, push, and create or update the PR.
+
+### Test bootstrap
+
+If your project doesn't have a test framework, `/ship` sets one up — detects your runtime, researches the best framework, installs it, writes 3-5 real tests for your actual code, sets up CI/CD (GitHub Actions), and creates TESTING.md. 100% test coverage is the goal — tests make vibe coding safe instead of yolo coding.
+
+### Coverage audit
+
+Every `/ship` run builds a code path map from your diff, searches for corresponding tests, and produces an ASCII coverage diagram with quality stars. Gaps get tests auto-generated. Your PR body shows the coverage: `Tests: 42 → 47 (+5 new)`.
+
+`/review` and `/ship` also run a bounded exploratory pass on changed behavior and nearby risks, even for a small diff without a plan or web server. Their existing approval and test rules govern any fixes or permanent tests; a blocked probe remains a coverage gap, not a passing QA result.
+
+### Review gate
+
+`/ship` displays historical review readiness in the [Review Readiness Dashboard](#review-readiness-dashboard) during preflight. A missing Eng Review is reported without an extra question; it does not replace or waive the current pre-landing review. Step 9 still runs the checklist, one batched specialist (Testing and Security, plus the checklists scope selects) and bounded exploratory QA, with its existing approval and completion gates.
+
+A lot of branches die when the interesting work is done and only the boring release work is left. Humans procrastinate that part. AI should not.
+
+### The PR body
+
+`/ship` writes the PR body from the diff, the receipt and the review, and a reader who was not in the session decides the merge from it. The front is for people and the end is for machines: the body opens with one or two plain sentences saying what changed for someone using the project and which README goal it serves, and it ends with one collapsed **Agent notes** section (`<!-- gstack:agent-notes -->` then `<details><summary>Agent notes</summary>`) that holds the ship receipt, the approval and Plan lines, issue codes and the review-loop lines gstack's tools read. The title follows the same shape: plain words first, an issue code only at the end (`Stop gstack from hitting GitHub's rate limit while it waits on PRs (GST-1713)`), checked by `gstack-plain-title` (see [Plain titles](ship-policy.md#plain-titles)). On Capy (`CAPY_PR: on`) the opening is followed by three sections, in this order, before the standard Summary, Test plan and Documentation sections:
+
+1. **`## What changed`**: one to three captioned before/after images from `gstack-pr-shots` or a UI screenshot, highest-signal first, with a collapsed text version under each.
+2. **`## Why`**: two or three sentences. The first states the problem in the person's words (the issue, the message, the failing run), then the cause and the user-visible effect.
+3. **`## Blast radius`**: what else the change touches and the one fact that makes that safe, with the evidence-ladder rung that fact reached (a test that exercises the shared path, a grep over every caller, a measured run). A change to a shared helper, a generated file, a selection list or a policy default always has one; a leaf fix says so in one line.
+`## Approvals`, the output of `gstack-approvals render` verbatim, goes inside Agent notes. On a private repository that is the table; on a public repository, or one whose visibility gh cannot read, it is only `Approved: yes|no (record <id>)`, because GitHub keeps every earlier version of a PR description. The table shows each local path in Asked, Covers and Still pending as `…/<file name>`, so the home directory, user name and Drive folder in those paths stay out of the body; Exact words stays verbatim, and `gstack-approvals list` keeps the full path. For a private repository that may go public, `render --redacted` prints the public form, byte for byte; `--redacted` with `--full` is refused.
+
+Before the body is composed, `gstack-prose-lint` reads the Why, Summary and Blast radius drafts (`--sections 'Why,Summary,Blast radius' --gate`) and the CHANGELOG entry (`--base origin/<base> --gate`), and a `PROSE_LINT_FOUND` line names the sentence to rewrite; the rest of the body is advisory. The Captain's merge-ask template (`captain/templates/merge-ask.md`) carries the same sections, so a READY report and its PR say the same thing.
+
+### Versions: where `/ship` looks, and when it ships without one
+
+`/ship` bumps a version only when the project says where the version lives. It checks, in order:
+
+1. `--version-path <path>` passed to `gstack-version-bump` / `gstack-next-version`.
+2. `.gstack/version-path`: a committed one-line file holding the version file's repo-relative path, for example `package.json` or `apps/web/package.json`. A `.json` path is read and written as its `"version"` field; 3-digit semver stays 3-digit.
+3. A root `VERSION` file (gstack's own 4-digit `MAJOR.MINOR.PATCH.MICRO` format).
+
+A root `package.json` on its own does not count, because many apps carry a placeholder there. To have `/ship` version it, run `echo package.json > .gstack/version-path` and commit the file.
+
+When none of these exist, `/ship` ships without a version change: no bump, no CHANGELOG version header, no `v1.2.3` title prefix, no tag. It prints:
+
+> Shipped without a version change: no version source is configured (no VERSION file, no .gstack/version-path). To version releases, create VERSION or write the version file's path (for example package.json) to .gstack/version-path.
+
+It does the same, with the reason, when release-please, Changesets or semantic-release is configured, when the repo is a workspace monorepo, or when `package.json` holds a placeholder such as `0.0.0-development`; those tools own the version. `/land-and-deploy` and `/document-release` read the same signal. A configured version file that is missing, empty, unreadable or malformed stops `/ship` with the file's path and the problem; gstack never substitutes `0.0.0.0`.
+
+### Third-party web actions (v1.72.0.0+)
+
+Sometimes the release work leaves the terminal: registering an API key, creating a vendor account, wiring a webhook or OAuth app. Instead of handing you a manual step list, `/ship` (and `/spec`, `/office-hours`, `/land-and-deploy`, `/setup-deploy`) offers to drive the browser for you. Aside first — it acts across your real logged-in sessions, which is exactly what vendor dashboards need. No Aside? gstack's own visible browser (headed `$B` with handoff for sign-in) is the fallback on every platform, with one pointer to aside.com (macOS 15+) per task.
+
+The consent rules are strict and pin-tested: one explicit question per task naming the exact site and actions, no standing permission, no auto-install ever (on a Mac without Aside you get one download pointer — aside.com, macOS 15+ — once per task). Passwords, payment, CAPTCHAs, and identity verification stay yours; Apple credential creation is never a drive target in any skill. A captured secret never appears in chat — it lands in an owner-only file and gets verified with one read-only API call before gstack claims success.
+
+---
+
+## `/land-and-deploy`
+
+This is my **deploy pipeline mode**.
+
+`/ship` creates the PR. `/land-and-deploy` finishes the job: merge, deploy, verify.
+
+It confirms PR readiness and your merge approval, merges, then monitors CI and deployment before checking production. If deployment breaks, it reports what failed and whether rollback is available. If the new revision's deployment cannot be confirmed, it reports that uncertainty rather than treating a healthy old page as proof.
+
+The first run, or a changed deployment configuration, triggers a dry-run walk-through so you can verify the pipeline before anything irreversible happens. An unchanged, previously confirmed configuration skips that walkthrough, not readiness checks or merge approval. Approval is bound to the exact PR head and destination branch; changing either requires fresh readiness and approval.
+
+### Setup
+
+Run `/setup-deploy` first. It detects your platform (Fly.io, Render, Vercel, Netlify, Heroku, GitHub Actions, or custom), discovers your production URL and health check endpoints, and writes the config to CLAUDE.md. One-time, 60 seconds.
+
+### Example
+
+```
+You:   /land-and-deploy
+
+Claude: Merging PR #42...
+        CI: 3/3 checks passed
+        Deploy: Fly.io — deploying v2.1.0...
+        Health check: https://myapp.fly.dev/health → 200 OK
+        Canary: 5 pages checked, 0 console errors, p95 < 800ms
+
+        Production verified. v2.1.0 is live.
+```
+
+---
+
+## `/modernize`
+
+`/ship` merges the base into a branch you are working on. `/modernize` is for the other
+case: a pull request that has sat for weeks, often someone else's, where the real question
+is not "does it rebase" but "should it still exist".
+
+```
+You: /modernize 2187
+
+Claude: Claim: #2187 caches the skill census so `bun run skill:check` stops
+        re-reading 57 directories. It relies on the census being read once per run.
+
+        Moved under it: 41 base commits since the merge base; 3 touch its files.
+        Conceptual: a2f9c01 (v1.91.240.0) made the census a shared helper that
+        already memoizes per process. The cache the PR adds would be a second one.
+
+        Verdict: CLOSE. The base solves the problem another way (a2f9c01). Nothing
+        was pushed and the PR stays open; say "close it" and I will post the reason
+        and the superseding commit from the bot account, with thanks to its author.
+```
+
+Three verdicts, one chosen before anything is pushed. **MODERNIZE**: the claim still
+holds, so the branch is rebased with the author's commits kept as theirs, `git
+range-diff` proves no intent was lost (every changed hunk gets a one-line reason), the
+repository's own tests run, and the push is `--force-with-lease=<branch>:<sha observed
+before the rebase>`, so a push someone else made meanwhile is refused rather than
+overwritten. **REWORK**: the problem is real but this diff is no longer the way to solve
+it; the skill says what the new change would be and pushes nothing. **CLOSE**: the
+problem is gone, solved another way, or decided against; the skill recommends closing
+with the superseding commit and leaves the PR open until someone with the authority says
+otherwise. A clean `git rebase` is not evidence the PR is current, and the age of a PR
+is not evidence either way.
+
+## `/canary`
+
+This is my **post-deploy monitoring mode**.
+
+After deploy, `/canary` watches the live site for trouble. It loops through your key pages in your Aside browser (one `aside repl` script per page, so every cycle is a fresh load), checking for console errors, performance regressions, page failures, and visual anomalies. Takes periodic screenshots and compares against pre-deploy baselines.
+
+Use it right after `/land-and-deploy`, or schedule it to run periodically after a risky deploy.
+
+```
+You:   /canary https://myapp.com
+
+Claude: Monitoring 8 pages every 2 minutes...
+
+        Cycle 1: ✓ All pages healthy. p95: 340ms. 0 console errors.
+        Cycle 2: ✓ All pages healthy. p95: 380ms. 0 console errors.
+        Cycle 3: ⚠ /dashboard — new console error: "TypeError: Cannot read
+                   property 'map' of undefined" at dashboard.js:142
+                 Screenshot saved.
+
+        Alert: 1 new console error after 3 monitoring cycles.
+```
+
+---
+
+## `/deslop-shared-libs`
+
+Find shared code worth extracting from recent work. By default, the skill reviews
+the preceding 14 UTC days of commits and PRs, plus relevant current-branch work.
+It checks existing helpers, verifies compatible authored callers, and compares
+up to five new opportunities before recommending up to three. Estimates include
+tests and integration, so moving code into a new file does not count as savings.
+Fewer recommendations, including none, are valid.
+
+```text
+You: /deslop-shared-libs
+You: /deslop-shared-libs — focus on the API and workers over the past 30 days
+```
+
+The report links the reviewed source, names the smallest useful helper and its
+callers, explains reliability gains and shared-failure risks, and separates work
+already covered by PRs. It checks older open PRs for candidate overlap within a
+bounded scan and discloses inaccessible history or incomplete coverage. It reads
+raw uncommitted source without running project hooks or filters. It never edits
+code, runs project tests, saves a report, or creates issues or PRs.
+
+`/plan-eng-review` applies the same criteria to the plan and proposed callers.
+`/review` checks the diff and related callers even on tiny changes. These scoped
+checks do not run the history audit. Optional extractions are advisory and require
+approval; they do not block a clean review or reduce its score. Actual defects
+keep their normal fix handling.
+
+## `/write-skill`
+
+Every skill is read in full each time it runs, so every extra line costs tokens on every run, and a skill that names a
+command the tool no longer has produces wrong calls that pass CI. `/write-skill` keeps skills lean and correct, for
+gstack's own templates and for any skill folder you own.
+
+- **Find the skill.** `gstack-skill-bill <name|folder>` resolves exact names only and says what you are holding: a
+  folder you own, a gstack checkout template (edit `SKILL.md.tmpl`, then `bun run gen:skill-docs`), or an installed
+  gstack skill, which it never edits because `gstack-upgrade` overwrites it.
+- **Edit ladder.** Stop at the first step that handles the change: fix the tool (a clearer error, a flag, a test);
+  add nothing a fresh session already does; edit the line that covers the idea instead of appending; put the fact on the
+  lowest level that reaches the agent in time (description, SKILL.md, `references/`, the tool's `--help`, the tool's
+  errors); write the rule and put the story in the commit message.
+- **Evidence.** A new skill, step, instruction, check or default needs evidence that it helps on frontier models, or a
+  dated plan to measure it ([ETHOS.md: 9. Earn Its Place](../ETHOS.md#9-earn-its-place)). Commits carry an `Evidence:`
+  line, and every gstack skill has a row in the evidence ledger, `docs/inventory/evidence.json`, which
+  [docs/inventory.md](inventory.md) ranks by load per run.
+- **Size.** `gstack-skill-bill` prints bytes and estimated tokens per level, and in a gstack checkout the skill's eval
+  task file (`EVAL TASKS:`) and its ledger row (`EVIDENCE:`). Commits carry
+  `Skill-Size: <before>→<after> bytes`; a skill more than 10% over its last `Skill-Diet:` commit is DUE, and a red
+  context-budget ratchet means diet, not a higher ceiling.
+- **Drift.** `test/skill-bin-drift.test.ts` fails when a template or rendered skill calls a gstack bin or flag that
+  does not exist (`bun run scripts/skill-bin-drift.ts --skill <name>` for one skill). Its allowlist only shrinks.
+- **Full diet.** Report first, write the eval tasks before any cut
+  (`test/fixtures/skill-evals/<skill>/tasks.json`), lock them (`gstack-evals skill-eval --lock`, then commit
+  `tasks.lock.json`; the shared eval refuses a paid run without it), cut, then prove before vs after vs no skill with
+  the shared skill eval (`docs/designs/SKILL_EVAL_CONTRACT.md`). A diet ships only when no task that passed before
+  fails after.
+
+`/write-skill` is not `/skillify`: `/skillify` codifies a browser scrape into a browser-skill. Adapted from
+[nicobailon/skill-diet](https://github.com/nicobailon/skill-diet) (MIT). The first diet, /learn, cut its template from
+5,797 to 2,955 bytes.
+
+## `/test-audit`
+
+Find existing tests that cost more than they protect. `/review`, `/ship`, `/qa` and
+`/plan-eng-review` apply the same [test value bar](test-value-bar.md) to tests in a
+diff; `/test-audit` sweeps the tests that already exist.
+
+```text
+You: /test-audit
+You: /test-audit test/ --max-candidates 5
+You: /test-audit --since origin/main
+```
+
+A mechanical pre-filter shortlists assertion-free probes, source greps, export-list
+copies and near-duplicate files before any model reading. Each candidate gets a
+retirement card (what it detects, non-test callers with the search command, the
+stronger remaining proof, history, what retiring it unlocks, and the validation
+command). Contract tests such as SKILL.md goldens and prompt-byte checks
+(machine-read tokens, not English sentences; see [the value bar](test-value-bar.md))
+are retained. The report and a JSON sidecar land in `~/.gstack/projects/<slug>/`.
+Nothing is edited unless you approve a batch; spawned sessions stay report-only.
+Tests marked `gstack:test-value keep reason="..."` are skipped and listed in the
+report's appendix.
+
+## `/eval-plan`
+
+Preregister a paid eval before the first priced call.
+
+```text
+You: /eval-plan
+You: /eval-plan how much will the retrieval eval cost before I run it?
+```
+
+`bin/gstack-eval-plan prereg --init` writes the preregistration (question, bars,
+arms, decoys, stop rules, cap) and `--check` refuses to continue while a field is
+blank (`PREREG_INCOMPLETE`). `arms` resolves the `eval-arms` model role against
+`lib/pricing.ts` and stops on an unpriced model (`EVAL_PRICE_MISSING`); `dry-run`
+runs every row through the stub model for $0 and flags malformed rows
+(`EVAL_DRY_RUN_FAILED`), and refuses a plan whose every arm is Haiku or Sonnet
+unless `--tier-question` names what it asks about that tier, re-costing it on
+frontier models ([frontier models under test](TESTING_INTERNALS.md#frontier-models-under-test));
+`pilot start|settle|release|report` runs three priced
+items, records actual spend, extrapolates each priced arm to the full set against
+the cap (`EVAL_BUDGET_EXHAUSTED`) and prints the spend table the approval question
+shows. An arm on a subscription with no extra charge is declared with
+`pilot start --seat-metered <arm,...>`: it reserves $0, settles as `unknown`, and
+stays out of the projection until one of its attempts settles a real charge.
+A run stops at the first quota or rate-limit error on such an arm.
+`results --check <prereg> <results.md>` refuses a finished results file unless one
+table holds a filled row for every arm, each `<model>#no-gstack` row beside its
+variants (`EVAL_REPORT_NO_GSTACK_ROW`); no number leaves the run before it passes.
+The skill's closing section lists the tier-3 items (instrument audit, steady
+state, sealed paths, off-machine persistence, memory preflight, power tables, QA
+soak) as `tier 3, after P7`; none of them run yet.
+
+## `/benchmark`
+
+This is my **performance engineer mode**.
+
+`/benchmark` establishes performance baselines for your pages: load time, Core Web Vitals (LCP, CLS, INP), resource counts, and total transfer size. Run it before and after a PR to catch regressions.
+
+It measures in your Aside browser — the page's own `performance` navigation and resource entries from a real load, not synthetic estimates. Each page runs five times and is reported as the median with its range (`--quick` is a single-run ballpark). Results persist so you can track trends across PRs.
+
+```
+You:   /benchmark https://myapp.com
+
+Claude: Benchmarking 5 pages (5 runs each)...
+
+        /           load: 1.2s  LCP: 0.9s  CLS: 0.01  resources: 24 (890KB)
+        /dashboard  load: 2.1s  LCP: 1.8s  CLS: 0.03  resources: 31 (1.4MB)
+        /settings   load: 0.8s  LCP: 0.6s  CLS: 0.00  resources: 18 (420KB)
+
+        Baseline saved. Run again after changes to compare.
+```
+
+---
+
+## `/runaway-stopper`
+
+This is my **Spend Warden**.
+
+A long-lived agent thread re-reads its whole history on every step, so its cost grows with every wake, even
+the ones that end with nothing to say. One Founderstar thread used 6.9B tokens in 13 days, about 4B of it its
+own context, and one of its /ship subagents reached 485M because it was reused for five /ship runs.
+`/runaway-stopper` finds that pattern from the host's own thread data, stops it where stopping is safe, and
+sets the defaults that keep it from coming back.
+
+- **Detect.** One program fetches each crew thread (`tools.thread.get`, with its transcript) to files, then
+  `gstack-runaway scan --dir <dir>` prints a `RUNAWAY:` line per thread and a `FLAG:` line per limit crossed:
+  own tokens past 500M or active past 3 days (rotate, for a standing thread that wakes on every event; a crew
+  thread keeps its PR until it merges or closes and checks in with its Captain once past 1B, and no thread holding an
+  open PR rotates), a subagent past 100M (stop), empty wakes past 25% of the
+  last 40 turns (warm-wait check-ins are left out), and review rounds past 2 per PR. Captains are reported, never rotated.
+- **Stop.** A live subagent past 100M is stopped with its reason. A standing thread is rotated at a clean point through
+  a handoff file and a successor brief (`runaway-stopper/templates/`), then archived by its own Captain once none of
+  its PRs is open (R91), through `gstack-archive-check thread`. A thread
+  mid-/ship or mid-merge gets `DEFER:` and nothing happens until that work finishes.
+- **Prevent.** One wait on all pending operations, quiet wakes, compact program returns, one /ship subagent per
+  PR head (metering its own row with a 100M default cap, `BUDGET_DEFAULT_CAP:`), two review rounds, and a fresh
+  thread per automation run.
+
+Scanning FOUN-4, FOUN-14 and FOUN-71 as read on 2026-11-03, before R70's 2026-11-09 amendment (today only a thread
+marked standing gets `ROTATE`, a crew thread past 1B gets `CHECK_IN`, and a thread holding an open PR never rotates) (excerpt):
+
+```
+RUNAWAY: thread=FOUN-4 verdict=ROTATE own=4.04B(upper) total=6.90B credits=2299398 age_days=13.1 active=yes ...
+FLAG: ROTATE own_tokens 4.04B > 500M (upper bound)
+FLAG: LOOK subagent 40 "Run /ship on PR #442 (careless margin)" 485M > 100M (done)
+RUNAWAY: thread=FOUN-14 verdict=ROTATE own=2.02B(exact) total=2.54B ...
+RUNAWAY: thread=FOUN-71 verdict=ROTATE own=677M(exact) total=953M ...
+```
+
+---
+
+## `/ubicloud`
+
+This is my **Remote Runner**.
+
+A suite that takes an hour on a 4-core sandbox takes minutes on a `standard-16`
+VM. `/ubicloud` runs it there through one entry point, `bin/gstack-ubi`
+(`scripts/ubicloud/ubi-runner.sh`), with the discipline a shared quota needs:
+every VM is named `ubirun-<owner>-<epoch>-<suffix>-t<hours>`, so its owner
+(`UBI_OWNER`, required to create one) and TTL (`UBI_TTL_HOURS`, default 3) are
+visible to everyone; every `up` first reaps its own owner's VMs whose TTL ended,
+and those with no TTL once they are 4 hours old, never another owner's; every run
+ends with `UBICLOUD: left=0` or fails; the
+quota preflight refuses before the create request when the project's running
+VMs plus the new size exceed the known ceiling (`UBI_QUOTA_VCPUS`, or the
+maximum the last refusal printed; `UBI_QUOTA_WAIT` waits for room instead); a
+watchdog kills a remote command silent for `UBI_IDLE_TIMEOUT` seconds (1800)
+with exit 124 and its last 40 lines, and prints a heartbeat every
+`UBI_HEARTBEAT` seconds; and `gstack-ubi verify` runs the repository's
+committed `.gstack/ubicloud.json` (setup, command, size, env, pass, pull)
+instead of a wrapper per lane, with the file confined to the checkout: setup
+and pull paths resolve inside `--src`, and a `pass` name is forwarded only
+when the command line grants it (`--pass NAME` or `--trust-config`), never
+`UBICLOUD_*`. The skill insists on a watched launch (a
+background operation that is waited on, or `gstack-detach`), because the
+runner destroys its VM on every exit path only while it is alive.
+
+```
+You:   /ubicloud run the full verify
+
+Claude: UBICLOUD_API_KEY: set; UBI_OWNER=lane7
+        gstack-ubi verify  (.gstack/ubicloud.json: bootstrap.sh, "bash scripts/verify.sh", standard-16)
+        ubi-runner: reap: no expired VMs
+        ubi-runner: creating eu-central-h1/ubirun-lane7-1761500000-9f3a2c10-t3 (standard-16)
+        ubi-runner: ubirun-lane7-1761500000-9f3a2c10-t3 carries a 3h TTL (this owner's next up or reap destroys it once it expires); if this process dies first: gstack-ubi down ubirun-lane7-1761500000-9f3a2c10-t3
+        ubi-runner: heartbeat: command 300s elapsed, last output 2s ago
+        ubi-runner: command exited 0 after 1140s
+        ubi-runner: destroyed eu-central-h1/ubirun-lane7-1761500000-9f3a2c10-t3
+        UBICLOUD: left=0 owner=lane7 vm=ubirun-lane7-1761500000-9f3a2c10-t3 others=0
+```
+
+---
+
+## `/cso`
+
+This is my **Chief Security Officer**.
+
+Run `/cso` for a bounded static investigation with an application model, challenged findings, and explicit coverage; static assessment remains available when no runtime or scanner catalog profile is qualified. With matching qualified profiles, `/cso --comprehensive` can prepare Node/Bun, Python, and Rails applications in contained local runtimes, reproduce a defect, and retain a reviewable repair candidate without changing the working branch. An out-of-process witness can authenticate the external boot, legitimate-control, and security assertions and issue a `runtime_tested` bundle. Project-test completion remains `self_reported` because target code shares that process and can forge reporter output or terminate the runner; recorded command, count, exit, and output hashes are diagnostic evidence, not a target-independent completion witness. Every report shows assertion, test-completion, and review assurance separately. The `tested` state is reserved for a future target-independent witness and is not emitted today. `/cso --doctor`, `--resume`, `--replay`, and `--recheck` diagnose prerequisites, recover interrupted work, repeat recorded verification, and establish current-source closure from fresh evidence.
+
+Contained runtime and scanner execution needs Docker and a matching qualified profile. The runtime catalog qualifies ten images: Node 24.4.0, Bun 1.3.10, Python 3.13.4 with uv 0.8.0, Rails on Ruby 3.4.4, and PostgreSQL 17.2, each for linux/amd64 and linux/arm64. The scanner catalog qualifies twelve: gitleaks, OSV-Scanner, Schemathesis, Semgrep, Trivy and zizmor on both platforms. Without Docker, or where no profile matches (native Windows Docker, for example), `/cso` runs static assessment only.
+
+```
+You:   /cso
+
+Claude: complete — assessed application routes, tenant authorization, secrets,
+        dependency exposure, and deployment configuration.
+
+        HIGH: Cross-tenant invoice access (app/controllers/invoices.rb:47)
+        Confidence: high — caller, middleware, and policy checks traced
+        Evidence: supported static finding; runtime not requested
+
+        1 supported finding. Run ID: cso-…
+```
+
+---
+
+## `/document-release`
+
+This is my **technical writer mode**.
+
+On every `/ship` run, including reruns and existing-PR updates, a ship-owned `/document-release` audit checks relevant authored docs against committed and selected uncommitted changes before the final commit, verification and publication. Clear factual corrections join the checked change; the ship parent owns versioning, Git and PR publication. A blocked or incomplete audit requires recovery or explicit acceptance of the named documentation risk before shipping, and never silently becomes current. You can still invoke `/document-release` standalone after a PR exists; that workflow retains its own approval, commit and PR-body steps.
+
+```
+You:   /document-release
+
+Claude: Analyzing 21 files changed across 3 commits. Found 8 documentation files.
+
+        README.md: updated skill count from 9 to 10, added new skill to table
+        CLAUDE.md: added new directory to project structure
+        CONTRIBUTING.md: current — no changes needed
+        TODOS.md: marked 2 items complete, added 1 new item
+
+        All docs updated and committed. PR body updated with doc diff.
+```
+
+It also polishes CHANGELOG voice (without ever overwriting entries), cleans up completed TODOS, checks cross-doc consistency, and asks about VERSION bumps only when appropriate.
+
+---
+
+## `/retro`
+
+This is my **engineering manager mode**.
+
+At the end of the week I want to know what actually happened. Not vibes — data. `/retro` analyzes commit history, work patterns, and shipping velocity and writes a candid retrospective.
+
+It is team-aware. It identifies who is running the command, gives you the deepest treatment on your own work, then breaks down every contributor with specific praise and growth opportunities. It computes metrics like commits, LOC, test ratio, PR sizes, and fix ratio. It detects coding sessions from commit timestamps, finds hotspot files, tracks shipping streaks, and identifies the biggest ship of the week.
+
+It also tracks test health: total test files, tests added this period, regression test commits, and trend deltas. If test ratio drops below 20%, it flags it as a growth area.
+
+### Example
+
+```
+You:   /retro
+
+Claude: Week of Mar 1: 47 commits (3 contributors), 3.2k LOC, 38% tests, 12 PRs, peak: 10pm | Streak: 47d
+
+        ## Your Week
+        32 commits, +2.4k LOC, 41% tests. Peak hours: 9-11pm.
+        Biggest ship: one browser contract for every browser skill (Aside).
+        What you did well: shipped a complete feature with encryption, UI, and
+        18 unit tests in one focused push...
+
+        ## Team Breakdown
+
+        ### Alice
+        12 commits focused on app/services/. Every PR under 200 LOC — disciplined.
+        Opportunity: test ratio at 12% — worth investing before payment gets more complex.
+
+        ### Bob
+        3 commits — fixed the N+1 query on dashboard. Small but high-impact.
+        Opportunity: only 1 active day this week — check if blocked on anything.
+
+        [Top 3 team wins, 3 things to improve, 3 habits for next week]
+```
+
+It saves a JSON snapshot under `~/.gstack/projects/<slug>/retros/`, shared by every worktree of the repository, so the next run can show trends from any checkout. An older `.context/retros/` is moved there on the first run.
+
+---
+
+## `/browse`
+
+This is my **QA engineer mode**.
+
+`/browse` is the skill that closes the loop. Before it, the agent could think and code but was still half blind. It had to guess about UI state, auth flows, redirects, console errors, empty states, and broken layouts. Now it can just go look.
+
+It drives the [Aside](https://aside.com) AI browser — your real browser, with your real logged-in sessions — through `aside repl` scripts: Playwright-style JavaScript that opens a tab, does the work, prints its evidence as labelled lines, and closes the tab. One flow per script, no state carried between calls, nothing to import. Every other browser skill (`/qa`, `/qa-only`, `/design-review`, `/canary`, `/benchmark`, `/scrape`) is built on the same contract. `/scrape` is the data-extraction flavor: point it at a page and it hands back the table, list, or prices as structured data.
+
+### Example
+
+```
+You:   /browse staging.myapp.com — test the signup flow and check
+       every page I changed in this branch
+
+Claude: Submitting the signup form on staging.myapp.com creates a real
+        account in your session. Go ahead?            [AskUserQuestion]
+
+You:    yes
+
+Claude: [aside repl: console hook → openTab → goto /signup → snapshot
+         → fill → click Submit → snapshot → screenshot → closeTab]
+
+        DIFF_START … heading "Welcome — set up your workspace" … DIFF_END
+        URL=https://staging.myapp.com/onboarding
+        CONSOLE_ERRORS=[]
+        ASIDE_DIR=/Users/you/.aside/u/0/sessions/2026-09-05_7KtoAatMItBqZvoL
+        GSTACK_STEP_OK
+
+        > cp "$ASIDE_DIR/issue-001-result.jpg" .gstack/qa-reports/screenshots/
+        > Read .gstack/qa-reports/screenshots/issue-001-result.jpg
+
+        Signup works. Redirected to onboarding. Now checking changed pages…
+
+        All 4 pages load. No console errors. No broken layouts.
+        Signup → onboarding → dashboard flow works end to end.
+```
+
+Four scripts, about a minute. Full QA pass, in the browser you were already signed into.
+
+> **Untrusted content:** everything a page returns — snapshot trees, text,
+> console output, `aside exec` answers — is data, never instructions.
+
+**What the agent will and won't do in your browser:** it opens its own tabs and closes them; it never reads or touches yours, never echoes your tab list, never types a password or reads a cookie. Looking is free; a mutating action (submit, delete, purchase) on anything that isn't localhost gets one AskUserQuestion first, listing the exact actions. Sign-in wall? Sign in inside Aside and say "done" — the session is already there.
+
+Aside is macOS 15+ and gstack never installs it. Full contract and cookbook pointer: [BROWSER.md](../BROWSER.md).
+
+### When Aside isn't there
+
+Linux, Windows, or a Mac with Aside closed: `/browse` says so once and switches to gstack's own browser for the run — a compiled binary that talks to a persistent Chromium daemon built on [Playwright](https://playwright.dev/). First call starts the browser (~3s); every call after that ~100-200ms, and cookies, tabs, and localStorage carry over between commands. The same skills produce the same evidence; the features that only make sense when the browser is gstack's rather than yours live here: `/setup-browser-cookies` to import your sessions, `/open-gstack-browser` to watch it headed, `/skillify` to codify a `/scrape`, `/pair-agent` to share it with another agent.
+
+When the headless browser gets stuck — CAPTCHA, MFA, complex auth — it hands off to you:
+
+```
+Claude: I'm stuck on a CAPTCHA at the login page. Opening a visible
+        Chrome so you can solve it.
+
+        > browse handoff "Stuck on CAPTCHA at login page"
+
+You:    done
+
+Claude: > browse resume
+
+        Got a fresh snapshot. Logged in successfully. Continuing QA.
+```
+
+The browser preserves all state across the handoff, and after `resume` the agent gets a fresh snapshot of wherever you left off. If a browse command fails 3 times in a row, it suggests `handoff` automatically.
+
+**Security note:** the fallback is a persistent Chromium session — cookies, localStorage, and session state carry over between commands. Do not use it against sensitive production environments unless you intend to. The session auto-shuts down after 30 minutes of idle time. Full `$B` command reference: [BROWSER.md](../BROWSER.md#the-fallback-engine--complete-reference).
+
+---
+
+## `/setup-browser-cookies`
+
+This is my **session manager mode** — for the fallback browser. With Aside open, `/qa` and `/browse` already run in your real sessions and this skill has nothing to do.
+
+For authenticated testing on gstack's own browser, `/setup-browser-cookies` copies selected cookies from your daily browser. Sites may also need storage or a fresh login, so copying cookies is not proof that the session works.
+
+The picker detects Chrome, Chromium, Brave, Edge, Windows-only Opera and Opera GX, and macOS-only Comet and Arc. Choose the browser, account/profile, and domains. Profile labels use the current `Local State` name with a directory discriminator, so renamed profiles and duplicate names are distinguishable. No cookie values are displayed; source/profile labels are still sensitive.
+
+```
+You:   /setup-browser-cookies
+
+Claude: Cookie picker opened. Select your browser, profile, and domains,
+        then tell me when you're done.
+
+        [You choose a browser/profile and pick github.com, myapp.com]
+
+You:    done
+
+Claude: Imported 2 domains (47 cookies). Sign-in has not been checked.
+```
+
+For direct import, select the browser and profile first and navigate to a matching target. Do not infer an account from the CLI's legacy Comet default:
+
+```
+You:   /setup-browser-cookies github.com from Chrome, Profile 2
+
+Claude: Imported 12 cookies; sign-in has not been checked.
+```
+
+`--verify-auth` is explicit and requires a selector and expected identity configured privately in the daemon environment before startup. It checks one exact visible identity on the captured target, not just HTTP 200 or a cookie count. Missing configuration fails before mutation. `--clear-storage` is separate, opt-in recovery for Chromium targets: it clears only the captured origin's localStorage (shared across that origin's tabs) and the target tab's sessionStorage in an isolated world with a native deadline. Other target engines retain import/auth checks but reject reset. It is never automatic and cannot be combined with `--all`. Partial imports and unsuccessful checks remain visible rather than becoming a false "ready."
+
+macOS may prompt for Keychain approval; Linux uses its supported keyring/fallback paths; Windows can import DPAPI-compatible cookies, but native App-Bound Encryption extraction remains disabled pending qualification. Closing Chrome does not bypass Chrome 136+ default-directory protection. Use manual sign-in in the headed fallback browser when needed and a display is available, never a TCP downgrade or real-profile copy. Full flags, configuration, and privacy guidance: [cookie import reference](../BROWSER.md#choosing-a-source-and-checking-sign-in).
+
+---
+
+## `/make-pdf`
+
+Turn any markdown file into a publication-quality PDF: proper margins, page numbers, cover page, clickable TOC, mermaid and excalidraw fences rendered as vector diagrams, `--to html|docx` when you need another format. The compiled `pdf` binary does the typesetting; the printing happens in a browser — your Aside browser first. make-pdf serves the finished HTML from your machine on loopback, opens it in a tab Aside closes when it is done, prints through the browser's own PDF engine (tagged PDF, document outline, header and footer templates all intact), and copies the file out. Nothing leaves the box. When Aside is absent (Linux, Windows, or the app closed) the same pipeline prints through gstack's bundled browser instead, so a PDF comes out on every platform. Full guide to fences and formats: [howto-diagrams-and-formats.md](howto-diagrams-and-formats.md).
+
+---
+
+## `/diagram`
+
+English in, diagram out. Describe the diagram (or paste mermaid source) and you get a triplet: the mermaid source, an editable `.excalidraw` file you can open on excalidraw.com in hand-drawn style, and rendered SVG + PNG. The mermaid and excalidraw runtimes are vendored in `lib/diagram-render/` and rendered by `bin/gstack-render.ts`, the same one-script render make-pdf uses — through your Aside browser when it is open, through gstack's bundled browser otherwise — so it is fully offline on every platform.
+
+---
+
+## `/autoplan`
+
+This is my **review autopilot mode**.
+
+Running `/plan-ceo-review`, then `/plan-design-review`, then `/plan-eng-review` individually means answering 15-30 intermediate questions. Each question is valuable, but sometimes you want the gauntlet to run without stopping for every decision.
+
+In an interactive session, `/autoplan` reads the review skills from disk and runs them sequentially: CEO → Design (if UI scope) → DX (if developer-facing scope) → Eng, always last — the required shipping gate reviews the final amended plan, not a stale one. It makes decisions automatically: each question resolves to its recommended option by default, with six encoded principles (prefer completeness, match existing patterns, choose reversible options, prefer the option the user chose for similar past decisions, defer ambiguous items, and escalate security) breaking ties and deciding questions that carry no recommendation. Taste decisions (close approaches, borderline scope expansions, cross-model disagreements) get saved and presented at a final approval gate.
+
+One command, fully reviewed plan out.
+
+```
+You:   /autoplan
+
+Claude: Running CEO review... [4 scope decisions auto-resolved]
+        Running design review... [3 design dimensions auto-scored]
+        Running eng review... [2 architecture decisions auto-resolved]
+
+        TASTE DECISIONS (need your input):
+        1. Scope: Codex suggested adding search — borderline expansion. Add?
+        2. Design: Two approaches scored within 1 point. Which feels right?
+
+        [Shows both options with context]
+
+You:    1) Yes, add search. 2) Option A.
+
+Claude: Plan complete. 9 decisions auto-resolved, 2 taste decisions approved.
+```
+
+### What each run loads
+
+How deep the review goes depends on who drives the run.
+
+- **Interactive session** (no parent agent): the session model reads each phase's review skill, its SKILL.md and review sections, and works through that method itself. Each phase also sends the plan to a native reviewer subagent, which gets a five-question brief but not the skill, and to an outside voice from another model family (Codex) when one is available.
+- **Lean run** (`--kind feature`, the default for an unattended run on Capy): one engineering reviewer and nothing else. Its prompt holds the five-question eng brief, the 36-line eng checklist (unattended or `--light` runs only), a one-paragraph CEO role with the 37-line CEO checklist, the 28-line design and 34-line DX checklists only when scope detects UI or developer-facing work, and the draft code. It does not run the CEO, design or DX skills' own methods. There is no outside voice and one round.
+- **Full run** (`--full`, and the default for an unattended run off Capy): a phase per area, CEO → design → DX → eng, each with two voices. The native reviewer gets the five-question brief, the plan and, in an unattended or `--light` run, that phase's checklist; the outside reviewer gets a one-paragraph role and the plan. Neither gets the review skill's own method.
+
+The lean and full kinds are runs a parent agent drives through `gstack-autoplan` ([autoplan/DRIVER.md](../autoplan/DRIVER.md), [unattended.md](unattended.md)). An interactive session that sees `SESSION_KIND: unattended` hands off to the same runner.
+
+---
+
+## `/learn`
+
+This is my **institutional memory mode**.
+
+gstack learns from every session. Patterns, pitfalls, preferences, architectural decisions... they accumulate in `~/.gstack/projects/$SLUG/learnings.jsonl`. Each learning has a confidence score, source attribution, and the files it references.
+
+`/learn` lets you see what gstack has absorbed, search for specific patterns, prune stale entries (when referenced files no longer exist), and export learnings for team sharing. The real magic is in other skills... they automatically search learnings before making recommendations, and display "Prior learning applied" when a past insight is relevant.
+
+```
+You:   /learn
+
+Claude: 23 learnings for this project (14 high confidence, 6 medium, 3 low)
+
+        Top patterns:
+        - [9/10] API responses always wrapped in { data, error } envelope
+        - [8/10] Tests use factory helpers in test/support/factories.ts
+        - [8/10] All DB queries go through repository pattern, never direct
+
+        3 potentially stale (referenced files deleted):
+        - "auth middleware uses JWT" — auth/middleware.ts was deleted
+        [Remove, keep, or update each one?]
+```
+
+---
+
+## `/open-gstack-browser`
+
+This is my **co-presence mode** — for the fallback browser. With Aside open, you already watch the agent's tabs in Aside; this skill is how you watch it when the browser is gstack's own.
+
+Without Aside, `/browse` runs headless by default. You don't see what the agent sees. `/open-gstack-browser` changes that. It launches GStack Browser (rebranded Chromium with anti-bot stealth) controlled by Playwright, with the sidebar extension auto-loaded. You watch every action in real time.
+
+The sidebar chat is a Claude instance that controls the browser. It auto-routes to the right model: Sonnet for navigation and actions (click, goto, fill, screenshot), Opus for reading and analysis (summarize, find bugs, describe). One-click cookie import from the sidebar footer. The browser stays alive as long as the window is open... no idle timeout in headed mode. The menu bar says "GStack Browser" instead of "Chrome for Testing."
+
+The sidebar agent ships a layered prompt injection defense: a local 22MB ML classifier scans every page and tool output, a Haiku transcript check votes on the full conversation, a canary token catches session-exfil attempts, and a verdict combiner requires two classifiers to agree before blocking. A shield icon in the header shows status (green/amber/red). Details in [ARCHITECTURE.md](../ARCHITECTURE.md#prompt-injection-defense-sidebar-agent).
+
+```
+You:   /open-gstack-browser
+
+Claude: Launched GStack Browser with sidebar extension.
+        Anti-bot stealth active. All $B commands run in headed mode.
+        Type in the sidebar to direct the browser agent.
+        Sidebar model routing: sonnet for actions, opus for analysis.
+```
+
+---
+
+## `/setup-deploy`
+
+One-time deploy configuration. Run this before your first `/land-and-deploy`.
+
+It auto-detects your deploy platform (Fly.io, Render, Vercel, Netlify, Heroku, GitHub Actions, or custom), discovers your production URL, health check endpoints, and deploy status commands. Writes everything to CLAUDE.md so all future deploys are automatic.
+
+```
+You:   /setup-deploy
+
+Claude: Detected: Fly.io (fly.toml found)
+        Production URL: https://myapp.fly.dev
+        Health check: /health → expects 200
+        Deploy command: fly deploy
+        Status command: fly status
+
+        Written to CLAUDE.md. Run /land-and-deploy when ready.
+```
+
+If you answer "Nothing is deployed yet", `/setup-deploy` stops and writes nothing, because there is no production deploy to record. [How to bring up your first production deploy](./howto-bring-up-a-first-deploy.md) covers that first step; run `/setup-deploy` again once the app is live.
+
+---
+
+## `/codex`
+
+This is my **second opinion mode**.
+
+`/codex` brings OpenAI Codex CLI to review the same diff independently. It is available on every harness except Codex itself. External harnesses install it as `/gstack-codex`. Compare its findings with the native review to distinguish corroborated findings from issues only one reviewer caught.
+
+Without a role, gstack-owned Codex calls select a request-specific model, then
+`GSTACK_CODEX_MODEL`, then Codex native settings, falling back to `gpt-6-astra`.
+This also applies to resumed consultations. Generated commands pass the selection
+through `-c model=...`, overriding the CLI's configured model for that call.
+Native review also sets `-c review_model=...` to that selection, overriding any
+separate review-model pin.
+
+On Codex hosts, the Claude outside-voice skill is `gstack-claude-code`. Its
+review, challenge, and consult calls preserve Claude's configured model.
+`GSTACK_CLAUDE_MODEL=<model>` supplies an explicit override, including resumed
+sessions; a model named in your request takes precedence. Harness routing is
+independent of model selection.
+
+An explicit `--role plan-review` uses the configured plan-review tier instead;
+request and environment overrides still win, and `host` mode restores native
+selection. See [model policy](model-policy.md) for pins, precedence and recovery.
+
+### Three modes
+
+**Review** — send the current diff to Codex through `codex exec` with gstack's review prompt (the built-in `codex review --base` takes no prompt). Codex reads every changed file, classifies findings by severity (P1 critical, P2 high, P3 medium), and returns a PASS/FAIL verdict. Any P1 finding = FAIL. The review is fully independent — Codex doesn't see Claude's review.
+
+A severity-gate PASS is separate from [review freshness](#review-readiness-dashboard): unresolved recorded findings (`findings > findings_fixed`, with missing `findings_fixed` treated as zero) prevent CURRENT even when the gate passes. This does not change the severity gate. Fixes still require a new completed, unchanged review pass before the fixed tree can grade CURRENT.
+
+**Challenge** — adversarial mode. Codex actively tries to break your code. It looks for edge cases, race conditions, security holes, and assumptions that would fail under load. Think of it as a penetration test for your logic.
+
+**Reasoning effort** — Review and Challenge run at `high`, Consult at `medium`. `gstack-config set codex_effort <level>` changes that for every run; `--effort <level>` right after `/codex` or its mode word, among the leading flags (`-m`, `--model`, `--role`), changes it for one (`/codex review --effort medium` for a faster, cheaper review). `--xhigh` is shorthand for `--effort xhigh`. An unknown level stops before Codex runs. See [model policy](model-policy.md#reasoning-effort) for levels and precedence.
+
+**Consult** — open conversation with session continuity. Ask Codex anything about the codebase. Follow-up questions reuse the same session, so context carries over. Great for "am I thinking about this correctly?" moments.
+
+### Cross-model analysis
+
+When both `/review` (Claude) and `/codex` (OpenAI) have reviewed the same branch, you get a cross-model comparison: which findings overlap (high confidence), which are unique to Codex (different perspective), and which are unique to Claude. This is the "two doctors, same patient" approach to code review.
+
+```
+You:   /codex review
+
+Claude: Running independent Codex review...
+
+        CODEX REVIEW: PASS (3 findings)
+        [P2] Race condition in payment handler — concurrent charges
+             can double-debit without advisory lock
+        [P3] Missing null check on user.email before downcase
+        [P3] Token comparison not using constant-time compare
+
+        Cross-model analysis (vs /review):
+        OVERLAP: Race condition in payment handler (both caught it)
+        UNIQUE TO CODEX: Token comparison timing attack
+        UNIQUE TO CLAUDE: N+1 query in listing photos
+```
+
+---
+
+## `/claude-code`
+
+Claude Code provides the outside reviewer when gstack runs in Codex. Other non-Claude harnesses also expose this skill for explicit requests; Claude Code itself omits it. External harnesses install it as `/gstack-claude-code`.
+
+**Review** supplies the branch diff for a read-only pass/fail review. **Challenge** asks Claude Code to find concrete failure cases in the same diff. **Consult** supports read-only repository exploration and resumes the session saved in `.context/claude-session-id`. Review and challenge receive context from the parent workflow and run without tools; consultation can read and search files.
+
+The Claude Code CLI must be installed and authenticated. Without a role, its existing model configuration is honored; explicit `--role plan-review` follows the [model policy](model-policy.md). `GSTACK_CLAUDE_BIN` / `GSTACK_CLAUDE_BIN_ARGS` executable overrides remain in force. Errors, timeouts, and invalid responses report missing outside coverage instead of a clean review. Automatic reviews start fresh; consult session continuity is explicit.
+
+Outside-review routing follows the harness, independently of the configured model. Generic second-opinion requests choose `/claude-code` on Codex and `/codex` elsewhere; explicit provider requests keep that provider. The existing `codex_reviews` setting controls the selected automatic reviewer in workflows that already use that setting. Existing opt-in and skip controls still apply in office hours, design, and spec workflows.
+
+`/claude` was renamed to `/claude-code` without an alias. Run `./setup --host <name>` to migrate managed installations, including installations sharing that checkout. Setup retains a working old installation when replacement generation or installation fails.
+
+## Proactive skill suggestions
+
+gstack can invoke a skill for you when your request matches one. By default (`proactive: core`) only `/office-hours`, `/review`, `/qa` and `/ship` auto-invoke; `all` frees every skill and `off` suggests nothing. See [docs/proactive.md](proactive.md).
+
+## Safety & Guardrails
+
+Four skills that add safety rails to any Claude Code session. They work via Claude Code's PreToolUse hooks — transparent, session-scoped, no configuration required.
+
+### `/careful`
+
+Say "be careful" or run `/careful` when you're working near production, running destructive commands, or just want a safety net. Every Bash and PowerShell command gets checked against known-dangerous patterns:
+
+- `rm -rf` / `rm -r` — recursive delete
+- `DROP TABLE` / `DROP DATABASE` / `TRUNCATE` — data loss
+- `git push --force` / `git push -f` — history rewrite
+- `git reset --hard` — discard commits
+- `git checkout .` / `git restore .` — discard uncommitted work
+- `kubectl delete` — production resource deletion
+- `docker rm -f` / `docker system prune` — container/image loss
+
+On Windows the same hook checks Claude Code's PowerShell tool and any `pwsh`/`powershell`/`cmd` launched from Bash: `Remove-Item` and its aliases with `-Recurse`/`-Force` (any parameter prefix), cmd `rd /s` and `del /s`, `Format-Volume`, `Clear-Disk`, `Clear-Content` and .NET deletes ask, and encoded or dynamic PowerShell (`-EncodedCommand`, `iex`, `Start-Process` of a shell, `& $cmd`) asks because it can't be inspected. PowerShell coverage is best-effort; Claude Code permission deny rules such as `"PowerShell(Remove-Item *)"` are the hard stop.
+
+Common build artifact cleanups (`rm -rf node_modules`, `dist`, `.next`, `__pycache__`, `build`, `coverage`) are whitelisted — no false alarms on routine operations.
+
+You can override any MEDIUM warning. Two catastrophic shapes are hard-denied instead of asked: recursive deletes of the filesystem root or your home directory (including the `/*`, `~/`, and `$HOME/` forms), and force-pushes to the repo's default branch (`--force-with-lease` never triggers the deny; the escape hatch is ending the session-scoped `/careful` session). You can also add your own warn rules — one POSIX ERE per line — in `~/.gstack/careful-patterns.txt` (global) or `~/.gstack/projects/<slug>/careful-patterns.txt` (per-project); custom patterns only ever add warnings, never suppress the built-ins. The guardrails are accident prevention, not access control.
+
+### `/freeze`
+
+Restrict all file edits to a single directory. When you're debugging a billing bug, you don't want Claude accidentally "fixing" unrelated code in `src/auth/`. `/freeze src/billing` blocks all Edit, Write and NotebookEdit (Jupyter notebook) operations outside that path.
+
+```
+You:   /freeze src/billing
+
+Claude: Edits restricted to src/billing/. Run /unfreeze to remove.
+
+        [Later, Claude tries to edit src/auth/middleware.ts]
+
+Claude: BLOCKED — Edit outside freeze boundary (src/billing/).
+        Skipping this change.
+```
+
+Note: this blocks Edit and Write tools only. Bash commands like `sed` can still modify files outside the boundary — it's accident prevention, not a security sandbox.
+
+### `/guard`
+
+Full safety mode — combines `/careful` + `/freeze` in one command. Destructive command warnings plus directory-scoped edits. Use when touching prod or debugging live systems.
+
+### `/unfreeze`
+
+Remove the `/freeze` boundary, allowing edits everywhere again. The hooks stay registered for the session — they just allow everything. Run `/freeze` again to set a new boundary.
+
+---
+
+## `/captain`
+
+One controller, many lanes. `/captain` (also `/crew`) teaches a coordinating agent the
+operating model that keeps dozens of worker threads merging into one base branch without
+turning it red. `./setup` installs it only on a Capy machine; see [crew/README.md](../crew/README.md).
+
+```text
+You: /captain
+You: /captain ready 42        # validate a lane's READY block before it enters a train
+You: /captain train           # build, read the verdict, call slots, verify, merge, verify
+You: /captain digest          # rewrite Needs you / New / In progress
+```
+
+The rules: lanes never merge and their job ends at an unstamped **READY** (the block
+`gstack-ship-queue ready` prints, plus the full head SHA, the screen choice, the ship
+receipt at the pin and the logged flaky cases); a green PR page or a cheap test tier is
+never merge evidence. The controller batches READY pins into a **merge train**, reads one
+full gate on the train head (an in-run flaky rerun once; a case that failed twice is
+real), then merges slot by slot: slot call, lane stamps on call with a commit that holds
+only tool output, `verify --train`, `gh pr merge --match-head-commit`, verify again. Under
+`changelog_fragments` there is no slot call: `train land` publishes each slot's stamped
+prefix and merges it. A red
+train is bisected on its red cases and rebuilt at most once; a backstop gate on every
+base push freezes the queue when a tree no train covered lands. Approvals have three
+shapes (the per-thread record, the plan ask with before → after and a "do it" reply, the
+merge ask with captioned before/after images). The digest is Needs you / New / In
+progress with ages. A daily flaky-fix pass reads the gate runs' flake records and the free
+suites' retries into a ledger and fixes causes, never thresholds. Where crews that run
+this model disagree (squash or merge, who stamps, gate-ahead, the severe race, a gate run
+id in the READY), the skill ships both as options for the crew rules file.
+
+Templates (CREW.md, AGENTS.md, NOTES.md, DIGEST.md, the flaky ledger, the lane report,
+the READY block, the slot call, the lane brief, the plan and merge asks, the daily automation prompt)
+live in `captain/templates/`; the team setup guide for Capy is [crew/docs/captain.md](../crew/docs/captain.md).
+
+## `/gstack-upgrade`
+
+Keep gstack current with one command. It detects your install type (global at `~/.claude/skills/gstack` vs vendored in your project at `.claude/skills/gstack`), runs the upgrade, syncs both copies if you have dual installs, and shows you what changed.
+
+```
+You:   /gstack-upgrade
+
+Claude: Current version: 0.7.4
+        Latest version: 0.8.2
+
+        What's new:
+        - Browser skills now drive your Aside browser
+        - /codex multi-AI second opinion
+        - /qa always uses browser now
+        - Safety skills: /careful, /freeze, /guard
+        - Proactive skill suggestions
+
+        Upgraded to 0.8.2. Both global and project installs synced.
+```
+
+Set `auto_upgrade: true` in `~/.gstack/config.yaml` to skip the prompt entirely — gstack upgrades silently at the start of each session when a new version is available.
+
+---
+
+## Greptile integration
+
+[Greptile](https://greptile.com) is a YC company that reviews your PRs automatically. It catches real bugs — race conditions, security issues, things that pass CI and blow up in production. It has genuinely saved my ass more than once. I love these guys.
+
+### Setup
+
+Install Greptile on your GitHub repo at [greptile.com](https://greptile.com) — it takes about 30 seconds. Once it's reviewing your PRs, gstack picks up its comments automatically. No additional configuration.
+
+### How it works
+
+The problem with any automated reviewer is triage. Greptile is good, but not every comment is a real issue. Some are false positives. Some flag things you already fixed three commits ago. Without a triage layer, the comments pile up and you start ignoring them — which defeats the purpose.
+
+gstack solves this. `/review` and `/ship` read your review bots' comments (Greptile, CodeRabbit, Macroscope, or any bot you name), classify each one, and take action:
+
+- **Valid issues** get added to the critical findings and fixed before shipping
+- **Already-fixed issues** get an auto-reply acknowledging the catch
+- **False positives** get pushed back — you confirm, and a reply goes out explaining why it's wrong
+
+The result is a two-layer review: Greptile catches things asynchronously on the PR, then `/review` and `/ship` triage those findings as part of the normal workflow. Nothing falls through the cracks.
+
+### Learning from history
+
+Every false positive you confirm gets saved to `~/.gstack/review-bot-history.md`, tagged with the bot that made it. Future runs auto-skip that bot's known FP patterns for your codebase. And `/retro` tracks each bot's batting average over time — so you can see whether the signal-to-noise ratio is improving.
+
+### Choosing your bots
+
+The bots are the two lists `gstack-pr-wait` uses: `gstack-config set pr_wait_gating_bots greptile,macroscope` (waited for, then triaged) and `gstack-config set pr_wait_advisory_bots coderabbit,copilot` (triaged, never waited for). Set both to `none` to turn bot triage off. Greptile's early review (`/ship` opening the PR early) runs only while `greptile` is in one of the lists.
+
+### Example
+
+```
+You:   /ship
+
+Claude: [syncs main, runs tests, pre-landing review...]
+
+        Greptile found 3 comments on this PR:
+
+        [VALID] app/services/payment_service.rb:47 — Race condition:
+        concurrent charges can double-debit. Recommend DB-level advisory
+        lock around the charge block.
+
+        [ALREADY FIXED] app/models/user.rb:12 — Missing null check
+        on email before downcase.
+        → Already fixed in commit abc1234. Auto-replying.
+
+        [FALSE POSITIVE] lib/auth.rb:88 — "Token comparison should
+        use constant-time comparison." We already use
+        ActiveSupport::SecurityUtils.secure_compare here.
+
+        Fixing the race condition in payment_service.rb...
+
+        The auth token comment is a false positive.
+        Options: A) Reply to Greptile explaining  B) Fix anyway  C) Ignore
+
+You:    A
+
+Claude: Replied to Greptile. All tests pass.
+        PR: github.com/you/app/pull/42
+```
+
+Three Greptile comments. One real fix. One auto-acknowledged. One false positive pushed back with a reply. Total extra time: about 30 seconds.
+
+---
+
+## `/ios-qa`
+
+Live-device iOS QA. The fork's load-bearing insight was: don't simulate, don't run XCTest, don't bring up WebDriverAgent. Embed an HTTP server in the app under test, drive it from a Mac-side daemon over the USB CoreDevice IPv6 tunnel.
+
+The agent reads your Swift source, finds `@Observable` classes with `@Snapshotable`-marked fields, codegens typed accessors, deploys a debug bridge, then runs a closed find→fix→verify loop.
+
+### Architecture in one diagram
+
+```
+       ┌──────────────────────┐   USB CoreDevice (IPv6)   ┌──────────────────┐
+       │ gstack-ios-qa daemon │ ────────────────────────▶ │ iOS app          │
+       │ (Mac, bun/TS)        │   bearer + X-Session-Id   │ StateServer      │
+       │ - rotates boot token │                           │ (loopback only)  │
+       │ - mints session toks │                           └──────────────────┘
+       │ - capability tiers   │
+       │ - audit + redact     │
+       └──────────────────────┘
+                ▲
+                │ Tailscale (optional, --tailnet)
+                │
+       ┌──────────────────────┐
+       │ Remote agent         │
+       │ (OpenClaw, etc.)     │
+       └──────────────────────┘
+```
+
+The iOS app's `StateServer` binds loopback only (`::1` + `127.0.0.1`). The Mac daemon owns tailnet identity validation, capability tiers, and the audit trail. Remote agents NEVER see the boot token — only short-lived session tokens (1h default, 24h hard cap) minted via Tailscale identity gating.
+
+### The unlock: USB-tethered + Tailscale = remote iOS QA from any agent
+
+A Mac plus an iPhone you already own plus the Tailscale free tier replaces what most teams pay BrowserStack/Sauce Labs for. Any HTTP-capable agent on your tailnet can drive the iOS app once you've minted them a session token. Tailscale ACLs scope which identities can reach the Mac at which capability tier.
+
+See `ios-qa/docs/tailscale-acl-example.md` for the runnable setup.
+
+### Capability tiers
+
+| Tier | Endpoints |
+|------|-----------|
+| observe | `/screenshot`, `/elements`, `GET /state/*`, `/state/snapshot`, `/healthz` |
+| interact | observe + `/tap`, `/swipe`, `/type`, `/session/*` |
+| mutate | interact + `POST /state/<key>` |
+| restore | mutate + `POST /state/restore` |
+
+Default minted tokens get `interact`. Higher tiers require explicit owner mint.
+
+---
+
+## `/ios-fix`
+
+Iron Law: no fix without a reproducing snapshot. The agent captures pre-bug state via `GET /state/snapshot`, writes the fix, rebuilds, redeploys, restores the snapshot, and verifies the bug is gone. The snapshot becomes a regression test fixture so the bug can't recur silently.
+
+Mirrors `/qa`'s find-bug → fix → re-verify loop for iOS.
+
+---
+
+## `/ios-design-review`
+
+Designer's-eye QA on a real iPhone. Connects to the same `/ios-qa` daemon in observe-tier mode and screenshots every screen. Scores 10 dimensions 0-10: typography hierarchy, spacing rhythm, color hierarchy, touch targets, loading/empty/error states, accessibility, animation discipline, iOS idiom alignment, information density, AI-slop check.
+
+For each score < 7, uses AskUserQuestion to present the issue with recommended fix.
+
+---
+
+## `/ios-clean`
+
+Convenience wrapper. The structural Release-build guard against shipping DebugBridge is in `Package.swift` (`.when(configuration: .debug)`) plus a CI invariant test. `/ios-clean` is for developers who want a guided removal flow or who manually added the SPM dependency without going through `/ios-qa`.
+
+---
+
+## `/ios-sync`
+
+Run after upgrading gstack or adding new `@Observable` classes. Detects what's installed, runs gen-accessors against the latest upstream templates, refreshes any changed Swift files, verifies the app rebuilds. Cache-key invalidation handles Swift version changes, generator git rev changes, and source changes.

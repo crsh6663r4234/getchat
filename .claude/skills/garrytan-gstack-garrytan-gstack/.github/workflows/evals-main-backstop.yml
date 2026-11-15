@@ -1,0 +1,118 @@
+name: Main backstop gate
+# GSTA-49 T1b (docs/ship-policy.md#run-a-merge-train). Every push to main is
+# covered by a full gate. Under merge trains a train's merges are covered by
+# the gate the train already ran on the same trees, so this workflow gates
+# main only when no green-train record lists main's tree modulo stamps (a
+# merge outside the queue), after any train has finished merging. A red
+# backstop writes the freeze record gstack-ship-queue reads. Inert (no paid
+# work, nothing written) unless main's .gstack/ship-policy.json declares a
+# `train` block; without one the per-PR gates cover main as before.
+#
+# The verdict is published on the commit as the main-backstop check run
+# (success when a green train covers the tree or the backstop gated it green,
+# neutral when the push was superseded or deferred, failure when it froze the
+# queue or could not finish); the stable release reads it (docs/releases.md).
+#
+# Once main's policy declares a `release_gate` block, the release gate
+# (release-gate.yml, every 8 hours) gates main instead and this backstop stands
+# down: no gate, no freeze and no check run on a push.
+on:
+  push:
+    branches: [main]
+
+# One backstop at a time; a newer push waits and the script hands a superseded
+# push to it (only the newest pending run is kept).
+concurrency:
+  group: evals-main-backstop
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  backstop:
+    runs-on: ubuntu-24.04
+    if: github.actor != 'dependabot[bot]'
+    # Settle window (60) + the full gate (270) + margin.
+    timeout-minutes: 345
+    outputs:
+      action: ${{ steps.gate.outputs.action }}
+    permissions:
+      # Pushes the freeze record to refs/notes/gstack-trains.
+      contents: write
+      # Dispatches the gate and reads train runs and their artifacts.
+      actions: write
+      checks: read
+      # Opens the issue a red backstop names.
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      # Read with git and jq only: without a train block nothing below runs.
+      - name: Read the train policy (main)
+        id: policy
+        run: |
+          ref="$GITHUB_SHA" file=.gstack/ship-policy.json policy=null
+          read_failed() { echo "::error::cannot read ${file} at ${ref}. $1 ($(git --version)). Fix: see docs/troubleshooting.md#history-read-failed (HISTORY_READ_FAILED)" >&2; exit 1; }
+          listed=$(git ls-tree --full-tree "$ref" -- "$file") || read_failed "git ls-tree failed"
+          if [ -n "$listed" ]; then
+            for try in 1 2 3; do
+              policy=$(git show "${ref}:${file}") && break
+              if [ "$try" = 3 ]; then read_failed "git show failed 3 times"; fi
+              sleep $((try * 2))
+            done
+          fi
+          train=$(jq -c 'if (.train | type) == "object" then .train else null end' <<<"$policy") || { echo "::error::${GITHUB_SHA}:.gstack/ship-policy.json is not valid JSON; fix the policy file" >&2; exit 1; }
+          release=$(jq -r 'if (.release_gate | type) == "object" then "true" else "false" end' <<<"$policy")
+          if [ -z "$train" ] || [ "$train" = null ]; then
+            echo "train=false" >> "$GITHUB_OUTPUT"
+            echo "- Backstop inert: main's .gstack/ship-policy.json declares no train block; per-PR gates cover main" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$release" = true ]; then
+            echo "train=false" >> "$GITHUB_OUTPUT"
+            echo "- Backstop stands down: main's .gstack/ship-policy.json declares a release_gate block; the scheduled release gate gates main (release-gate.yml, docs/ship-policy.md#release-gate)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "train=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        if: steps.policy.outputs.train == 'true'
+        with:
+          bun-version: 1.4.2
+
+      - name: Gate main unless a green train covers its tree
+        id: gate
+        if: steps.policy.outputs.train == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GSTACK_STATE_ROOT: ${{ runner.temp }}/gstack-state
+        run: |
+          bun --no-env-file --config=/dev/null --no-install run crew/scripts/train-backstop.ts run --repo "$GITHUB_REPOSITORY" --branch "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" \
+            --summary "$GITHUB_STEP_SUMMARY" --outputs "$GITHUB_OUTPUT"
+
+  # The per-commit verdict the stable release reads (crew/scripts/release-cut.ts).
+  # Its own job with checks: write and no repository code (the same split as
+  # evals.yml's train-check): only the action word the gate step recorded.
+  backstop-check:
+    runs-on: ubuntu-24.04
+    needs: backstop
+    if: ${{ !cancelled() && needs.backstop.outputs.action != '' }}
+    timeout-minutes: 5
+    permissions:
+      checks: write
+    steps:
+      - name: Publish the main-backstop check run on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTION: ${{ needs.backstop.outputs.action }}
+        run: |
+          case "$ACTION" in
+            covered|gated) conclusion=success ;;
+            inert|superseded|deferred) conclusion=neutral ;;
+            frozen|failed) conclusion=failure ;;
+            *) echo "::error::unknown backstop action '$ACTION'"; exit 1 ;;
+          esac
+          gh api "repos/${GITHUB_REPOSITORY}/check-runs" -X POST -f name=main-backstop -f head_sha="$GITHUB_SHA" -f status=completed -f conclusion="$conclusion" \
+            -f details_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            -f "output[title]=Main backstop: ${ACTION}" -f "output[summary]=${ACTION}: see the backstop job summary of run ${GITHUB_RUN_ID}" >/dev/null
+          echo "- main-backstop: ${conclusion} (${ACTION}) on ${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"

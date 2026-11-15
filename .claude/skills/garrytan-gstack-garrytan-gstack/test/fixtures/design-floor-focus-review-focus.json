@@ -1,0 +1,21 @@
+{
+ "provenance": {
+  "run": "GSTA-65 focused trial (local, 2026-10-23, head 0dff819)",
+  "note": "pending Step 0D focus menu titled 'Review focus for the landing page plan', with no question mark and an unscored rating sentence, left unanswered until the 610 s timeout"
+ },
+ "question": {
+  "question": "D1 \u2014 Review focus for the landing page plan\nProject/branch/task: PLAN.md on main, marketing landing page.\nELI10: I rated this plan 2/10. The biggest gaps: everything is centered, the headline is cramped against the subhead, and the main button looks the same as the 'Learn more' link, so visitors don't know what to click. Mockups are skipped (designer not installed). I can review all 7 dimensions, or focus on a few.\nStakes if we pick wrong: narrowing the focus leaves states, responsive and a11y unspecified, so the engineer invents them.\nRecommendation: A because your instructions ask for all seven dimensions and the plan is thin everywhere.\nNote: options differ in kind, not coverage \u2014 no completeness score.\nPros / cons:\nA) All 7 passes (recommended)\n  \u2705 Covers hierarchy, states, journey, slop, system, responsive, decisions\n  \u2705 Matches the requested scope of reviewing all seven dimensions\n  \u274c More individual questions, one per gap found in the plan\nB) Hero only (alignment, spacing, CTA weight)\n  \u2705 Fastest path to fixing the three problems the plan names explicitly\n  \u2705 Fewer questions, quicker to an implementable hero section\n  \u274c Leaves responsive, a11y and states unspecified for implementation\nNet: full coverage vs. speed on the three named hero problems.",
+  "header": "Focus",
+  "multiSelect": false,
+  "options": [
+   {
+    "label": "All 7 passes (recommended)",
+    "description": "Review every dimension; one question per gap."
+   },
+   {
+    "label": "Hero only",
+    "description": "Only alignment, h1 spacing and CTA weight."
+   }
+  ]
+ }
+}

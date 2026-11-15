@@ -1,0 +1,38 @@
+{
+  "$schema": "https://gstack.dev/schemas/section-manifest.json",
+  "skill": "office-hours",
+  "version": 1,
+  "note": "PASSIVE registry (v2 plan T9 / CM2). Fields are IDs, file paths, human titles, and human-readable trigger text ONLY. The skeleton's decision-tree prose is the ONLY place that decides WHEN to read a section. No machine predicate here — see docs/designs/v2_PLAN.md.",
+  "sections": [
+    {
+      "id": "phase-2a-startup-diagnostic",
+      "file": "phase-2a-startup-diagnostic.md",
+      "title": "Phase 2A startup-mode diagnostic",
+      "trigger": "running the startup-mode diagnostic (Phase 2A: operating principles, pushback patterns, and the six forcing questions)"
+    },
+    {
+      "id": "phase-2b-builder-brainstorm",
+      "file": "phase-2b-builder-brainstorm.md",
+      "title": "Phase 2B builder-mode brainstorm",
+      "trigger": "giving any builder-mode response (Phase 2B: brainstorm questions and every suggestion, adjacent unlock or riff; holds the operating principles, the wild exemplar, the response posture and the generative questions)"
+    },
+    {
+      "id": "second-opinion",
+      "file": "second-opinion.md",
+      "title": "Phase 3.5 cross-model second opinion",
+      "trigger": "running the Phase 3.5 second opinion the user just accepted (provider preflight, cold-read prompt, dispatch and synthesis)"
+    },
+    {
+      "id": "visual-design",
+      "file": "visual-design.md",
+      "title": "Phase 4.25 visual mockups and sketch",
+      "trigger": "Phase 4.25 visual design for an approved approach with user-facing UI (designer mockups, or the HTML sketch when the designer is unavailable)"
+    },
+    {
+      "id": "design-and-handoff",
+      "file": "design-and-handoff.md",
+      "title": "Phase 5 design doc + Phase 6 relationship handoff",
+      "trigger": "writing the design doc and running the tiered relationship handoff (Phases 5-6, after the conversation and alternatives are done)"
+    }
+  ]
+}

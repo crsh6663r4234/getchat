@@ -1,0 +1,14 @@
+{
+  "$schema": "https://gstack.dev/schemas/section-manifest.json",
+  "skill": "context-restore",
+  "version": 1,
+  "note": "PASSIVE registry (v2 plan T9 / CM2). id/file/title/trigger text ONLY. The skeleton's Step 1 result decides WHEN to read; no machine predicate here (plan D3).",
+  "sections": [
+    {
+      "id": "transcripts",
+      "file": "transcripts.md",
+      "title": "No saved context: mine this workspace's transcripts (host transcript stores, a fixed window, never another project's folder, cheap subagents return only findings, git and gh verify every artifact, the Capsule / Threads / Problems / Next move brief)",
+      "trigger": "rebuilding context after Step 1 printed `NO_CHECKPOINTS` with no `BELOW_CWD` or `POINTER` line (nothing saved to restore)"
+    }
+  ]
+}

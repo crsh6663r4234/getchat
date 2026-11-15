@@ -1,0 +1,6 @@
+{
+  "_comment": "Shrink-only allowlist for test/skill-bin-drift.test.ts (scripts/skill-bin-drift.ts). Keys are <file>:<bin>:<flag> for DRIFT_UNKNOWN_FLAG and <file>:<bin> for DRIFT_UNKNOWN_BIN, recorded 2026-10-27 (GSTA-133). Never add an entry: fix the template or the bin's parser instead. Delete an entry as soon as it stops reproducing; the test fails on stale entries so this list can only shrink. The one entry today is a scanner limit: gstack-safe-git forwards its subcommand's arguments to git, so --is-inside-work-tree belongs to `git rev-parse`.",
+  "entries": [
+    "deslop-shared-libs/SKILL.md:gstack-safe-git:--is-inside-work-tree"
+  ]
+}

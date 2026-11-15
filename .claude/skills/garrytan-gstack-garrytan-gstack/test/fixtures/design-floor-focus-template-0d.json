@@ -1,0 +1,21 @@
+{
+ "provenance": {
+  "run": "GSTA-65 focused trial t1 (local, 2026-10-23, tree 01d1d72a)",
+  "note": "pending Step 0D focus menu in the template's own words left unanswered until the 610 s timeout"
+ },
+ "question": {
+  "question": "D1 \u2014 I've rated this plan 2/10 on design completeness. The biggest gaps are centered-everything alignment, the 8px h1-to-subhead gap, and a CTA with no more weight than 'Learn more'. Mockups are unavailable (no designer binary), so I'll review all 7 dimensions text-only. Want me to focus on specific areas instead?\nProject/branch/task: Marketing landing page plan on main.\nELI10: The review can cover every design angle or just a few. Covering all 7 catches gaps like mobile and accessibility that are cheap to fix now and expensive later.\nStakes if we pick wrong: Narrowing the scope leaves unreviewed gaps that engineers will fill with defaults.\nRecommendation: A because your instructions ask for all seven dimensions and the plan is short.\nCompleteness: A=10/10, B=6/10\nPros / cons:\nA) All 7 dimensions (recommended)\n  \u2705 Every gap is caught, including states, mobile, and accessibility\n  \u2705 Matches your stated request to review all seven dimensions\n  \u274c More questions, roughly one per finding, before the plan is final\nB) Layout/hierarchy only\n  \u2705 Faster, focused on the three issues the plan already names\n  \u274c Leaves responsive, a11y, and states unspecified for engineering\nNet: Full coverage costs a few more questions and avoids default-driven gaps.",
+  "header": "Focus",
+  "multiSelect": false,
+  "options": [
+   {
+    "label": "All 7 dimensions (recommended)",
+    "description": "Full review: IA, states, journey, AI slop, design system, responsive/a11y, unresolved decisions."
+   },
+   {
+    "label": "Layout/hierarchy only",
+    "description": "Only the alignment, spacing, and CTA weight issues already in the plan."
+   }
+  ]
+ }
+}

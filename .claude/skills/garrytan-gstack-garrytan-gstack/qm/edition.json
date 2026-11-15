@@ -1,0 +1,15 @@
+{
+  "edition": "gstack-qm",
+  "layer_root": "qm/sandbox/skills",
+  "skills": [
+    {
+      "id": "gstack-plan",
+      "source": "plan-eng-review",
+      "files": [
+        "SKILL.md"
+      ],
+      "first_step": "git log --oneline -10",
+      "first_step_marker": "\\bgit\\s+log\\b"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "gstack-diagram-render",
+  "sha256": "c2d37f9f924baae2a146bc109bf9b4c308d89f49e08b1c35793edc310b579444",
+  "srcSha256": "17d8921086e091252425c63f06cab01b4626d8e0fa9fe8738267e1ac4ade52e8",
+  "bytes": 7884979,
+  "bunVersion": "1.4.2",
+  "deps": {
+    "@excalidraw/excalidraw": "0.18.1",
+    "@excalidraw/mermaid-to-excalidraw": "2.2.2",
+    "mermaid": "11.16.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  }
+}

@@ -1,0 +1,17 @@
+[
+  {
+    "id": "add-lesson",
+    "prompt": "Add this lesson to the deploy skill in ./deploy: \"Last Tuesday we restarted the web servers while migrations were still running and the site returned 500s for ten minutes. Migrations must finish before any restart.\"",
+    "setup": "sh \"$SKILL_EVAL_FIXTURES/seed.sh\" lesson",
+    "must": [
+      "\\d+\\s*(B|bytes)?\\s*(→|->|to)\\s*\\d+"
+    ],
+    "check": "test $(wc -l < deploy/SKILL.md) -le 12 && ! grep -qiE 'tuesday|500s|ten minutes' deploy/SKILL.md && grep -i migration deploy/SKILL.md | grep -qiE 'finish|complete|wait'"
+  },
+  {
+    "id": "new-skill",
+    "prompt": "Write a new agent skill in ./skills/changelog that tells an agent how to add an entry to this repo's CHANGELOG.md: newest first, one line per change, under ## Unreleased.",
+    "setup": "sh \"$SKILL_EVAL_FIXTURES/seed.sh\" new",
+    "check": "f=skills/changelog/SKILL.md && test -f $f && head -1 $f | grep -q '^---' && grep -q '^name: *changelog' $f && grep -q '^description:' $f && test $(wc -c < $f) -le 2500 && grep -q Unreleased $f"
+  }
+]

@@ -1,0 +1,222 @@
+{
+ "sourceRun": "40323989742 slice 3 ship-docsync-store (train 13 gate, tested sha 76db1d1f)",
+ "sourceFileSha256": "d3906a6560a30077d2b840e9987500b5557071ddb8e8a39f4a05042635b3e00e",
+ "note": "Every tool call of the captured parent and child in order. {home} is the fixture home and {shard} its shard root. Inputs keep only command or file_path; outputs are kept only for gstack-docs-candidate calls and failed calls. The parent typed the --help own call at {shard}/.claude/... (exit 127) after it had already read the usage at the declared path, then ran compare at the declared path.",
+ "calls": [
+  {
+   "tool": "Read",
+   "input": {
+    "file_path": "{home}/phase.md"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Read",
+   "input": {
+    "file_path": "{home}/fixture-interface.md"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Read",
+   "input": {
+    "file_path": "{home}/.claude/skills/gstack/ship/sections/documentation.md"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "ls -la {home}/.claude/skills/gstack/document-release {home}/.claude/skills/gstack/document-release/sections {home}/.claude/skills/gstack/bin {home}"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Read",
+   "input": {
+    "file_path": "{home}/.claude/skills/gstack/document-release/SKILL.md"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Read",
+   "input": {
+    "file_path": "{home}/.claude/skills/gstack/document-release/sections/audit-scope.md"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Read",
+   "input": {
+    "file_path": "{home}/.claude/skills/gstack/document-release/sections/release-body.md"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "git status; git rev-parse HEAD; git branch --show-current; git merge-base main HEAD; git ls-files; git ls-files --others --exclude-standard; ls -la; cat AGENTS.md; git describe --tags --always"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "{home}/.claude/skills/gstack/bin/gstack-docs-candidate --help"
+   },
+   "output": "usage: gstack-docs-candidate snapshot --out <candidate.json> --audit-id <id> --mode edit|read-only --base <rev> [--select <path>]... [--docs <path>]...\n       gstack-docs-candidate compare <candidate.json>"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "for f in README.md CHANGELOG.md TODOS.md VERSION app.ts options.ts package.json handbook/reference/commands/widget.md.tmpl; do echo \"== $f\"; cat $f; done; git diff; git diff --cached; ls -la .qa-state; git check-ignore -v .qa-state"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "{home}/.claude/skills/gstack/bin/gstack-docs-candidate snapshot --out {home}/docs-ro-20261026-a1.json --audit-id docs-ro-20261026-a1 --mode read-only --base a8b60ca3997dde75972188b5a650313c828cc7d3 --docs README.md --docs AGENTS.md --docs handbook"
+   },
+   "output": "CANDIDATE: {home}/docs-ro-20261026-a1.json\nbase=a8b60ca3997dde75972188b5a650313c828cc7d3 head=a8b60ca3997dde75972188b5a650313c828cc7d3 branch=main mode=read-only\ncommitted=0 staged=1 unstaged=1 untracked=2 selected=4 docs=3 hashed=6\nstaged: \"app.ts\"\nunstaged: \"README.md\"\nuntracked: \"options.ts\" \"personal-note.txt\"\ndocs: \"AGENTS.md\" \"README.md\" \"handbook/reference/commands/widget.md.tmpl\""
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cat personal-note.txt; cat {home}/docs-ro-20261026-a1.json"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Agent",
+   "input": {},
+   "output": ""
+  },
+  {
+   "tool": "Read",
+   "input": {
+    "file_path": "{home}/fixture-interface.md"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Read",
+   "input": {
+    "file_path": "{home}/.claude/skills/gstack/document-release/SKILL.md"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Read",
+   "input": {
+    "file_path": "{home}/.claude/skills/gstack/document-release/sections/audit-scope.md"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Read",
+   "input": {
+    "file_path": "{home}/.claude/skills/gstack/document-release/sections/release-body.md"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "GSTACK_SESSION_KIND=spawned {home}/.claude/skills/gstack/bin/gstack-skill-start --skill document-release --model claude"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cat {home}/docs-ro-20261026-a1.json"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "git status; git rev-parse HEAD; git log --oneline -5; git diff a8b60ca3997dde75972188b5a650313c828cc7d3 HEAD --stat; git diff --cached; git diff"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "git ls-files --cached --others --exclude-standard"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "for f in AGENTS.md README.md handbook/reference/commands/widget.md.tmpl options.ts personal-note.txt app.ts package.json VERSION CHANGELOG.md TODOS.md; do echo \"=== $f\"; cat $f; done"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "git hash-object README.md options.ts personal-note.txt app.ts handbook/reference/commands/widget.md.tmpl AGENTS.md; find . -path ./.git -prune -o -type l -print"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "{home}/.claude/skills/gstack/bin/gstack-skill-end --skill document-release --outcome success --session-id 875-1793018766-0027539f --tel-start 1793018766 --used-browse no"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "{shard}/.claude/skills/gstack/bin/gstack-docs-candidate --help"
+   },
+   "output": "Exit code 127\n(eval):1: no such file or directory: {shard}/.claude/skills/gstack/bin/gstack-docs-candidate"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "{home}/.claude/skills/gstack/bin/gstack-docs-candidate compare {home}/docs-ro-20261026-a1.json"
+   },
+   "output": "{\"audit_id\":\"docs-ro-20261026-a1\",\"head_changed\":false,\"index_changed\":false,\"content_changed\":[],\"newly_dirty\":[]}"
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "git status; git rev-parse HEAD; git diff --cached --stat; git diff --stat; sha256sum personal-note.txt options.ts handbook/reference/commands/widget.md.tmpl README.md app.ts; cat handbook/reference/commands/widget.md.tmpl"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Write",
+   "input": {
+    "file_path": "{home}/docs-ro-20261026-a1-documentation.md"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Write",
+   "input": {
+    "file_path": "{home}/ship-report.md"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cat {home}/docs-ro-20261026-a1-documentation.md >> {home}/ship-report.md"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "git status --short; git rev-parse HEAD"
+   },
+   "output": ""
+  }
+ ]
+}

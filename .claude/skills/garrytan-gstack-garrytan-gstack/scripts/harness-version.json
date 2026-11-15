@@ -1,0 +1,13 @@
+{
+  "version": 6,
+  "patterns": [
+    "test/helpers/agent-sdk-runner.ts",
+    "test/helpers/codex-session-runner.ts",
+    "test/helpers/codex-host-runner.ts",
+    "test/helpers/claude-pty-runner.ts",
+    "test/helpers/pty/**",
+    "test/helpers/pty-screen.ts",
+    "test/helpers/e2e-gate.ts",
+    "test/helpers/llm-judge.ts"
+  ]
+}

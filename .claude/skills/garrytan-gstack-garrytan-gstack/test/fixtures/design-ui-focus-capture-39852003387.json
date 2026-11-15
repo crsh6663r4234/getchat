@@ -1,0 +1,147 @@
+{
+  "provenance": {
+    "kind": "public native AskUserQuestion calls and answers only (observation.json fingerprints[].nativeCall, byte-exact)",
+    "runId": 39852003387,
+    "artifact": "paid-slice-4-a1",
+    "headSha": "357027f559b3a906d2665511e411747a693ae664",
+    "recordedOutcome": "ceiling_reached",
+    "recordedReviewCount": 1,
+    "recordedStep0Count": 3,
+    "recordedPassed": false,
+    "note": "The Step 0D question was titled 'Review focus' and its ELI10 rated the plan '4/10 on design' (plain words, without 'completeness'), with options 'All 7 passes (recommended)' and 'States + layout only'. The runner reached the review ceiling on the issue-labeled D4 finding, but the focus predicate required the words 'design completeness' in the rating sentence, so the gate failed."
+  },
+  "calls": [
+    {
+      "preReview": true,
+      "observedAtMs": 57813,
+      "call": {
+        "sessionId": "cee83a04-4dec-490f-8008-4b242391684a",
+        "toolUseId": "toolu_01X4KQ4iKW2R3H6XtqEXjkzc",
+        "questions": [
+          {
+            "question": "D1 \u2014 Review focus\nProject/branch/task: Design review of the User Dashboard plan (review-input.md) on main.\nELI10: I rated this plan 4/10 on design. The biggest gaps: no layout order for the three panels, states named but not described, and no visual tokens. Next I'll make mockups, then go through 7 areas (layout, states, user journey, generic-look risk, design system, responsive/a11y, open decisions). You can narrow that.\nStakes if we pick wrong: If we narrow too much, gaps like mobile layout or modal focus behavior go unspecified and the engineer improvises.\nRecommendation: A because the plan has gaps in every area and a full review is cheap.\nCompleteness: A=10/10, B=6/10\nPros / cons:\nA) All 7 passes (recommended)\n  \u2705 Covers layout, states, journey, slop, system, responsive and decisions\n  \u2705 Every gap gets its own decision instead of an engineer guessing later\n  \u274c More questions, roughly one per finding, so it takes longer overall\nB) Focus on states + layout only\n  \u2705 Faster, hits the two gaps most likely to ship as broken UI\n  \u274c Leaves responsive, a11y and token gaps for implementation to improvise\nNet: Full coverage costs a few extra questions; narrowing saves time but leaves known gaps open.",
+            "header": "Focus",
+            "multiSelect": false,
+            "options": [
+              {
+                "label": "All 7 passes (recommended)",
+                "description": "\u2705 Covers every design dimension with per-issue decisions. \u2705 Nothing left for the engineer to guess. \u274c More questions overall."
+              },
+              {
+                "label": "States + layout only",
+                "description": "\u2705 Faster, targets the gaps most likely to ship broken. \u274c Responsive, a11y and tokens stay unspecified."
+              }
+            ]
+          }
+        ],
+        "answered": true,
+        "failed": false,
+        "answers": {
+          "D1 \u2014 Review focus\nProject/branch/task: Design review of the User Dashboard plan (review-input.md) on main.\nELI10: I rated this plan 4/10 on design. The biggest gaps: no layout order for the three panels, states named but not described, and no visual tokens. Next I'll make mockups, then go through 7 areas (layout, states, user journey, generic-look risk, design system, responsive/a11y, open decisions). You can narrow that.\nStakes if we pick wrong: If we narrow too much, gaps like mobile layout or modal focus behavior go unspecified and the engineer improvises.\nRecommendation: A because the plan has gaps in every area and a full review is cheap.\nCompleteness: A=10/10, B=6/10\nPros / cons:\nA) All 7 passes (recommended)\n  \u2705 Covers layout, states, journey, slop, system, responsive and decisions\n  \u2705 Every gap gets its own decision instead of an engineer guessing later\n  \u274c More questions, roughly one per finding, so it takes longer overall\nB) Focus on states + layout only\n  \u2705 Faster, hits the two gaps most likely to ship as broken UI\n  \u274c Leaves responsive, a11y and token gaps for implementation to improvise\nNet: Full coverage costs a few extra questions; narrowing saves time but leaves known gaps open.": "All 7 passes (recommended)"
+        },
+        "unansweredQuestionIndices": [],
+        "answeredAt": "2026-10-22T20:51:59.856Z"
+      }
+    },
+    {
+      "preReview": true,
+      "observedAtMs": 92416,
+      "call": {
+        "sessionId": "cee83a04-4dec-490f-8008-4b242391684a",
+        "toolUseId": "toolu_0177YBa2Hb6R4v3GuoNfcCu3",
+        "questions": [
+          {
+            "question": "Want outside design voices before the detailed review?\nD2 \u2014 Optional outside design voices\nProject/branch/task: Design review of the User Dashboard plan on main.\nELI10: I can get two independent second opinions before the 7 passes: Codex scores the plan against hard design rules, and a separate Claude reviewer checks it for completeness. They catch things one reviewer misses, but they add time.\nStakes if we pick wrong: Skipping means findings rest on one reviewer; running adds minutes and may only get one voice if Codex is missing.\nRecommendation: B, a taste call with no strong preference. This plan's gaps are concrete enough that one reviewer catches the big ones.\nNote: options differ in kind, not coverage \u2014 no completeness score.\nNet: Cross-model check versus fewer steps to a fixed plan.",
+            "header": "Voices",
+            "multiSelect": false,
+            "options": [
+              {
+                "label": "No, proceed without (recommended)",
+                "description": "\u2705 Straight into the 7 passes with the approved mockup as anchor. \u2705 Fewest steps to a fixed plan. \u274c Findings rest on one reviewer; no cross-model check on slop risk or hierarchy."
+              },
+              {
+                "label": "Yes, run outside design voices",
+                "description": "\u2705 Codex hard-rule + litmus scorecard plus an independent Claude completeness read. \u2705 Disagreements surface with both perspectives in the relevant pass. \u274c Adds a few minutes; Codex may be missing here, in which case only the Claude voice runs and it's tagged single-model."
+              }
+            ]
+          }
+        ],
+        "answered": true,
+        "failed": false,
+        "answers": {
+          "Want outside design voices before the detailed review?\nD2 \u2014 Optional outside design voices\nProject/branch/task: Design review of the User Dashboard plan on main.\nELI10: I can get two independent second opinions before the 7 passes: Codex scores the plan against hard design rules, and a separate Claude reviewer checks it for completeness. They catch things one reviewer misses, but they add time.\nStakes if we pick wrong: Skipping means findings rest on one reviewer; running adds minutes and may only get one voice if Codex is missing.\nRecommendation: B, a taste call with no strong preference. This plan's gaps are concrete enough that one reviewer catches the big ones.\nNote: options differ in kind, not coverage \u2014 no completeness score.\nNet: Cross-model check versus fewer steps to a fixed plan.": "No, proceed without (recommended)"
+        },
+        "unansweredQuestionIndices": [],
+        "answeredAt": "2026-10-22T20:52:33.581Z"
+      }
+    },
+    {
+      "preReview": true,
+      "observedAtMs": 105593,
+      "call": {
+        "sessionId": "cee83a04-4dec-490f-8008-4b242391684a",
+        "toolUseId": "toolu_01URxrnNA3oppVUTro7BMwpa",
+        "questions": [
+          {
+            "question": "D3 \u2014 Cross-project learnings\nProject/branch/task: Design review of the User Dashboard plan on main.\nELI10: gstack can search learnings from your other projects on this machine for patterns that might apply here. Nothing leaves your machine. Good for solo developers; skip it if you work across client codebases that shouldn't mix.\nStakes if we pick wrong: Enabling it on mixed client work could bring one client's patterns into another's review.\nRecommendation: A because local cross-project patterns usually help a solo builder and stay on disk.\nNote: options differ in kind, not coverage \u2014 no completeness score.\nNet: More pattern recall versus strict project isolation.",
+            "header": "Learnings",
+            "multiSelect": false,
+            "options": [
+              {
+                "label": "Enable cross-project (recommended)",
+                "description": "\u2705 Reviews can reuse patterns found in your other local projects. \u2705 Stays on this machine; nothing is uploaded. \u274c Patterns from unrelated client codebases may leak into this review's context."
+              },
+              {
+                "label": "Project-scoped only",
+                "description": "\u2705 Strict isolation between codebases, safe for client work. \u2705 No chance of irrelevant cross-project noise. \u274c Misses useful patterns you already learned elsewhere on this machine."
+              }
+            ]
+          }
+        ],
+        "answered": true,
+        "failed": false,
+        "answers": {
+          "D3 \u2014 Cross-project learnings\nProject/branch/task: Design review of the User Dashboard plan on main.\nELI10: gstack can search learnings from your other projects on this machine for patterns that might apply here. Nothing leaves your machine. Good for solo developers; skip it if you work across client codebases that shouldn't mix.\nStakes if we pick wrong: Enabling it on mixed client work could bring one client's patterns into another's review.\nRecommendation: A because local cross-project patterns usually help a solo builder and stay on disk.\nNote: options differ in kind, not coverage \u2014 no completeness score.\nNet: More pattern recall versus strict project isolation.": "Enable cross-project (recommended)"
+        },
+        "unansweredQuestionIndices": [],
+        "answeredAt": "2026-10-22T20:52:46.301Z"
+      }
+    },
+    {
+      "preReview": false,
+      "observedAtMs": 177070,
+      "call": {
+        "sessionId": "cee83a04-4dec-490f-8008-4b242391684a",
+        "toolUseId": "toolu_015nA5dQ6WgNMx2BF5coGXhR",
+        "questions": [
+          {
+            "question": "D4 \u2014 Issue 1: Which panel leads the dashboard?\nProject/branch/task: Design review of the User Dashboard plan on main.\nELI10: The plan has three panels but no order. Users scan from the top left, so whatever is there gets noticed. Notifications is the only panel that asks the user to do something. Activity is history. Quick actions are two links.\nStakes if we pick wrong: Unread notifications end up below the fold or tied with history, and users miss what needs their attention.\nRecommendation: 1A because Hierarchy as service: put the actionable thing first and keep two links small.\nNote: options differ in kind, not coverage \u2014 no completeness score.\nPros / cons:\nA) Header actions + notifications-first (recommended)\n  \u2705 Quick actions sit as a compact button row in the page header next to 'Dashboard'\n  \u2705 Notifications is the primary, wider column; Activity is the secondary column\n  \u274c Activity gets less space, which matters if users mostly come for history\nB) Quick actions as a hero strip, then panels\n  \u2705 'Open workspace' gets the most prominent spot for users heading to work\n  \u274c Two links take a full row of prime space and push notifications down\nC) Equal three-panel grid (current implied)\n  \u2705 Simplest to build, no ranking decision needed now\n  \u274c Everything competes, so nothing wins; the classic generic dashboard look\nNet: Rank by what the user must act on versus treating all panels as equals.",
+            "header": "Hierarchy",
+            "multiSelect": false,
+            "options": [
+              {
+                "label": "1A Notifications-first (recommended)",
+                "description": "\u2705 Quick actions as a compact row in the page header. \u2705 Notifications wide primary column, Activity secondary. \u274c Activity gets less room."
+              },
+              {
+                "label": "1B Quick-actions strip first",
+                "description": "\u2705 'Open workspace' is the most prominent element. \u274c Two links eat a full row and push notifications down."
+              },
+              {
+                "label": "1C Equal grid",
+                "description": "\u2705 Simplest to build. \u274c No hierarchy; everything competes, generic dashboard look."
+              }
+            ]
+          }
+        ],
+        "answered": true,
+        "failed": false,
+        "answers": {
+          "D4 \u2014 Issue 1: Which panel leads the dashboard?\nProject/branch/task: Design review of the User Dashboard plan on main.\nELI10: The plan has three panels but no order. Users scan from the top left, so whatever is there gets noticed. Notifications is the only panel that asks the user to do something. Activity is history. Quick actions are two links.\nStakes if we pick wrong: Unread notifications end up below the fold or tied with history, and users miss what needs their attention.\nRecommendation: 1A because Hierarchy as service: put the actionable thing first and keep two links small.\nNote: options differ in kind, not coverage \u2014 no completeness score.\nPros / cons:\nA) Header actions + notifications-first (recommended)\n  \u2705 Quick actions sit as a compact button row in the page header next to 'Dashboard'\n  \u2705 Notifications is the primary, wider column; Activity is the secondary column\n  \u274c Activity gets less space, which matters if users mostly come for history\nB) Quick actions as a hero strip, then panels\n  \u2705 'Open workspace' gets the most prominent spot for users heading to work\n  \u274c Two links take a full row of prime space and push notifications down\nC) Equal three-panel grid (current implied)\n  \u2705 Simplest to build, no ranking decision needed now\n  \u274c Everything competes, so nothing wins; the classic generic dashboard look\nNet: Rank by what the user must act on versus treating all panels as equals.": "1A Notifications-first (recommended)"
+        },
+        "unansweredQuestionIndices": [],
+        "answeredAt": "2026-10-22T20:53:54.578Z"
+      }
+    }
+  ]
+}

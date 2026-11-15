@@ -1,0 +1,42 @@
+{
+ "sourceRun": "40290033102 slice 2 ship-docsync-completion (train 11 gate, tested sha 00f2d3d5)",
+ "sourceFileSha256": "51fe207c3f53138b26a8c8339497211d10517278655806e39bdb087a02e8a741",
+ "note": "The calls of the captured parent and child that named {home}/state, gstack's own state directory (GSTACK_HOME), as the place for private artifacts: the snapshot --out, its compare, the post snapshot, the saved section file and the report insert. {home} is the fixture home. Inputs keep only command or file_path.",
+ "calls": [
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "{home}/.claude/skills/gstack/bin/gstack-docs-candidate snapshot --out {home}/state/ship-docs-20261026-a1.json --audit-id ship-docs-20261026-a1 --mode edit --base 095a909aa7e31d86f146f715b24dd001784d561b --select app.ts --select options.ts --select README.md --docs handbook --docs README.md --docs AGENTS.md --docs CHANGELOG.md --docs TODOS.md"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "{home}/.claude/skills/gstack/bin/gstack-docs-candidate compare {home}/state/ship-docs-20261026-a1.json"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "{home}/.claude/skills/gstack/bin/gstack-docs-candidate snapshot --out {home}/state/ship-docs-20261026-a1-post.json --audit-id ship-docs-20261026-a1 --mode edit --base 095a909aa7e31d86f146f715b24dd001784d561b --select app.ts --select options.ts --select README.md --docs handbook --docs README.md --docs AGENTS.md --docs CHANGELOG.md --docs TODOS.md"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Write",
+   "input": {
+    "file_path": "{home}/state/ship-docs-20261026-a1-documentation.md"
+   },
+   "output": ""
+  },
+  {
+   "tool": "Bash",
+   "input": {
+    "command": "cat {home}/state/ship-docs-20261026-a1-documentation.md >> {home}/ship-report.md"
+   },
+   "output": ""
+  }
+ ]
+}

@@ -1,0 +1,326 @@
+{
+  "_comment": "Recorded gh REST shapes (trimmed) for test/factory-scorecard.test.ts: pulls, issue comments, workflow runs, search, releases, plus the artifact files a run would download. Window: --now 2026-10-26T12:00:00Z, --since-days 7.",
+  "responses": {
+    "repos/acme/widgets/pulls?state=closed&base=main&sort=updated&direction=desc&per_page=100&page=1": [
+      {
+        "number": 105,
+        "title": "closed without merge",
+        "user": {
+          "login": "garry"
+        },
+        "author_association": "OWNER",
+        "created_at": "2026-10-25T20:00:00Z",
+        "merged_at": null,
+        "closed_at": "2026-10-25T00:00:00Z",
+        "updated_at": "2026-10-25T21:00:00Z",
+        "base": {
+          "ref": "main"
+        }
+      },
+      {
+        "number": 103,
+        "title": "fix(queue): count the latest run per check",
+        "user": {
+          "login": "bo"
+        },
+        "author_association": "MEMBER",
+        "created_at": "2026-10-25T00:00:00Z",
+        "merged_at": "2026-10-25T04:00:00Z",
+        "closed_at": "2026-10-25T04:00:00Z",
+        "updated_at": "2026-10-25T04:00:00Z",
+        "base": {
+          "ref": "main"
+        }
+      },
+      {
+        "number": 102,
+        "title": "docs: typo in install guide",
+        "user": {
+          "login": "alice"
+        },
+        "author_association": "NONE",
+        "created_at": "2026-10-20T12:00:00Z",
+        "merged_at": "2026-10-25T12:00:00Z",
+        "closed_at": "2026-10-25T12:00:00Z",
+        "updated_at": "2026-10-25T12:00:00Z",
+        "base": {
+          "ref": "main"
+        }
+      },
+      {
+        "number": 101,
+        "title": "feat(retro): factory scorecard",
+        "user": {
+          "login": "garry"
+        },
+        "author_association": "OWNER",
+        "created_at": "2026-10-24T10:00:00Z",
+        "merged_at": "2026-10-24T18:00:00Z",
+        "closed_at": "2026-10-24T18:00:00Z",
+        "updated_at": "2026-10-24T18:00:00Z",
+        "base": {
+          "ref": "main"
+        },
+        "body": "```gstack-ship-receipt\n{\n  \"schema_version\": 1,\n  \"pr\": 101,\n  \"passes\": 2\n}\n```\n\n## What changed\n"
+      },
+      {
+        "number": 104,
+        "title": "old merge outside the window",
+        "user": {
+          "login": "garry"
+        },
+        "author_association": "OWNER",
+        "created_at": "2026-10-09T10:00:00Z",
+        "merged_at": "2026-10-10T18:00:00Z",
+        "closed_at": "2026-10-10T18:00:00Z",
+        "updated_at": "2026-10-10T18:00:00Z",
+        "base": {
+          "ref": "main"
+        }
+      }
+    ],
+    "repos/acme/widgets/issues/101/comments?per_page=100&page=1": [
+      {
+        "id": 1,
+        "user": {
+          "login": "github-actions[bot]"
+        },
+        "created_at": "2026-10-24T15:00:00Z",
+        "body": "## E2E Evals: \u2705 PASS\n\n**24 executed, 0 reused** rule/judge records | **0 manual accepted** | **$12.50** rule/judge cost | reconcile exit: 0"
+      },
+      {
+        "id": 2,
+        "user": {
+          "login": "garry"
+        },
+        "created_at": "2026-10-24T16:00:00Z",
+        "body": "READY #101 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa STAMP_VERSION=unstamped\npr: https://github.com/acme/widgets/pull/101\nSHIP_RECEIPT: pr=101 head=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "id": 3,
+        "user": {
+          "login": "garry"
+        },
+        "created_at": "2026-10-24T17:00:00Z",
+        "body": "READY #101 again after a push"
+      }
+    ],
+    "repos/acme/widgets/issues/102/comments?per_page=100&page=1": [
+      {
+        "id": 4,
+        "user": {
+          "login": "alice"
+        },
+        "created_at": "2026-10-21T09:00:00Z",
+        "body": "Thanks for the review, fixed."
+      },
+      {
+        "id": 6,
+        "user": {
+          "login": "minder"
+        },
+        "created_at": "2026-10-26T01:00:00Z",
+        "body": "merged in train 7: READY #102 recap"
+      }
+    ],
+    "repos/acme/widgets/issues/103/comments?per_page=100&page=1": [
+      {
+        "id": 5,
+        "user": {
+          "login": "bo"
+        },
+        "created_at": "2026-10-25T03:00:00Z",
+        "body": "ship receipt follows\nSHIP_RECEIPT: pr=103 head=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb passes=3"
+      }
+    ],
+    "repos/acme/widgets/actions/workflows/evals.yml/runs?status=completed&per_page=100&created=2026-10-19..2026-10-26&event=workflow_dispatch&page=1": {
+      "total_count": 6,
+      "workflow_runs": [
+        {
+          "id": 9005,
+          "name": "E2E Evals",
+          "display_title": "E2E Evals",
+          "head_branch": "feature/x",
+          "head_sha": "ffffffffffffffffffffffffffffffffffffffff",
+          "event": "pull_request",
+          "status": "completed",
+          "conclusion": "success",
+          "created_at": "2026-10-25T13:00:00Z",
+          "updated_at": "2026-10-25T13:00:00Z",
+          "run_attempt": 1,
+          "pull_requests": []
+        },
+        {
+          "id": 9004,
+          "name": "E2E Evals",
+          "display_title": "E2E Evals [eval-bg gate.backstop-0123456789ab-2026-10-25]",
+          "head_branch": "main",
+          "head_sha": "ffffffffffffffffffffffffffffffffffffffff",
+          "event": "workflow_dispatch",
+          "status": "completed",
+          "conclusion": "cancelled",
+          "created_at": "2026-10-25T12:00:00Z",
+          "updated_at": "2026-10-25T12:00:00Z",
+          "run_attempt": 1,
+          "pull_requests": []
+        },
+        {
+          "id": 9003,
+          "name": "E2E Evals",
+          "display_title": "E2E Evals [eval-bg pr.screen.narrow-0123456789ab-0123456789ab-abcdef] screen #101",
+          "head_branch": "main",
+          "head_sha": "ffffffffffffffffffffffffffffffffffffffff",
+          "event": "workflow_dispatch",
+          "status": "completed",
+          "conclusion": "success",
+          "created_at": "2026-10-24T14:00:00Z",
+          "updated_at": "2026-10-24T14:00:00Z",
+          "run_attempt": 1,
+          "pull_requests": []
+        },
+        {
+          "id": 9002,
+          "name": "E2E Evals",
+          "display_title": "E2E Evals [eval-bg gate.train-bbbbbbbbbbbb-cccccccccccc-bbbbbb]",
+          "head_branch": "train/gate.train-bbbbbbbbbbbb-cccccccccccc-bbbbbb",
+          "head_sha": "ffffffffffffffffffffffffffffffffffffffff",
+          "event": "workflow_dispatch",
+          "status": "completed",
+          "conclusion": "failure",
+          "created_at": "2026-10-23T10:00:00Z",
+          "updated_at": "2026-10-23T10:00:00Z",
+          "run_attempt": 1,
+          "pull_requests": []
+        },
+        {
+          "id": 9001,
+          "name": "E2E Evals",
+          "display_title": "E2E Evals [eval-bg gate.train-aaaaaaaaaaaa-cccccccccccc-aaaaaa]",
+          "head_branch": "train/gate.train-aaaaaaaaaaaa-cccccccccccc-aaaaaa",
+          "head_sha": "ffffffffffffffffffffffffffffffffffffffff",
+          "event": "workflow_dispatch",
+          "status": "completed",
+          "conclusion": "success",
+          "created_at": "2026-10-22T10:00:00Z",
+          "updated_at": "2026-10-22T10:00:00Z",
+          "run_attempt": 1,
+          "pull_requests": []
+        },
+        {
+          "id": 9000,
+          "name": "E2E Evals",
+          "display_title": "E2E Evals [eval-bg gate.train-000000000000-cccccccccccc-000000]",
+          "head_branch": "train/gate.train-000000000000-cccccccccccc-000000",
+          "head_sha": "ffffffffffffffffffffffffffffffffffffffff",
+          "event": "workflow_dispatch",
+          "status": "completed",
+          "conclusion": "failure",
+          "created_at": "2026-10-19T08:00:00Z",
+          "updated_at": "2026-10-19T08:00:00Z",
+          "run_attempt": 1,
+          "pull_requests": []
+        }
+      ]
+    },
+    "repos/acme/widgets/actions/workflows/free-tests.yml/runs?status=completed&per_page=100&created=2026-10-19..2026-10-26&branch=main&page=1": {
+      "total_count": 3,
+      "workflow_runs": [
+        {
+          "id": 8003,
+          "name": "E2E Evals",
+          "display_title": "Free Tests",
+          "head_branch": "main",
+          "head_sha": "ffffffffffffffffffffffffffffffffffffffff",
+          "event": "push",
+          "status": "completed",
+          "conclusion": "success",
+          "created_at": "2026-10-25T12:00:00Z",
+          "updated_at": "2026-10-25T12:00:00Z",
+          "run_attempt": 1,
+          "pull_requests": []
+        },
+        {
+          "id": 8002,
+          "name": "E2E Evals",
+          "display_title": "Free Tests",
+          "head_branch": "main",
+          "head_sha": "ffffffffffffffffffffffffffffffffffffffff",
+          "event": "push",
+          "status": "completed",
+          "conclusion": "failure",
+          "created_at": "2026-10-24T12:00:00Z",
+          "updated_at": "2026-10-24T12:00:00Z",
+          "run_attempt": 1,
+          "pull_requests": []
+        },
+        {
+          "id": 8001,
+          "name": "E2E Evals",
+          "display_title": "Free Tests",
+          "head_branch": "main",
+          "head_sha": "ffffffffffffffffffffffffffffffffffffffff",
+          "event": "push",
+          "status": "completed",
+          "conclusion": "success",
+          "created_at": "2026-10-23T12:00:00Z",
+          "updated_at": "2026-10-23T12:00:00Z",
+          "run_attempt": 1,
+          "pull_requests": []
+        }
+      ]
+    },
+    "repos/acme/widgets/releases?per_page=100&page=1": [
+      {
+        "tag_name": "v1.1.0",
+        "draft": true,
+        "prerelease": false,
+        "published_at": "2026-10-25T07:00:00Z"
+      },
+      {
+        "tag_name": "v1.0.0",
+        "draft": false,
+        "prerelease": false,
+        "published_at": "2026-10-23T07:00:00Z"
+      },
+      {
+        "tag_name": "v0.9.0",
+        "draft": false,
+        "prerelease": false,
+        "published_at": "2026-10-01T07:00:00Z"
+      }
+    ],
+    "search/issues?q=repo%3Aacme%2Fwidgets%20is%3Aissue%20created%3A2026-10-19T12%3A00%3A00Z..2026-10-26T11%3A59%3A59Z&per_page=1": {
+      "total_count": 5,
+      "items": []
+    },
+    "search/issues?q=repo%3Aacme%2Fwidgets%20is%3Aissue%20closed%3A2026-10-19T12%3A00%3A00Z..2026-10-26T11%3A59%3A59Z&per_page=1": {
+      "total_count": 7,
+      "items": []
+    }
+  },
+  "artifacts": {
+    "8003": {
+      "free-result-shard-1": { "result.json": "{}" }
+    },
+    "8002": {
+      "free-result-shard-1": { "result.json": "{}" }
+    },
+    "8001": {
+      "flake-ledger-shard-1": {
+        "flake-ledger.jsonl": "{\"kind\":\"flaky-pass\",\"file\":\"test/a.test.ts\",\"shard\":\"shard-1\",\"attempts\":2}\n{\"kind\":\"flaky-pass\",\"file\":\"test/b.test.ts\",\"shard\":\"shard-1\",\"attempts\":2}\n{\"kind\":\"other\",\"file\":\"test/c.test.ts\"}\n"
+      }
+    },
+    "9001": {
+      "report-verdict-a1": {
+        "paid-report/collector-outcomes.json": "{\n  \"version\": 2,\n  \"files\": [\n    {\n      \"file\": \"x\",\n      \"cost\": 30.5\n    }\n  ],\n  \"verdict\": {\n    \"lane\": \"gate/full census\",\n    \"verdict\": \"GREEN\",\n    \"costUsd\": 30.5,\n    \"counts\": {\n      \"flaky\": 2\n    }\n  }\n}",
+        "report.txt": "GREEN"
+      },
+      "flake-records-a1": {
+        "flake-records.jsonl": "{\"schema\":1,\"kind\":\"gate-flake\",\"case\":\"ship-docsync-store\",\"case_kind\":\"rule\",\"repository\":\"acme/widgets\",\"pr\":null,\"head_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tested_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lane\":\"gate/full census\",\"run_id\":\"9001\",\"first\":{\"attempt\":1,\"phase\":\"first\",\"where\":\"attempt 1 (paid-slice-3-a1)\"},\"rerun\":{\"attempt\":1,\"phase\":\"rerun\",\"where\":\"attempt 1 rerun (slice 1 attempt 1)\"},\"symptom\":\"assertion: expect(received).toEqual(expected)\",\"rerun_cost_usd\":1.1,\"recorded_at\":\"2026-10-22T11:00:00Z\"}\n{\"schema\":1,\"kind\":\"gate-flake\",\"case\":\"qa-functional-webhook-fix\",\"case_kind\":\"rule\",\"repository\":\"acme/widgets\",\"pr\":null,\"head_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"tested_sha\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"lane\":\"gate/full census\",\"run_id\":\"9001\",\"first\":{\"attempt\":1,\"phase\":\"first\",\"where\":\"attempt 1 (paid-slice-3-a1)\"},\"rerun\":{\"attempt\":1,\"phase\":\"rerun\",\"where\":\"attempt 1 rerun (slice 1 attempt 1)\"},\"symptom\":\"assertion: expect(received).toEqual(expected)\",\"rerun_cost_usd\":null,\"recorded_at\":\"2026-10-22T11:00:00Z\"}\nnot json\n"
+      },
+      "paid-slice-1-a1": {
+        "junit.xml": "<testsuite/>"
+      }
+    }
+  }
+}

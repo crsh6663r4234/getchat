@@ -1,0 +1,46 @@
+{
+  "name": "docs-only",
+  "commit": "ab9a854",
+  "paths": [
+    "CHANGELOG.md",
+    "README.md",
+    "VERSION",
+    "agents-digest/gstack-AGENTS.md",
+    "docs/ADDING_A_HOST.md",
+    "docs/domain-skills.md",
+    "docs/gbrain-quick-tour.md",
+    "docs/hosts.md",
+    "docs/install.md",
+    "docs/privacy.md",
+    "docs/qa-without-a-webpage.md",
+    "docs/standalone-binaries.md",
+    "docs/troubleshooting.md",
+    "docs/uninstall.md",
+    "docs/voice-input.md",
+    "docs/why-gstack.md",
+    "package.json"
+  ],
+  "deleted": [],
+  "stamp_only": [
+    "package.json"
+  ],
+  "scope": {
+    "SCOPE_FRONTEND": "false",
+    "SCOPE_BACKEND": "false",
+    "SCOPE_PROMPTS": "false",
+    "SCOPE_TESTS": "false",
+    "SCOPE_DOCS": "true",
+    "SCOPE_CONFIG": "true",
+    "SCOPE_MIGRATIONS": "false",
+    "SCOPE_API": "false",
+    "SCOPE_AUTH": "false"
+  },
+  "gate_tagged": 0,
+  "diff_lines": 1329,
+  "diff_bytes": 153962,
+  "numbers": {
+    "publishes": true,
+    "claims": 34,
+    "fingerprint": "36e9f8f080a2cdcd"
+  }
+}
