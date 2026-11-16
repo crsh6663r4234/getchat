@@ -1234,6 +1234,13 @@
     video.classList.remove("hidden");
     void video.play().catch(() => {});
   }
+  function syncThemeChoices(theme) {
+    $$("[data-theme-choice]").forEach(button => {
+      const active = button.dataset.themeChoice === theme;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+  }
   function applyAppearance({ persist = false } = {}) {
     const theme = $("#themeSelect").value || localStorage.getItem("ghostchat.theme") || "dark";
     const size = $("#textSize").value || localStorage.getItem("ghostchat.textSize") || "15";
@@ -1242,6 +1249,7 @@
     document.body.classList.toggle("light", theme === "light");
     document.body.classList.toggle("reduced-motion", motion === "reduced");
     applyThemeMotion(theme, motion);
+    syncThemeChoices(theme);
     document.documentElement.style.fontSize = `${size}px`;
     const wallpaper = localStorage.getItem("ghostchat.wallpaper") || "";
     const shade = Number(localStorage.getItem("ghostchat.wallpaperShade") || "58");
@@ -4321,6 +4329,11 @@
   };
   for (const selector of ["#languageSelect", "#authLanguageSelect"]) $(selector).onchange = event => { localStorage.setItem("ghostchat.language", event.target.value); applyLanguage(); renderSidebar(); if (["friends", "search", "searchMessages"].includes(state.page)) renderPage(); else if (!state.active) showWelcome(); renderVoiceControls(); };
   for (const selector of ["#themeSelect", "#textSize", "#motionSelect"]) $(selector).onchange = () => applyAppearance({ persist: true });
+  $$('[data-theme-choice]').forEach(button => button.onclick = () => {
+    const select = $("#themeSelect");
+    select.value = button.dataset.themeChoice;
+    applyAppearance({ persist: true });
+  });
   $("#presenceMode").onchange = event => { void setPresence(event.target.value); };
   $("#themeWallpaperInput").onchange = async event => {
     const file = event.target.files?.[0]; if (!file) return;
