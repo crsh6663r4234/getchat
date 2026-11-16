@@ -61,6 +61,7 @@
   --gc-danger-ink: #311014;
   --gc-media-black: #050608;
   --gc-backdrop: rgb(5 7 10 / .7);
+  --gc-motion-scrim: rgb(12 15 20 / .82);
   --gc-midnight-action: #88b9d6; --gc-midnight-ink: #08151d; --gc-midnight-live: #77d6c5;
   --gc-forest-action: #b2c47d; --gc-forest-ink: #17200f; --gc-forest-live: #83d6a5;
   --gc-ember-action: #e2a179; --gc-ember-ink: #28130a; --gc-ember-live: #e5c47a;
@@ -773,6 +774,41 @@ body[data-theme="aurora"] { --gc-action: var(--gc-aurora-action); --gc-action-in
 body[data-theme="tide"] { --gc-action: var(--gc-tide-action); --gc-action-ink: var(--gc-tide-ink); --gc-live: var(--gc-tide-live); }
 body[data-theme="solstice"] { --gc-action: var(--gc-solstice-action); --gc-action-ink: var(--gc-solstice-ink); --gc-live: var(--gc-solstice-live); }
 body[data-theme="rain"] { --gc-action: var(--gc-rain-action); --gc-action-ink: var(--gc-rain-ink); --gc-live: var(--gc-rain-live); }
+
+/* Procedural Blender loops remain ambient: content keeps contrast and motion can be disabled globally. */
+.theme-motion {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0;
+  pointer-events: none;
+  object-fit: cover;
+  opacity: .22;
+}
+
+body:is([data-theme="sakura"], [data-theme="aurora"], [data-theme="tide"], [data-theme="solstice"], [data-theme="rain"]) .app-shell {
+  position: relative;
+  isolation: isolate;
+  background: transparent;
+}
+
+body:is([data-theme="sakura"], [data-theme="aurora"], [data-theme="tide"], [data-theme="solstice"], [data-theme="rain"]) .app-shell > :not(.theme-motion) {
+  position: relative;
+  z-index: 1;
+}
+
+body:is([data-theme="sakura"], [data-theme="aurora"], [data-theme="tide"], [data-theme="solstice"], [data-theme="rain"]) .app-shell::before {
+  display: none;
+}
+
+body:is([data-theme="sakura"], [data-theme="aurora"], [data-theme="tide"], [data-theme="solstice"], [data-theme="rain"]) :is(.chat-area, .message-panel) {
+  background: var(--gc-motion-scrim);
+}
+
+body.reduced-motion .theme-motion {
+  display: none;
+}
 
 body[data-theme="solstice"] .app-shell,
 body[data-theme="rain"] .app-shell {

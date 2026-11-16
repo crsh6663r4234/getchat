@@ -1207,6 +1207,33 @@
     finally { input.value = ""; }
   }
   function setSignupAvatar(value) { signupAvatarData = value; }
+  const THEME_MOTION_SOURCES = Object.freeze({
+    sakura: "assets/themes/sakura.mp4",
+    aurora: "assets/themes/aurora.mp4",
+    tide: "assets/themes/tide.mp4",
+    solstice: "assets/themes/solstice.mp4",
+    rain: "assets/themes/rain.mp4",
+  });
+  function applyThemeMotion(theme, motion) {
+    const video = $("#themeMotion");
+    if (!video) return;
+    const source = motion === "reduced" ? "" : THEME_MOTION_SOURCES[theme];
+    if (!source) {
+      video.pause();
+      video.removeAttribute("src");
+      video.dataset.theme = "";
+      video.classList.add("hidden");
+      video.load();
+      return;
+    }
+    if (video.dataset.theme !== theme) {
+      video.dataset.theme = theme;
+      video.src = source;
+      video.load();
+    }
+    video.classList.remove("hidden");
+    void video.play().catch(() => {});
+  }
   function applyAppearance({ persist = false } = {}) {
     const theme = $("#themeSelect").value || localStorage.getItem("ghostchat.theme") || "dark";
     const size = $("#textSize").value || localStorage.getItem("ghostchat.textSize") || "15";
@@ -1214,6 +1241,7 @@
     document.body.dataset.theme = theme;
     document.body.classList.toggle("light", theme === "light");
     document.body.classList.toggle("reduced-motion", motion === "reduced");
+    applyThemeMotion(theme, motion);
     document.documentElement.style.fontSize = `${size}px`;
     const wallpaper = localStorage.getItem("ghostchat.wallpaper") || "";
     const shade = Number(localStorage.getItem("ghostchat.wallpaperShade") || "58");
