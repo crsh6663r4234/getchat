@@ -13,7 +13,7 @@ Branch `claude/dreamy-knuth-j0wr07`. IDs A-1 to A-18 come from the build and ser
 | no severity (checked candidate) | 1 | 0 | 2 | 0 | 14 | 17 |
 | **Total** | 91 | 0 | 4 | 0 | 17 | 112 |
 
-Status notes: "fixed" rows marked "(needs Windows verification)" in the table are fixed and covered by tests where possible, but the real-device behavior is only checked on Windows (see below). A-105 through A-111 were subsequently fixed and recorded with their implementation commits. Rows A-98 to A-104 (wave 3) pass the gate below but were not independently reviewed: the review of those commits was interrupted and not resumed. The areas the wave-2 review declined to judge (Windows-only code, every call site of the untranslated text path, the download cleanup paths) were not reviewed either. The "needs Windows verification" column counts runtime-only candidates that had no code defect to fix.
+Status notes: "fixed" rows marked "(needs Windows verification)" in the table are fixed and covered by tests where possible, but the real-device behavior is only checked on Windows (see below). A-98 through A-104 (wave 3) were independently rechecked against the current source and regression tests on 2026-11-17; their real-device scenarios remain subject to the Windows checks below. A-105 through A-111 were subsequently fixed and recorded with their implementation commits. The areas the wave-2 review declined to judge (Windows-only code, every call site of the untranslated text path, the download cleanup paths) were not reviewed either. The "needs Windows verification" column counts runtime-only candidates that had no code defect to fix.
 
 ### Release notes callout
 
