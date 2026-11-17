@@ -728,16 +728,18 @@
     return {
       microphoneId: localStorage.getItem("ghostchat.voice.microphone") || "",
       speakerId: localStorage.getItem("ghostchat.voice.speaker") || "",
-      echoCancellation: localStorage.getItem("ghostchat.voice.echo") !== "false",
-      noiseSuppression: localStorage.getItem("ghostchat.voice.noise") !== "false",
-      noiseEngine: localStorage.getItem("ghostchat.voice.noiseEngine") === "deepfilter" ? "deepfilter" : "rnnoise",
-      autoGainControl: localStorage.getItem("ghostchat.voice.gain") !== "false",
-      nvidiaBroadcast: localStorage.getItem("ghostchat.voice.nvidiaBroadcast") === "true",
+      // Direct-call mode is intentionally raw: no local denoiser, echo
+      // canceller, auto gain or external virtual microphone is inserted.
+      p2pOnly: true,
+      echoCancellation: false,
+      noiseSuppression: false,
+      noiseEngine: "off",
+      autoGainControl: false,
+      nvidiaBroadcast: false,
       pushToTalk: localStorage.getItem("ghostchat.voice.ptt") === "true",
       shareSystemAudio: localStorage.getItem("ghostchat.voice.systemAudio") === "true",
       shareQuality: localStorage.getItem("ghostchat.share.quality") || "balanced",
-      // Calls never fall back to peer-to-peer. This preserves caller IP privacy.
-      relayOnly: true,
+      relayOnly: false,
       volume: Number(localStorage.getItem("ghostchat.voice.volume") || "100"),
       speakerMuted: localStorage.getItem("ghostchat.voice.speakerMuted") === "true",
     };
@@ -746,11 +748,11 @@
   function persistVoiceSettings() {
     localStorage.setItem("ghostchat.voice.microphone", $("#voiceMicSelect").value);
     localStorage.setItem("ghostchat.voice.speaker", $("#voiceSpeakerSelect").value);
-    localStorage.setItem("ghostchat.voice.echo", String($("#voiceEchoCancellation").checked));
-    localStorage.setItem("ghostchat.voice.noise", String($("#voiceNoiseSuppression").checked));
-    localStorage.setItem("ghostchat.voice.noiseEngine", $("#voiceNoiseEngine").value === "deepfilter" ? "deepfilter" : "rnnoise");
-    localStorage.setItem("ghostchat.voice.gain", String($("#voiceAutoGain").checked));
-    localStorage.setItem("ghostchat.voice.nvidiaBroadcast", String($("#voiceNvidiaBroadcast").checked));
+    localStorage.setItem("ghostchat.voice.echo", "false");
+    localStorage.setItem("ghostchat.voice.noise", "false");
+    localStorage.setItem("ghostchat.voice.noiseEngine", "off");
+    localStorage.setItem("ghostchat.voice.gain", "false");
+    localStorage.setItem("ghostchat.voice.nvidiaBroadcast", "false");
     localStorage.setItem("ghostchat.voice.ptt", String($("#voicePushToTalk").checked));
     localStorage.setItem("ghostchat.voice.systemAudio", String($("#voiceShareAudio").checked));
     localStorage.setItem("ghostchat.share.quality", $("#voiceShareQuality").value);
@@ -762,7 +764,7 @@
     const settings = voiceSettings();
     $("#voiceEchoCancellation").checked = settings.echoCancellation;
     $("#voiceNoiseSuppression").checked = settings.noiseSuppression;
-    $("#voiceNoiseEngine").value = settings.noiseEngine;
+    $("#voiceNoiseEngine").value = "rnnoise";
     $("#voiceAutoGain").checked = settings.autoGainControl;
     $("#voiceNvidiaBroadcast").checked = settings.nvidiaBroadcast;
     $("#voicePushToTalk").checked = settings.pushToTalk;
@@ -784,6 +786,7 @@
       select.value = settings.speakerId;
     }
     updateNvidiaBroadcastState();
+    [$("#voiceEchoCancellation"), $("#voiceNoiseSuppression"), $("#voiceNoiseEngine"), $("#voiceAutoGain"), $("#voiceNvidiaBroadcast")].forEach(control => { control.disabled = true; });
     void checkVoiceRelaySupport();
   }
 
@@ -811,12 +814,11 @@
         ? translate("Group voice SFU is configured. Group media is relayed and not end-to-end encrypted.")
         : translate("Group voice is not configured on this server. Configure LiveKit in the server environment.");
       renderVoiceControls();
-      const enabled = !!config.turn_available;
       relay.checked = true;
       relay.disabled = true;
-      status.textContent = translate(enabled
-        ? "TURN relay is configured. Calls always use it and never connect directly, so your network address stays private."
-        : "TURN relay is not configured. Calls are unavailable until the server owner configures TURN; your network address will never be exposed.");
+      status.textContent = tr()
+        ? "Doğrudan P2P ses açık. Medya GhostChat sunucusundan geçmez; aradığın kişi ağ adresini görebilir."
+        : "Direct P2P voice is on. Media does not pass through GhostChat; the person you call can see your network address.";
     } catch (error) {
       state.groupVoiceAvailable = false;
       const groupStatus = $("#groupVoiceNetworkStatus");

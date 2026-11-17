@@ -9,6 +9,15 @@
   // person's voice is cutting out. This decision is entirely client-side —
   // the relay server never processes microphone samples.
   function selectProcessingPlan(settings, hardwareConcurrency = navigator.hardwareConcurrency) {
+    if (settings.p2pOnly) {
+      return {
+        requestedAdvanced: false,
+        advanced: false,
+        useStandardForContinuity: false,
+        browserEchoCancellation: false,
+        browserAutoGain: false,
+      };
+    }
     const requestedAdvanced = settings.noiseEngine === 'deepfilter';
     const cores = Number(hardwareConcurrency || 0);
     const useStandardForContinuity = requestedAdvanced && cores > 0 && cores < 4;
@@ -66,13 +75,13 @@
     }
     try {
       if (!navigator.mediaDevices?.getUserMedia) throw new Error('Microphone capture is unavailable in this app.');
-      if (settings.nvidiaBroadcast) {
+      if (settings.nvidiaBroadcast && !settings.p2pOnly) {
         const devices = await navigator.mediaDevices.enumerateDevices();
         if (!devices.some(device => device.kind === 'audioinput' && device.deviceId === settings.microphoneId && /nvidia.*broadcast|broadcast.*nvidia/i.test(device.label))) {
           throw new Error('Select the NVIDIA Broadcast microphone or turn off NVIDIA Broadcast mode.');
         }
       }
-      const external = !!settings.nvidiaBroadcast;
+      const external = !!settings.nvidiaBroadcast && !settings.p2pOnly;
       const processingPlan = selectProcessingPlan(settings);
       rawStream = await navigator.mediaDevices.getUserMedia({ video: false, audio: {
         ...(settings.microphoneId ? { deviceId: { exact: settings.microphoneId } } : {}),

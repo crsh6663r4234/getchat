@@ -602,6 +602,26 @@
     async function loadIceConfiguration() {
       const config = await api.getIceConfiguration();
       const servers = Array.isArray(config?.ice_servers) ? config.ice_servers : [];
+      // Direct-call mode deliberately keeps only STUN discovery. It never
+      // sends microphone media through TURN or the GhostChat media relay.
+      // This exposes each caller's network address to the other caller.
+      if (api.getSettings().p2pOnly) {
+        const stunServers = servers.flatMap(server => {
+          if (!server) return [];
+          const urls = (Array.isArray(server.urls) ? server.urls : [server.urls])
+            .filter(url => typeof url === "string" && /^stuns?:[^\s]+$/i.test(url));
+          return urls.length ? [{ urls }] : [];
+        });
+        if (!stunServers.length) throw new Error("Direct calls need a STUN server. Check the selected GhostChat server.");
+        return {
+          mediaPath: "p2p",
+          serverRelayAvailable: false,
+          ghostShareAvailable: false,
+          iceServers: stunServers,
+          bundlePolicy: "max-bundle",
+          rtcpMuxPolicy: "require",
+        };
+      }
       const turnServers = servers.flatMap(server => {
         if (!server || typeof server.username !== "string" || !server.username.trim() || typeof server.credential !== "string" || !server.credential) return [];
         const urls = (Array.isArray(server.urls) ? server.urls : [server.urls]).filter(url => typeof url === "string" && /^turns?:[^\s]+$/i.test(url));
@@ -646,14 +666,14 @@
       // gathering finishes with none, fail loudly instead of leaving the call
       // stuck in "connecting" with no audio in either direction.
       pc.onicegatheringstatechange = () => {
-        if (call !== activeCall || pc.iceGatheringState !== "complete" || activeCall.relayCandidates || activeCall.mediaPath === "server") return;
+        if (call !== activeCall || pc.iceGatheringState !== "complete" || activeCall.mediaPath === "p2p" || activeCall.relayCandidates || activeCall.mediaPath === "server") return;
         if (switchToServerRelay(activeCall)) return;
         closeCall({ notifyPeer: true, message: "The TURN relay server did not respond, so no audio can be sent. Check that coturn is running and that port 3478 (UDP and TCP) and the relay port range are open on the server firewall." });
       };
       pc.onicecandidate = event => {
         if (call !== activeCall || !event.candidate) return;
         const isRelay = event.candidate.type === "relay" || /\btyp relay(?:\s|$)/.test(event.candidate.candidate || "");
-        if (!isRelay) return;
+        if (activeCall.mediaPath !== "p2p" && !isRelay) return;
         if (isRelay) activeCall.relayCandidates += 1;
         const candidate = event.candidate.toJSON();
         try {
@@ -688,7 +708,7 @@
         else if (pc.connectionState === "disconnected") activeCall.status = "reconnecting";
         else if (pc.connectionState === "failed") {
           if (!activeCall.everConnected && switchToServerRelay(activeCall)) return;
-          closeCall({ message: "The required TURN relay connection failed. Check the relay service and network, then call again." });
+          closeCall({ message: activeCall.mediaPath === "p2p" ? "The direct peer-to-peer call could not connect. Check both networks and call again." : "The required TURN relay connection failed. Check the relay service and network, then call again." });
           return;
         }
         notify();
