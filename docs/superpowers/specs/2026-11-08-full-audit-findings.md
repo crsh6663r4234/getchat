@@ -8,12 +8,12 @@ Branch `claude/dreamy-knuth-j0wr07`. IDs A-1 to A-18 come from the build and ser
 |---|---|---|---|---|---|---|
 | S1 | 3 | 0 | 0 | 0 | 0 | 3 |
 | S2 | 21 | 0 | 0 | 0 | 0 | 21 |
-| S3 | 18 | 1 | 0 | 0 | 0 | 19 |
-| S4 | 41 | 6 | 2 | 0 | 3 | 52 |
+| S3 | 19 | 0 | 0 | 0 | 0 | 19 |
+| S4 | 47 | 0 | 2 | 0 | 3 | 52 |
 | no severity (checked candidate) | 1 | 0 | 2 | 0 | 14 | 17 |
-| **Total** | 84 | 7 | 4 | 0 | 17 | 112 |
+| **Total** | 91 | 0 | 4 | 0 | 17 | 112 |
 
-Status notes: "fixed" rows marked "(needs Windows verification)" in the table are fixed and covered by tests where possible, but the real-device behavior is only checked on Windows (see below). Seven rows are open (A-105 to A-111): the owner ended the audit on 2026-11-10 before they were fixed, and each row carries the fix that was proposed. Rows A-98 to A-104 (wave 3) pass the gate below but were not independently reviewed: the review of those commits was interrupted and not resumed. The areas the wave-2 review declined to judge (Windows-only code, every call site of the untranslated text path, the download cleanup paths) were not reviewed either. The "needs Windows verification" column counts runtime-only candidates that had no code defect to fix.
+Status notes: "fixed" rows marked "(needs Windows verification)" in the table are fixed and covered by tests where possible, but the real-device behavior is only checked on Windows (see below). A-105 through A-111 were subsequently fixed and recorded with their implementation commits. Rows A-98 to A-104 (wave 3) pass the gate below but were not independently reviewed: the review of those commits was interrupted and not resumed. The areas the wave-2 review declined to judge (Windows-only code, every call site of the untranslated text path, the download cleanup paths) were not reviewed either. The "needs Windows verification" column counts runtime-only candidates that had no code defect to fix.
 
 ### Release notes callout
 
@@ -21,7 +21,7 @@ The desktop MLS lookup-key migration (A-19, was T3-1) is **not downgrade-safe**.
 
 Wave 2 adds two more one-way local changes: the plaintext cache table is rebuilt with account/conversation/sender keys (A-24), and MLS groups are moved to account-bound storage keys on first use (A-25). An older build cannot read either. The server gains migrations 0025-0028; 0027 rebuilds the planner tables (data kept, checked on a seeded database). Back up the server database before upgrading.
 
-Wave 3 adds server migrations 0029-0032: 0029 rebuilds `crypto_events` without the sender cascade, 0030 adds the setup generation, 0031 the per-conversation commit sequence, 0032 makes the attachment-by-message index non-unique. The automatic pre-upgrade backups proposed in the wave-2 review were **not** implemented (A-111). Before installing 4.0.51, copy the server database by hand and, on each PC, the GhostChat folder in the Windows account's application-data directory; restoring that copy is the only way back to an older build. The desktop app and the server changed together (new lock-status fields, commit sequencing), so run the same version on both; mixed versions were not tested.
+Wave 3 adds server migrations 0029-0032: 0029 rebuilds `crypto_events` without the sender cascade, 0030 adds the setup generation, 0031 the per-conversation commit sequence, 0032 makes the attachment-by-message index non-unique. A-111 subsequently added automatic pre-upgrade backups for the irreversible migration paths. The desktop app and the server changed together (new lock-status fields, commit sequencing), so run the same version on both; mixed versions were not tested.
 
 4.0.51 is this branch merged with 4.0.50 from `main` (relay-only calls: no relay probe, no direct fallback). The call lifecycle fixes of this audit were written against the 4.0.49 fallback; after the merge their tests run with an authenticated TURN relay and pass.
 
@@ -37,7 +37,7 @@ Wave 3 adds server migrations 0029-0032: 0029 rebuilds `crypto_events` without t
 - A-7b: tolerate leaves of deleted accounts in encrypted groups and let an owner/admin client remove them. Implemented as a server record per locked group plus a removal commit. The owner's client does it at once; admins follow after a grace period by join order (A-94); the server accepts one removal per leaf and answers a later one with 410, which counts as done. A tolerated leaf may stay or be removed by a commit, never be added (A-87). An unfinished setup of a deleted account is taken over by the owner, or the oldest admin without an owner (A-95).
 - A-69: decode pending encrypted messages before applying membership changes. `max_past_epochs` stays 0.
 - A-62 (T6-10): a failed startup update check shows the "Could not check for updates" warning and boots. A found update stays mandatory.
-- 2026-11-10: the owner ended the audit loop and asked for the update to be prepared. Unfinished wave-3 items stay open as A-105 to A-111; the pending reviews were not completed (see the status notes).
+- 2026-11-10: the owner ended the audit loop and asked for the update to be prepared. A-105 to A-111 were completed afterwards; the pending independent reviews remain documented in the status notes.
 
 ### Needs Windows verification
 
