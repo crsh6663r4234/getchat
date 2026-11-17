@@ -49,12 +49,11 @@ pub(super) async fn run(state: AppState) {
         if state.voice.livekit_url.is_some()
             && state.voice.livekit_api_key.is_some()
             && state.voice.livekit_api_secret.is_some()
+            && reconcile(&state).await.is_err()
         {
-            if let Err(_) = reconcile(&state).await {
-                tracing::warn!(
-                    "Media revocation reconciliation failed; room admission remains blocked"
-                );
-            }
+            tracing::warn!(
+                "Media revocation reconciliation failed; room admission remains blocked"
+            );
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }

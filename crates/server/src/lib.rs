@@ -377,7 +377,7 @@ fn rotate_upgrade_backups(written: &std::path::Path) {
             Some((version.parse().ok()?, entry.path()))
         })
         .collect();
-    others.sort_by(|a, b| b.0.cmp(&a.0));
+    others.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     for (_, path) in others.into_iter().skip(KEPT_UPGRADE_BACKUPS - 1) {
         match std::fs::remove_file(&path) {
             Ok(()) => {
@@ -2721,7 +2721,7 @@ async fn create_group_conversation(
     tx.commit().await.map_err(|_| ApiError::internal())?;
 
     let recipients = std::iter::once(user.id.clone())
-        .chain(member_ids.into_iter())
+        .chain(member_ids)
         .collect::<Vec<_>>();
     let _ = state.events.send(ServerEvent {
         recipients,
@@ -4762,7 +4762,7 @@ async fn join_group_invite(
             "SELECT gi.conversation_id FROM group_invites gi JOIN conversations c ON c.id=gi.conversation_id JOIN conversation_members cm ON cm.conversation_id=gi.conversation_id AND cm.user_id=? WHERE gi.token_hash=? AND c.kind='group'",
         )
         .bind(&user.id)
-        .bind(&session_hash(&body.code))
+        .bind(session_hash(&body.code))
         .fetch_optional(&mut *tx)
         .await
         .map_err(|_| ApiError::internal())?;
