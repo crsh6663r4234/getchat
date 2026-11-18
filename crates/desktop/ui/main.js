@@ -66,10 +66,10 @@
     });
   }
   const askConfirm = options => askUser(options).then(value => value === true);
-  const state = { localBase: "", base: "", token: "", user: null, presence: new Map(), presenceMode: "online", presenceLoaded: false, pendingRecovery: "", recoveryKey: "", pendingGroupInviteCode: null, page: "messages", conversations: [], friends: [], pending: [], blockedUserIds: new Set(), attachmentObserver: null, attachmentObjectUrls: [], seenFriendRequestIds: new Set(), active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null, cryptoDevice: null, cryptoEnabled: new Set(), cryptoLocked: new Set(), cryptoSetupComplete: new Set(), cryptoCanManage: new Set(), cryptoPeerFingerprints: new Map(), cryptoSyncing: new Map(), cryptoMessageDecoding: new Map(), cryptoMemberIds: new Map(), cryptoDeletedMemberIds: new Map(), cryptoSetupGenerations: new Map(), cryptoCommitSeq: new Map(), cryptoMembershipPending: new Set(), cryptoMembershipOperations: new Map(), replyingTo: null, lastReadSequence: new Map(), typingUsers: new Map(), typingTimers: new Map(), typingActive: false, typingStopTimer: null, typingSentAt: 0, groupInviteCodes: new Map(), groupVoiceAvailable: null, serverVersion: null };
+  const state = { localBase: "", base: "", token: "", user: null, presence: new Map(), presenceMode: "online", presenceLoaded: false, pendingRecovery: "", recoveryKey: "", pendingGroupInviteCode: null, page: "messages", conversations: [], friends: [], pending: [], blockedUserIds: new Set(), attachmentObserver: null, attachmentObjectUrls: [], seenFriendRequestIds: new Set(), active: null, older: true, reconnect: 1200, socket: null, searchTab: "users", updateVersion: null, updateNotifiedVersion: null, cryptoDevice: null, cryptoEnabled: new Set(), cryptoLocked: new Set(), cryptoSetupComplete: new Set(), cryptoCanManage: new Set(), cryptoPeerFingerprints: new Map(), cryptoSyncing: new Map(), cryptoChecks: new Map(), cryptoMessageDecoding: new Map(), cryptoMemberIds: new Map(), cryptoDeletedMemberIds: new Map(), cryptoSetupGenerations: new Map(), cryptoCommitSeq: new Map(), cryptoMembershipPending: new Set(), cryptoMembershipOperations: new Map(), replyingTo: null, lastReadSequence: new Map(), typingUsers: new Map(), typingTimers: new Map(), typingActive: false, typingStopTimer: null, typingSentAt: 0, groupInviteCodes: new Map(), groupVoiceAvailable: null, serverVersion: null };
   function resetCryptoViewState() {
     state.cryptoEnabled.clear(); state.cryptoLocked.clear(); state.cryptoSetupComplete.clear(); state.cryptoCanManage.clear(); state.cryptoPeerFingerprints.clear(); state.cryptoMembershipPending.clear();
-    state.cryptoSyncing.clear(); state.cryptoMessageDecoding.clear(); state.cryptoMemberIds.clear(); state.cryptoDeletedMemberIds.clear(); state.cryptoSetupGenerations.clear(); state.cryptoCommitSeq.clear(); state.cryptoMembershipOperations.clear();
+    state.cryptoSyncing.clear(); state.cryptoChecks.clear(); state.cryptoMessageDecoding.clear(); state.cryptoMemberIds.clear(); state.cryptoDeletedMemberIds.clear(); state.cryptoSetupGenerations.clear(); state.cryptoCommitSeq.clear(); state.cryptoMembershipOperations.clear();
   }
   let signupAvatarData = null;
   let profileAvatarData = null;
@@ -322,6 +322,7 @@
     const recoveryToggle = $("#showSettingsRecoveryKey");
     if (recoveryToggle) recoveryToggle.textContent = translate(recoveryValue?.classList.contains("hidden") ? "Show recovery key" : "Hide recovery key");
     renderUpdateStatus();
+    updateCryptoStatus();
   }
   let voiceClient = null;
   let groupVoiceClient = null;
@@ -2172,33 +2173,39 @@
   }
   function updateCryptoStatus(conversation = state.active) {
     const button = $("#enableEncryptionButton"); const status = $("#cryptoConversationStatus");
-    if (!button || !status) return;
-    const encryptable = conversation?.kind === "direct" || conversation?.kind === "group";
-    const localGroup = !!conversation && state.cryptoEnabled.has(conversation.id);
-    const serverLocked = state.cryptoLocked.has(conversation.id);
-    const setupComplete = state.cryptoSetupComplete.has(conversation.id);
-    const canManageCrypto = state.cryptoCanManage.has(conversation.id);
-    button.classList.toggle("hidden", !encryptable);
-    status.classList.toggle("hidden", !encryptable || (!localGroup && !serverLocked));
-    $("#attachFileButton")?.classList.toggle("hidden", !!encryptable && serverLocked && (!localGroup || !cryptoIdentityTrusted(conversation.id)));
+    if (!button || !status || conversation?.id !== state.active?.id) return;
+    const encryptable = ["direct", "group"].includes(conversation?.kind);
+    button.classList.toggle("hidden", !encryptable); status.classList.toggle("hidden", !encryptable);
     if (!encryptable) return;
-    if (!localGroup) {
-      button.textContent = translate(serverLocked ? (canManageCrypto && !setupComplete ? "Continue encryption setup" : "Encrypted") : "Enable encryption"); button.disabled = serverLocked && (!canManageCrypto || setupComplete);
-      button.title = button.textContent; button.setAttribute("aria-label", button.textContent);
-      status.textContent = serverLocked ? translate("This conversation is locked for MLS encryption. Prepare this device in Settings to read new messages; ask the person who started setup for help if it still fails.") : "";
-      status.classList.toggle("warning", serverLocked); return;
+    const id = conversation.id, check = state.cryptoChecks.get(id);
+    const local = state.cryptoEnabled.has(id), locked = state.cryptoLocked.has(id);
+    const complete = state.cryptoSetupComplete.has(id), trusted = cryptoIdentityTrusted(id);
+    const manage = state.cryptoCanManage.has(id);
+    $("#attachFileButton")?.classList.toggle("hidden", locked && (!local || !trusted));
+    let text, label, disabled = true;
+    if (!check || check.status === "checking") {
+      text = tr() ? "Şifreleme durumu kontrol ediliyor." : "Checking encryption status.";
+      label = translate("Checking…");
+    } else if (check.status === "error" || (!locked && (local || complete))) {
+      text = tr() ? "Şifreleme durumu doğrulanamadı." : "Encryption status could not be verified.";
+      if (check.detail) text += " " + check.detail;
+      label = tr() ? "Doğrulamayı yeniden dene" : "Retry verification"; disabled = false;
+    } else if (!locked) {
+      text = tr() ? "Sohbet şifrelemesi kapalı. Mesajlar sunucuda düz metin olarak saklanır." : "Chat encryption is off. Messages are stored as plaintext on the server.";
+      label = translate("Enable encryption"); disabled = false;
+    } else if (!complete || !local || !trusted) {
+      text = tr() ? "Şifreleme kurulumu veya kimlik doğrulaması tamamlanmadı." : "Encryption setup or identity verification is incomplete.";
+      if (!local) text += " " + translate("This conversation is locked for MLS encryption. Prepare this device in Settings to read new messages; ask the person who started setup for help if it still fails.");
+      else if (!trusted) text += " " + translate(conversation.kind === "group" ? "The encrypted group identity is not verified. Compare the full group code with its members before sending private messages." : "The encrypted identity is not verified. Compare this code with your friend before sending private messages.");
+      label = translate(local && !trusted ? "Verify identity" : manage && !complete ? "Continue encryption setup" : "Checking…");
+      disabled = !(local && !trusted) && !(manage && !complete);
+    } else {
+      text = tr() ? "Sohbet şifrelemesi açık — deneysel MLS. Yalnızca etkinleştirmeden sonra gönderilen mesajlar ve dosyalar şifrelenir. Hassas görüşmeler için güvenmeyin." : "Chat encryption is on — experimental MLS. Only messages and files sent after activation are encrypted. Do not rely on it for sensitive conversations.";
+      label = translate("Encrypted");
     }
-    const trusted = cryptoIdentityTrusted(conversation.id);
-    button.textContent = translate(trusted ? "Encrypted" : "Verify identity"); button.disabled = trusted;
-    button.title = button.textContent; button.setAttribute("aria-label", button.textContent);
-    status.textContent = trusted
-      ? translate(conversation.kind === "group"
-        ? "This encrypted group uses MLS for text messages. Existing messages and previous files are not encrypted; new attachments use MLS-wrapped file keys. Membership changes require verified MLS updates."
-        : "This direct message now uses MLS encryption. Messages and files sent before setup remain stored as plain text on the server; new attachments are encrypted.")
-      : translate(conversation.kind === "group"
-        ? "The encrypted group identity is not verified. Compare the full group code with its members before sending private messages."
-        : "The encrypted identity is not verified. Compare this code with your friend before sending private messages.");
-    status.classList.toggle("warning", !trusted);
+    if (status.textContent !== text) status.textContent = text;
+    status.classList.toggle("warning", check?.status !== "ok" || !locked || !complete || !local || !trusted);
+    button.textContent = label; button.disabled = disabled; button.title = label; button.setAttribute("aria-label", label);
   }
   async function verifyPeerFingerprint(conversationId, fingerprint) {
     if (!fingerprint) return false;
@@ -2264,9 +2271,9 @@
     return error?.message || translate(fallback);
   }
   async function syncCryptoEvents(conversationId) {
-    if (!state.user || !invoke) return;
-    if (!state.cryptoEnabled.has(conversationId) && !state.cryptoLocked.has(conversationId)) return;
-    if (state.cryptoMembershipPending.has(conversationId)) return;
+    if (!state.user || !invoke) return false;
+    if (!state.cryptoEnabled.has(conversationId) && !state.cryptoLocked.has(conversationId)) return true;
+    if (state.cryptoMembershipPending.has(conversationId)) return false;
     if (state.cryptoSyncing.has(conversationId)) return state.cryptoSyncing.get(conversationId);
     const task = (async () => {
       const conversation = state.active?.id === conversationId ? state.active : state.conversations.find(item => item.id === conversationId);
@@ -2421,8 +2428,12 @@
           if (state.active?.id === conversationId) updateCryptoStatus(state.active);
         }
       }
+      return true;
     })().catch(error => {
+      const check = state.cryptoChecks.get(conversationId);
+      if (check && check.status === "ok") { check.status = "error"; updateCryptoStatus(); }
       if (state.active?.id === conversationId) toast(cryptoErrorText(error, "Encryption could not be enabled for this conversation."), true);
+      return false;
     }).finally(() => state.cryptoSyncing.delete(conversationId));
     state.cryptoSyncing.set(conversationId, task);
     return task;
@@ -2430,17 +2441,24 @@
   async function refreshCryptoConversation(conversation) {
     const button = $("#enableEncryptionButton"); const status = $("#cryptoConversationStatus");
     if (!["direct", "group"].includes(conversation?.kind) || !state.user || !invoke) {
-      state.cryptoEnabled.delete(conversation?.id); updateCryptoStatus(conversation); return;
+      state.cryptoEnabled.delete(conversation?.id);
+      if (conversation?.id) state.cryptoChecks.set(conversation.id, { status: "error" });
+      updateCryptoStatus(conversation); return;
     }
-    button.classList.remove("hidden"); button.disabled = true; button.textContent = translate("Checking…");
+    const check = { status: "checking", valid: true };
+    state.cryptoChecks.set(conversation.id, check); updateCryptoStatus(conversation);
+    const current = () => state.active?.id === conversation.id && state.cryptoChecks.get(conversation.id) === check;
     try {
       if (conversation.kind === "group") {
         const cryptoLock = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/crypto-lock`);
+        if (!current()) return;
+        if (typeof cryptoLock.locked !== "boolean" || typeof cryptoLock.setupComplete !== "boolean") check.valid = false;
         if (cryptoLock.locked) state.cryptoLocked.add(conversation.id); else state.cryptoLocked.delete(conversation.id);
         if (cryptoLock.setupComplete) state.cryptoSetupComplete.add(conversation.id); else state.cryptoSetupComplete.delete(conversation.id);
         rememberDeletedCryptoMembers(conversation.id, cryptoLock);
         await applyCryptoSetupGeneration(conversation.id, cryptoLock.setupGeneration);
         const members = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/members`);
+        if (!current()) return;
         const memberIds = members.map(member => member.id).sort();
         state.cryptoMemberIds.set(conversation.id, memberIds);
         const canStart = !cryptoLock.locked && members.some(member => member.id === state.user.id && ["owner", "admin"].includes(member.role));
@@ -2462,6 +2480,8 @@
         }
       } else {
         const cryptoLock = await request(`/v1/conversations/${encodeURIComponent(conversation.id)}/crypto-lock`);
+        if (!current()) return;
+        if (typeof cryptoLock.locked !== "boolean" || typeof cryptoLock.setupComplete !== "boolean") check.valid = false;
         if (cryptoLock.locked) state.cryptoLocked.add(conversation.id); else state.cryptoLocked.delete(conversation.id);
         if (cryptoLock.setupComplete) state.cryptoSetupComplete.add(conversation.id); else state.cryptoSetupComplete.delete(conversation.id);
         if (cryptoLock.locked && !cryptoLock.setupComplete && cryptoLock.lockedBy === state.user.id) state.cryptoCanManage.add(conversation.id);
@@ -2472,9 +2492,11 @@
         const membershipRecovered = await retryPendingGroupMembershipUpdate(conversation);
         if (!membershipRecovered) throw new Error(translate("Pending encrypted membership update is being retried…"));
       }
-      await syncCryptoEvents(conversation.id);
-      if (state.active?.id !== conversation.id) return;
+      if (!await syncCryptoEvents(conversation.id)) throw new Error("Encryption sync failed");
+      if (!current()) return;
       enabled = await invoke("crypto_has_direct_group", { userId: state.user.id, conversationId: conversation.id });
+      if (!current()) return;
+      if (typeof enabled !== "boolean") check.valid = false;
       if (enabled) {
         state.cryptoEnabled.add(conversation.id);
         let storedFingerprint = localStorage.getItem(cryptoObservedFingerprintKey(conversation.id));
@@ -2488,8 +2510,9 @@
             localStorage.setItem(cryptoObservedFingerprintKey(conversation.id), storedFingerprint);
           }
         }
+        if (!current()) return;
         if (storedFingerprint) state.cryptoPeerFingerprints.set(conversation.id, storedFingerprint);
-        updateCryptoStatus(conversation);
+        check.status = check.valid ? "ok" : "error"; updateCryptoStatus(conversation);
         let pending = localStorage.getItem(cryptoBootstrapKey(conversation.id));
         if (!pending) {
           const savedBootstrap = await invoke("crypto_get_pending_bootstrap", { userId: state.user.id, conversationId: conversation.id });
@@ -2501,24 +2524,13 @@
         if (pending) void retryCryptoBootstrap(conversation);
         else void retryPendingEncryptedMessage(conversation).catch(error => toast(error.message || translate("The encrypted message is waiting to be sent. Try again when connected."), true));
       } else {
-        state.cryptoEnabled.delete(conversation.id); updateCryptoStatus(conversation);
+        state.cryptoEnabled.delete(conversation.id); check.status = check.valid ? "ok" : "error"; updateCryptoStatus(conversation);
       }
     } catch (error) {
-      // The header button and status are shared; a late failure for a
-      // conversation the user already left must not overwrite the current one.
-      if (state.active?.id !== conversation.id) return;
-      const locked = state.cryptoLocked.has(conversation.id);
-      const canManage = state.cryptoCanManage.has(conversation.id);
-      const complete = state.cryptoSetupComplete.has(conversation.id);
-      button.classList.remove("hidden"); button.textContent = translate(locked ? (canManage && !complete ? "Continue encryption setup" : "Encrypted") : "Enable encryption"); button.disabled = locked && (!canManage || complete);
-      // The desktop's one-time safety copy before an upgrade failed: no
-      // encrypted data was changed, and nothing here can fix it but disk space.
-      status.textContent = isLocalBackupFailure(error)
-        ? cryptoErrorText(error)
-        : state.cryptoLocked.has(conversation.id)
-        ? translate("This conversation is locked for MLS encryption. Prepare this device in Settings to read new messages; ask the person who started setup for help if it still fails.")
-        : cryptoErrorText(error, "Prepare this device for encryption in Settings first.");
-      status.classList.remove("hidden"); status.classList.add("warning");
+      if (!current()) return;
+      check.status = "error";
+      if (isLocalBackupFailure(error)) check.detail = cryptoErrorText(error);
+      updateCryptoStatus(conversation);
     }
   }
   async function publishCryptoBootstrap(conversation, pending) {
@@ -2714,6 +2726,11 @@
   async function enableEncryption() {
     const conversation = state.active; const button = $("#enableEncryptionButton");
     if (!conversation || !["direct", "group"].includes(conversation.kind) || !state.user) return;
+    if (state.cryptoChecks.get(conversation.id)?.status === "error"
+      || (!state.cryptoLocked.has(conversation.id) && (state.cryptoEnabled.has(conversation.id) || state.cryptoSetupComplete.has(conversation.id)))) {
+      await refreshCryptoConversation(conversation);
+      return;
+    }
     if (state.cryptoEnabled.has(conversation.id)) {
       const fingerprint = currentCryptoFingerprint(conversation.id);
       const verified = fingerprint ? await verifyPeerFingerprint(conversation.id, fingerprint) : false;
@@ -2869,6 +2886,7 @@
     const convo = state.conversations.find(item => item.id === id);
     if (!convo) { await refreshConversations(); }
     state.active = state.conversations.find(item => item.id === id) || { id, display_name: "Conversation", username: "" };
+    state.cryptoChecks.delete(id); updateCryptoStatus(state.active);
     $("#chatKindLabel").textContent = translate(state.active.kind === "group" ? "Group conversation" : "Direct message");
     $("#chatTitle").textContent = state.active.display_name;
     $("#chatSubtitle").textContent = state.active.kind === "group"
@@ -3799,7 +3817,8 @@
             : activeCall
               ? "Your microphone is on. Use the controls above to switch devices or mute."
               : "Choose your microphone and speaker, or join muted and listen."));
-    $(".voice-encryption-note").textContent = translate(groupMode ? "Relayed · not end-to-end encrypted" : "Live audio");
+    $(".voice-encryption-note").textContent = tr() ? "Bu arama uçtan uca şifreli değil." : "This call is not end-to-end encrypted.";
+    $("#activeCallEncryptionNote").textContent = $(".voice-encryption-note").textContent;
     const hasRemoteVideo = !!voice.remoteVideoStream?.getVideoTracks().some(track => track.readyState === "live" && !track.muted);
     const hasLocalVideo = !!voice.localScreenStream?.getVideoTracks().some(track => track.readyState === "live" && !track.muted);
     const compactCall = activeCall && voiceStageCompact && !hasRemoteVideo && !hasLocalVideo && !voiceDevicePanelOpen && !watchPartyOpen;

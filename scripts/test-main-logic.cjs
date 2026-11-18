@@ -428,7 +428,7 @@ test('a safety copy that could not be written pauses encrypted chats with its ow
     app.voiceOptions.voice.onIncoming({ conversationId: 'c1' });
     await app.flush(() => app.invokes.some(item => item.command === 'crypto_has_direct_group'));
     await app.flush();
-    assert.equal(app.$('#cryptoConversationStatus').textContent, expected, `${language}: the status names the failed safety copy`);
+    assert.ok(app.$('#cryptoConversationStatus').textContent.includes(expected), `${language}: the status names the failed safety copy`);
   }
 });
 
@@ -531,6 +531,69 @@ async function openTrustedEncryptedChat(language, hooks) {
   await app.flush();
   return app;
 }
+
+test('chat status distinguishes unlocked, incomplete and malformed responses in both languages', async () => {
+  for (const language of ['en', 'tr']) for (const [lock, expected] of [
+    [{ locked: false, setupComplete: false }, language === 'tr' ? 'Sohbet şifrelemesi kapalı.' : 'Chat encryption is off.'],
+    [{ locked: true, setupComplete: false }, language === 'tr' ? 'Şifreleme kurulumu veya kimlik doğrulaması tamamlanmadı.' : 'Encryption setup or identity verification is incomplete.'],
+    [{}, language === 'tr' ? 'Şifreleme durumu doğrulanamadı.' : 'Encryption status could not be verified.'],
+  ]) {
+    const base = 'https://a.example';
+    const conversation = { id: 'c1', kind: 'direct', peer_id: 'peer', display_name: 'Peer', username: 'peer' };
+    const app = harness({ storage: { 'ghostchat.server': base, 'ghostchat.language': language }, credentials: { [await serverKey(base)]: 'token-A' },
+      hooks: { crypto_has_direct_group: () => false }, fetchHandler: url => {
+        if (url.endsWith('/v1/me')) return { body: { id: 'me' } };
+        if (url.endsWith('/v1/conversations')) return { body: [conversation] };
+        if (url.endsWith('/crypto-lock')) return { body: lock };
+        return { body: [] };
+      } });
+    await app.flush(() => app.sockets.length > 0);
+    app.voiceOptions.voice.onIncoming({ conversationId: 'c1' });
+    await app.flush();
+    assert.ok(app.$('#cryptoConversationStatus').textContent.startsWith(expected));
+    assert.notEqual(app.$('#enableEncryptionButton').textContent, 'Encrypted');
+  }
+});
+
+test('verified chat and incoming calls disclose their privacy limits in both languages', async () => {
+  for (const [language, chat, call] of [
+    ['en', 'Chat encryption is on — experimental MLS.', 'This call is not end-to-end encrypted.'],
+    ['tr', 'Sohbet şifrelemesi açık — deneysel MLS.', 'Bu arama uçtan uca şifreli değil.'],
+  ]) {
+    const app = await openTrustedEncryptedChat(language, {});
+    assert.ok(app.$('#cryptoConversationStatus').textContent.startsWith(chat));
+    assert.equal(app.$('.voice-encryption-note').textContent, call);
+  }
+});
+
+test('an unverified chat can retry a full check after a temporary sync failure', async () => {
+  for (const [language, warning, encrypted] of [
+    ['en', 'Encryption status could not be verified.', 'Chat encryption is on — experimental MLS.'],
+    ['tr', 'Şifreleme durumu doğrulanamadı.', 'Sohbet şifrelemesi açık — deneysel MLS.'],
+  ]) {
+    let unavailable = false;
+    const app = await openTrustedEncryptedChat(language, {
+      crypto_get_event_cursor: () => { if (unavailable) throw new Error('temporary outage'); return 0; },
+    });
+    unavailable = true;
+    app.sockets.at(-1).emit('message', { data: JSON.stringify({ type: 'crypto_event', event: { conversation_id: 'c1' } }) });
+    await app.flush();
+    assert.ok(app.$('#cryptoConversationStatus').textContent.startsWith(warning));
+    assert.equal(app.$('#enableEncryptionButton').disabled, false, 'verification failure offers a retry');
+    // A retry while still offline must remain unverified, without starting setup.
+    app.$('#enableEncryptionButton').onclick();
+    await app.flush();
+    assert.ok(app.$('#cryptoConversationStatus').textContent.startsWith(warning));
+    unavailable = false;
+    const checks = app.fetches.filter(item => item.url.endsWith('/crypto-lock')).length;
+    app.$('#enableEncryptionButton').onclick();
+    await app.flush();
+    assert.ok(app.fetches.filter(item => item.url.endsWith('/crypto-lock')).length > checks, 'retry rereads the lock instead of trusting the old status');
+    assert.ok(app.$('#cryptoConversationStatus').textContent.startsWith(encrypted));
+    assert.equal(app.$('#enableEncryptionButton').disabled, true, 'verified encryption is reported only after the full check succeeds');
+    assert.ok(!app.fetches.some(item => item.method === 'POST' && item.url.includes('/crypto/key-package')), 'checking status must not start encryption setup');
+  }
+});
 
 test('a failed safety copy is named when an encrypted send fails', async () => {
   for (const [language, expected] of [['en', SAFETY_COPY_FAILURE], ['tr', SAFETY_COPY_FAILURE_TR]]) {
