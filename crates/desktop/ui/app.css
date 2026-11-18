@@ -2946,7 +2946,7 @@ body.light .brand-mark {
   color: var(--good);
   font-size: 10px;
   line-height: 1.35;
-  display: none !important;
+  overflow-wrap: anywhere;
 }
 
 .crypto-conversation-status.warning {
@@ -3270,7 +3270,6 @@ body.light .brand-mark {
 }
 
 @media (max-width:680px) {
-  .voice-stage.is-compact:not(.has-screen-share) .voice-encryption-note,
   .voice-stage.is-compact:not(.has-screen-share) .voice-connection-quality {
     display: none;
   }

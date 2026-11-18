@@ -1063,3 +1063,12 @@ body[data-theme="rain"] .app-shell::before {
   from { transform: translate3d(-3%, -4%, 0); }
   to { transform: translate3d(3%, 5%, 0); }
 }
+
+/* Privacy notices must remain readable in compact and narrow layouts. */
+.chat-header { height: auto; flex-wrap: wrap; padding-top: 8px; padding-bottom: 8px; }
+.chat-heading { flex: 1 1 280px; }
+.chat-heading-copy { overflow-wrap: anywhere; }
+.chat-heading-copy > .crypto-conversation-status:not(.hidden) { display: block; color: var(--text); line-height: 1.45; }
+#voiceStage .voice-encryption-note { display: inline-block; white-space: normal; overflow-wrap: anywhere; }
+.active-call-dock { flex-wrap: wrap; }
+.active-call-info { min-width: 0; overflow-wrap: anywhere; }
