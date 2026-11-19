@@ -325,6 +325,9 @@
   }
   let voiceClient = null;
   let groupVoiceClient = null;
+  // The push-to-talk key the user is holding, so keyup releases it even if
+  // focus moved.
+  let pushToTalkHeldCode = null;
   let voiceUiState = { status: "idle" };
   let groupVoiceUiState = { status: "idle", participants: [] };
   let microphoneTestStream = null;
@@ -741,6 +744,20 @@
       volume: Number(localStorage.getItem("ghostchat.voice.volume") || "100"),
       speakerMuted: localStorage.getItem("ghostchat.voice.speakerMuted") === "true",
     };
+  }
+
+  // Text fields keep every key; buttons, checkboxes and other controls do not
+  // get the push-to-talk key, so holding it never presses them.
+  const NON_TEXT_INPUT_TYPES = new Set(["button", "checkbox", "color", "file", "image", "radio", "range", "reset", "submit"]);
+  function isTextEntryTarget(target) {
+    const field = target?.closest?.("input, textarea, select, [contenteditable=true]");
+    if (!field) return false;
+    if (String(field.tagName || "").toUpperCase() !== "INPUT") return true;
+    return !NON_TEXT_INPUT_TYPES.has(String(field.type || "").toLowerCase());
+  }
+  function setPushToTalkPressed(active, onError = error => toast(error.message, true)) {
+    if (groupVoiceUiState.status !== "idle") void groupVoiceClient?.setPushToTalk(active).catch(onError);
+    else voiceClient?.setPushToTalk(active);
   }
 
   function persistVoiceSettings() {
@@ -4892,20 +4909,24 @@
       if (!$("#shortcutsDialog").open) $("#shortcutsDialog").showModal();
     }
     if (event.key === "Escape" && !$("#settingsDialog").open) document.activeElement?.blur();
-    if (event.code === "Space" && !event.repeat && voiceSettings().pushToTalk && !event.target.closest("input, textarea, select, [contenteditable=true], button")) {
+    if (event.code === "Space" && voiceSettings().pushToTalk && !isTextEntryTarget(event.target)) {
+      // preventDefault keeps a focused button or checkbox from firing and
+      // the page from scrolling; auto-repeat is swallowed the same way.
       event.preventDefault();
-      if (groupVoiceUiState.status !== "idle") void groupVoiceClient?.setPushToTalk(true).catch(error => toast(error.message, true));
-      else voiceClient?.setPushToTalk(true);
+      if (event.repeat) return;
+      pushToTalkHeldCode = event.code;
+      setPushToTalkPressed(true);
     }
   });
   document.addEventListener("keyup", event => {
-    if (event.code !== "Space") return;
-    if (groupVoiceUiState.status !== "idle") void groupVoiceClient?.setPushToTalk(false).catch(error => toast(error.message, true));
-    else voiceClient?.setPushToTalk(false);
+    if (!pushToTalkHeldCode || event.code !== pushToTalkHeldCode) return;
+    pushToTalkHeldCode = null;
+    if (!isTextEntryTarget(event.target)) event.preventDefault();
+    setPushToTalkPressed(false);
   });
   window.addEventListener("blur", () => {
-    if (groupVoiceUiState.status !== "idle") void groupVoiceClient?.setPushToTalk(false).catch(() => {});
-    else voiceClient?.setPushToTalk(false);
+    pushToTalkHeldCode = null;
+    setPushToTalkPressed(false, () => {});
   });
   window.addEventListener("resize", updateRailIndicator, { passive: true });
   setupVoiceClient();

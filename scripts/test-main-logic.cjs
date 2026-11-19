@@ -109,9 +109,11 @@ function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {}, sel
     return { ok: status >= 200 && status < 300, status, json: async () => { if (html) throw new SyntaxError('Unexpected token <'); return body; } };
   }
   const voiceOptions = {};
-  const voiceStub = name => options => { voiceOptions[name] = options; return stubClient(); };
-  const stubClient = () => new Proxy({ getState: () => ({ status: 'idle', participants: [] }) }, {
-    get(target, prop) { return prop in target ? target[prop] : () => Promise.resolve(); },
+  const voiceCalls = [];
+  const voiceStates = {};
+  const voiceStub = name => options => { voiceOptions[name] = options; return stubClient(name); };
+  const stubClient = name => new Proxy({ getState: () => voiceStates[name] || ({ status: 'idle', participants: [] }) }, {
+    get(target, prop) { return prop in target ? target[prop] : (...args) => { voiceCalls.push({ client: name, method: prop, args }); return Promise.resolve(); }; },
   });
   const window = {
     __TAURI__: { core: { invoke }, event: { listen: () => Promise.resolve(() => {}) } },
@@ -144,7 +146,24 @@ function harness({ storage = {}, credentials = {}, fetchHandler, hooks = {}, sel
     }
   };
   const runTimers = () => { for (const timer of timers.splice(0)) if (!timer.done) { timer.done = true; timer.fn(); } };
-  return { $, store, sockets, fetches, invokes, created, observerDisconnects, timers, flush, runTimers, voiceOptions };
+  // Dispatches a key event to the document listeners; the target defaults to
+  // the page body, which is neither a text field nor a control.
+  const key = (type, init = {}) => {
+    const event = { key: init.code === 'Space' ? ' ' : String(init.code || '').replace(/^Key/, '').toLowerCase(), repeat: false, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, target: fakeTarget('BODY'), defaultPrevented: false, ...init };
+    event.preventDefault = () => { event.defaultPrevented = true; };
+    event.stopPropagation = () => {};
+    for (const fn of docListeners.get(type) || []) fn(event);
+    return event;
+  };
+  return { $, store, sockets, fetches, invokes, created, observerDisconnects, timers, flush, runTimers, voiceOptions, voiceCalls, voiceStates, key };
+}
+
+// A focused node for key events: closest() matches only its own tag name,
+// and click() is recorded so a test can tell whether the control fired.
+function fakeTarget(tagName, type = '') {
+  const node = { tagName, type, clicks: 0, click() { node.clicks += 1; } };
+  node.closest = selector => (String(selector).split(',').some(part => part.trim().toUpperCase() === tagName) ? node : null);
+  return node;
 }
 
 async function serverKey(base) {
@@ -1750,6 +1769,60 @@ test('the beta setting has Turkish and English labels', () => {
   const html = fs.readFileSync(path.join(__dirname, '../crates/desktop/ui/index.html'), 'utf8');
   assert.match(html, /<span data-en="Get beta updates" data-tr="Beta güncellemeleri al">Get beta updates<\/span><input id="betaUpdatesEnabled" type="checkbox"><\/label>/);
   assert.ok(!/id="betaUpdatesEnabled"[^>]*checked/.test(html), 'beta is off by default');
+});
+
+const pttCalls = app => app.voiceCalls.filter(call => call.client === 'voice' && call.method === 'setPushToTalk').map(call => call.args[0]);
+async function pttApp(storage = {}) {
+  const app = harness({ storage: { 'ghostchat.server': 'https://a.example', 'ghostchat.voice.ptt': 'true', ...storage } });
+  await app.flush(() => app.invokes.some(item => item.command === 'credential_get_pending_recovery'));
+  return app;
+}
+
+test('push to talk uses Space when no key is stored', async () => {
+  const app = await pttApp();
+  const down = app.key('keydown', { code: 'Space' });
+  app.key('keyup', { code: 'Space' });
+  assert.deepEqual(pttCalls(app), [true, false], 'Space presses and releases push to talk');
+  assert.equal(down.defaultPrevented, true, 'Space does not scroll the page while talking');
+});
+
+test('the push-to-talk key works while a button has focus and does not press it', async () => {
+  const app = await pttApp();
+  const button = fakeTarget('BUTTON');
+  const down = app.key('keydown', { code: 'Space', target: button });
+  const up = app.key('keyup', { code: 'Space', target: button });
+  assert.deepEqual(pttCalls(app), [true, false], 'push to talk starts and stops with a button focused');
+  assert.equal(down.defaultPrevented, true, 'keydown does not reach the button');
+  assert.equal(up.defaultPrevented, true, 'keyup does not activate the button');
+  assert.equal(button.clicks, 0, 'the button is not clicked');
+  const checkbox = fakeTarget('INPUT', 'checkbox');
+  app.key('keydown', { code: 'Space', target: checkbox });
+  assert.deepEqual(pttCalls(app), [true, false, true], 'a focused checkbox is a control, not a text field');
+});
+
+test('the push-to-talk key is a normal key while typing', async () => {
+  const app = await pttApp();
+  for (const target of [fakeTarget('INPUT', 'text'), fakeTarget('TEXTAREA'), fakeTarget('SELECT')]) {
+    const down = app.key('keydown', { code: 'Space', target });
+    const up = app.key('keyup', { code: 'Space', target });
+    assert.equal(down.defaultPrevented || up.defaultPrevented, false, `${target.tagName} keeps the key`);
+  }
+  assert.deepEqual(pttCalls(app), [], 'push to talk does not fire while typing');
+});
+
+test('keyup releases push to talk after focus moved into a text field', async () => {
+  const app = await pttApp();
+  app.key('keydown', { code: 'Space' });
+  app.key('keyup', { code: 'Space', target: fakeTarget('TEXTAREA') });
+  assert.deepEqual(pttCalls(app), [true, false]);
+});
+
+test('nothing listens for the push-to-talk key when push to talk is off', async () => {
+  const app = await pttApp({ 'ghostchat.voice.ptt': 'false' });
+  const down = app.key('keydown', { code: 'Space', target: fakeTarget('BUTTON') });
+  const up = app.key('keyup', { code: 'Space', target: fakeTarget('BUTTON') });
+  assert.deepEqual(pttCalls(app), [], 'no push-to-talk calls');
+  assert.equal(down.defaultPrevented || up.defaultPrevented, false, 'Space still presses buttons');
 });
 
 (async () => {
