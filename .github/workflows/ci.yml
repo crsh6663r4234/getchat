@@ -63,3 +63,48 @@ jobs:
 
       - name: Dependency audit
         run: cargo audit
+
+  # release.yml has a `paths:` push filter, and GitHub skips it when the
+  # matching file is not among the first 300 files of the push diff (the
+  # 4.0.62 merge, 9532aaf, changed 3795 files and never released). After the
+  # tests pass on main, dispatch the release if the version changed and no
+  # release run exists for this commit yet.
+  release-guard:
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+
+      - name: Dispatch the release if its push trigger did not start
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          version() {
+            git show "$1:Cargo.toml" 2>/dev/null \
+              | awk '/^\[/{section=$0} section=="[workspace.package]" && /^version *=/{gsub(/.*= *"|".*/, ""); print; exit}'
+          }
+          current="$(version HEAD)"
+          previous="$(version HEAD^ || true)"
+          if [ -z "$current" ] || [ "$current" = "$previous" ]; then
+            echo "Version unchanged (${previous:-none} -> ${current:-none}); no release needed."
+            exit 0
+          fi
+          runs="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs?head_sha=$HEAD_SHA" --jq '.total_count')"
+          if [ "$runs" != "0" ]; then
+            echo "Release for $current already has $runs run(s) for $HEAD_SHA."
+            exit 0
+          fi
+          main="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')"
+          if [ "$main" != "$HEAD_SHA" ]; then
+            echo "main moved to $main; its own CI run decides its release."
+            exit 0
+          fi
+          echo "Version $previous -> $current with no release run: dispatching release.yml."
+          gh workflow run release.yml --ref main
