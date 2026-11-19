@@ -423,7 +423,8 @@
     for (const participant of participants) {
       const card = create("button");
       card.type = "button";
-      card.className = `voice-participant-card group-voice-participant${participant.local ? " local-participant" : ""}${participant.speaking ? " is-speaking" : ""}`;
+      const speakingNow = participant.speaking && !participant.micMuted && !participant.mutedForYou;
+      card.className = `voice-participant-card group-voice-participant${participant.local ? " local-participant" : ""}${speakingNow ? " is-speaking" : ""}${participant.micMuted && !participant.mutedForYou ? " is-mic-off" : ""}${participant.mutedForYou ? " is-muted-for-you" : ""}`;
       card.setAttribute("aria-pressed", String(!!participant.mutedForYou));
       card.setAttribute("aria-label", `${participant.name}. ${translate(participant.mutedForYou ? "Muted for you." : "Right-click to mute or unmute.")}`);
       card.title = participant.local ? participant.name : translate("Right-click to mute or unmute this caller");
@@ -432,17 +433,19 @@
       setAvatar(avatar, participant.name, participant.avatar);
       const copy = create("span");
       copy.className = "voice-participant-copy";
-      const name = create("strong"); name.textContent = participant.local ? `${participant.name} (${translate("You")})` : participant.name;
+      const name = createText("strong", "", participant.name);
+      const nameRow = create("span", "voice-participant-name"); nameRow.append(name);
+      if (participant.local) nameRow.append(create("span", "voice-you-pill", "You"));
       const speaking = create("span"); speaking.className = "voice-participant-speaking";
       const dot = create("i"); dot.className = "voice-speaking-dot";
       const label = create("span");
       // Your own row reports your microphone; "Listening" only describes others.
       const quiet = participant.local ? "Microphone on" : "Listening";
       label.textContent = participant.mutedForYou ? translate("Muted for you") : participant.micMuted ? translate("Mic off") : participant.speaking ? translate("Speaking") : translate(quiet);
-      speaking.append(dot, label); copy.append(name, speaking); card.append(avatar, copy);
-      if (participant.mutedForYou || (participant.local && participant.micMuted)) {
+      speaking.append(dot, label); copy.append(nameRow, speaking); card.append(avatar, copy);
+      if (participant.mutedForYou || participant.micMuted) {
         const badge = create("span"); badge.className = "voice-participant-muted";
-        badge.textContent = translate(participant.local ? "Mic off" : "Muted for you"); card.append(badge);
+        badge.textContent = translate(participant.mutedForYou ? "Muted for you" : "Mic off"); card.append(badge);
       }
       if (!participant.local) {
         const toggle = () => setGroupPeerMuted(conversationId, participant.id, !isGroupPeerMuted(conversationId, participant.id));
@@ -3897,6 +3900,8 @@
     const pushToTalk = groupMode ? voiceSettings().pushToTalk : voice.pushToTalk;
     const localMuted = !voice.micAvailable || (voice.micMuted && (!pushToTalk || voice.micManuallyMuted || !voice.pushToTalkPressed));
     $("#voiceLocalMutedBadge").classList.toggle("hidden", !localMuted);
+    $("#voiceLocalCard").classList.toggle("is-mic-off", localMuted);
+    $("#voicePeerCard").classList.toggle("is-muted-for-you", !groupMode && isPeerAudioMuted());
     $("#voiceLocalMutedBadge").textContent = !voice.micAvailable ? translate("No microphone") : voice.pushToTalk && !voice.micManuallyMuted ? holdPushToTalkKeyText() : translate("Mic off");
     $("#voiceLocalSpeaking").textContent = !voice.micAvailable ? translate("No microphone") : localMuted ? (voice.pushToTalk && !voice.micManuallyMuted ? holdPushToTalkKeyText() : translate("Mic off")) : translate("Microphone on");
     $("#voicePeerSpeaking").textContent = translate(isPeerAudioMuted() ? "Muted for you" : "Listening");

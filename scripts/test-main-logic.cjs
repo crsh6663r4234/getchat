@@ -1929,6 +1929,29 @@ test('push-to-talk hints name the configured key', async () => {
   assert.equal(english.$('#voiceDeviceNotice').textContent, 'Push to talk is on. Hold F13 to speak; your microphone stays muted otherwise.');
 });
 
+test('group voice cards mark speaking, mic-off and muted-for-you, with a separate You pill', async () => {
+  const app = await pttApp({ 'ghostchat.voice.ptt': 'false' });
+  const before = app.created.length;
+  const participants = [
+    { id: 'me', name: 'Me', local: true, speaking: false, micMuted: true },
+    { id: 'ayla', name: 'Ayla', local: false, speaking: true, micMuted: false },
+    { id: 'mert', name: 'Mert', local: false, speaking: false, micMuted: true },
+    { id: 'selin', name: 'Selin', local: false, speaking: false, micMuted: false, mutedForYou: true },
+  ];
+  app.voiceStates.group = { status: 'connected', conversationId: 'g1', participants, micAvailable: true, micMuted: true };
+  app.voiceOptions.group.onChange(app.voiceStates.group);
+  const made = app.created.slice(before);
+  const cards = made.filter(node => String(node.className).includes('group-voice-participant'));
+  assert.equal(cards.length, 4);
+  const has = (card, name) => String(card.className).split(' ').includes(name);
+  assert.deepEqual(cards.map(card => has(card, 'is-mic-off')), [true, false, true, false], 'mic-off cards are marked');
+  assert.deepEqual(cards.map(card => has(card, 'is-speaking')), [false, true, false, false]);
+  assert.deepEqual(cards.map(card => has(card, 'is-muted-for-you')), [false, false, false, true]);
+  assert.ok(made.some(node => node.className === 'voice-you-pill' && node.textContent === 'You'), 'your card carries a You pill');
+  assert.ok(made.some(node => node.textContent === 'Me'), 'your name is not truncated by an appended "(You)"');
+  assert.ok(!made.some(node => node.textContent === 'Me (You)'));
+});
+
 test('the local row in group voice shows the microphone state, not "Listening"', async () => {
   const rowLabels = (app, participants) => {
     const before = app.created.length;
