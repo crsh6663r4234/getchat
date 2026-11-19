@@ -1786,6 +1786,25 @@ test('push to talk uses Space when no key is stored', async () => {
   assert.equal(down.defaultPrevented, true, 'Space does not scroll the page while talking');
 });
 
+test('push to talk falls back to Space when the stored key is invalid', async () => {
+  for (const stored of ['', 'Escape', 'not a key!']) {
+    const app = await pttApp({ 'ghostchat.voice.pttKey': stored });
+    app.key('keydown', { code: 'Space' });
+    assert.deepEqual(pttCalls(app), [true], `stored ${JSON.stringify(stored)} means Space`);
+  }
+});
+
+test('a stored push-to-talk key replaces Space', async () => {
+  const app = await pttApp({ 'ghostchat.voice.pttKey': 'KeyV' });
+  const space = app.key('keydown', { code: 'Space' });
+  assert.deepEqual(pttCalls(app), [], 'Space is a normal key once another key is chosen');
+  assert.equal(space.defaultPrevented, false, 'Space is left alone');
+  app.key('keydown', { code: 'KeyV' });
+  app.key('keydown', { code: 'KeyV', repeat: true });
+  app.key('keyup', { code: 'KeyV' });
+  assert.deepEqual(pttCalls(app), [true, false], 'V presses and releases push to talk; auto-repeat is ignored');
+});
+
 test('the push-to-talk key works while a button has focus and does not press it', async () => {
   const app = await pttApp();
   const button = fakeTarget('BUTTON');
@@ -1801,10 +1820,10 @@ test('the push-to-talk key works while a button has focus and does not press it'
 });
 
 test('the push-to-talk key is a normal key while typing', async () => {
-  const app = await pttApp();
+  const app = await pttApp({ 'ghostchat.voice.pttKey': 'KeyV' });
   for (const target of [fakeTarget('INPUT', 'text'), fakeTarget('TEXTAREA'), fakeTarget('SELECT')]) {
-    const down = app.key('keydown', { code: 'Space', target });
-    const up = app.key('keyup', { code: 'Space', target });
+    const down = app.key('keydown', { code: 'KeyV', target });
+    const up = app.key('keyup', { code: 'KeyV', target });
     assert.equal(down.defaultPrevented || up.defaultPrevented, false, `${target.tagName} keeps the key`);
   }
   assert.deepEqual(pttCalls(app), [], 'push to talk does not fire while typing');
@@ -1823,6 +1842,62 @@ test('nothing listens for the push-to-talk key when push to talk is off', async 
   const up = app.key('keyup', { code: 'Space', target: fakeTarget('BUTTON') });
   assert.deepEqual(pttCalls(app), [], 'no push-to-talk calls');
   assert.equal(down.defaultPrevented || up.defaultPrevented, false, 'Space still presses buttons');
+});
+
+test('the key button records the next key press and Escape cancels', async () => {
+  const app = await pttApp({ 'ghostchat.language': 'tr' });
+  const button = app.$('#voicePushToTalkKey');
+  button.onclick();
+  const press = app.key('keydown', { code: 'KeyV', target: button });
+  const release = app.key('keyup', { code: 'KeyV', target: button });
+  assert.equal(press.defaultPrevented && release.defaultPrevented, true, 'the bound key does nothing else');
+  assert.equal(app.store.get('ghostchat.voice.pttKey'), 'KeyV', 'the code is stored');
+  assert.equal(button.textContent, 'V', 'the button shows the new key');
+  assert.deepEqual(pttCalls(app), [], 'binding a key does not talk');
+  button.onclick();
+  assert.notEqual(button.textContent, 'V', 'the button says it is waiting');
+  const escape = app.key('keydown', { code: 'Escape', key: 'Escape', target: button });
+  assert.equal(escape.defaultPrevented, true, 'Escape only cancels the binding');
+  assert.equal(app.store.get('ghostchat.voice.pttKey'), 'KeyV', 'Escape keeps the old key');
+  assert.equal(button.textContent, 'V', 'the button shows the old key again');
+  button.onclick();
+  app.key('keydown', { code: 'Space', target: button });
+  assert.equal(button.textContent, 'Boşluk', 'Space has a Turkish name');
+  button.onclick();
+  app.key('keydown', { code: 'F13', target: button });
+  assert.equal(button.textContent, 'F13');
+  assert.equal(app.store.get('ghostchat.voice.pttKey'), 'F13');
+});
+
+test('the key button shows English names in the English UI', async () => {
+  const app = await pttApp();
+  const button = app.$('#voicePushToTalkKey');
+  assert.equal(button.textContent, 'Space', 'the stored default is shown at start');
+  button.onclick();
+  app.key('keydown', { code: 'KeyB', target: button });
+  assert.equal(button.textContent, 'B');
+});
+
+test('push-to-talk hints name the configured key', async () => {
+  const app = await pttApp({ 'ghostchat.language': 'tr', 'ghostchat.voice.pttKey': 'KeyV' });
+  assert.equal(app.$('#voicePushToTalkHint').textContent, 'Konuşmak için V tuşunu basılı tut.');
+  app.voiceStates.voice = { status: 'idle', participants: [], micAvailable: true, micMuted: true, micManuallyMuted: false, pushToTalk: true, pushToTalkPressed: false };
+  app.voiceOptions.voice.onChange(app.voiceStates.voice);
+  assert.equal(app.$('#voiceLocalMutedBadge').textContent, 'V tuşunu basılı tut');
+  assert.equal(app.$('#voiceDeviceNotice').textContent, 'Bas-konuş açık. Konuşmak için V tuşunu basılı tut; diğer zamanlarda mikrofonun kapalı kalır.');
+  const english = await pttApp({ 'ghostchat.voice.pttKey': 'F13' });
+  assert.equal(english.$('#voicePushToTalkHint').textContent, 'Hold F13 to speak.');
+  english.voiceStates.voice = app.voiceStates.voice;
+  english.voiceOptions.voice.onChange(english.voiceStates.voice);
+  assert.equal(english.$('#voiceLocalMutedBadge').textContent, 'Hold F13');
+  assert.equal(english.$('#voiceDeviceNotice').textContent, 'Push to talk is on. Hold F13 to speak; your microphone stays muted otherwise.');
+});
+
+test('the push-to-talk key setting has Turkish and English labels', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../crates/desktop/ui/index.html'), 'utf8');
+  assert.ok(/data-en="Push-to-talk key" data-tr="Bas-konuş tuşu"/.test(html), 'the key setting has both labels');
+  assert.ok(/<button id="voicePushToTalkKey"/.test(html), 'the key setting is a button');
+  assert.ok(!/hold Space/.test(html), 'the label no longer hard-codes Space');
 });
 
 (async () => {

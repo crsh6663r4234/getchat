@@ -92,11 +92,11 @@
     "Audio processing paused. Reconnect your microphone.": "Ses işleme durakladı. Mikrofonu yeniden bağla.",
     "Noise suppression stopped. Reconnect your microphone.": "Gürültü temizleme durdu. Mikrofonu yeniden bağla.",
     "The microphone disconnected. Reconnect it to speak.": "Mikrofon bağlantısı kesildi. Konuşmak için yeniden bağla.",
-    "Create account": "Hesap oluştur", "Recover": "Kurtar", "Name": "Ad", "Display name": "Görünen ad", "Profile picture": "Profil fotoğrafı", "Choose": "Seç", "Create anonymous account": "Anonim hesap oluştur", "Recover account": "Hesabı kurtar", "Recovery key": "Kurtarma anahtarı", "Your recovery key": "Kurtarma anahtarın", "Copy key": "Anahtarı kopyala", "Save backup": "Yedek kaydet", "Continue to GhostChat": "GhostChat'e devam et", "Messages": "Mesajlar", "Friends": "Arkadaşlar", "Find people": "Kişi bul", "Search messages": "Mesajlarda ara", "Settings": "Ayarlar", "Profile": "Profil", "Connection": "Bağlantı", "Appearance": "Görünüm", "Notifications": "Bildirimler", "Voice and screen sharing": "Sesli sohbet ve ekran paylaşımı", "Updates": "Güncellemeler", "Privacy and data": "Gizlilik ve veriler", "Theme": "Tema", "Text size": "Yazı boyutu", "Dark": "Koyu", "Light": "Açık", "Compact": "Küçük", "Default": "Varsayılan", "Large": "Büyük", "Windows notifications": "Windows bildirimleri", "Send test notification": "Test bildirimi gönder", "Microphone": "Mikrofon", "Speaker": "Hoparlör", "System default": "Sistem varsayılanı", "Refresh audio devices": "Ses aygıtlarını yenile", "Echo cancellation": "Yankı engelleme", "Noise suppression": "Gürültü azaltma", "Automatic microphone gain": "Otomatik mikrofon seviyesi", "Push to talk (hold Space)": "Bas-konuş (Boşluk tuşunu basılı tut)", "Share system audio with screen": "Ekranla sistem sesini paylaş", "Save settings": "Ayarları kaydet", "Check now": "Şimdi kontrol et", "Install and restart": "Yükle ve yeniden başlat", "Save profile": "Profili kaydet", "Remove photo": "Fotoğrafı kaldır", "Your quiet corner": "Sana özel alan", "A little more room to talk.": "Rahatça konuşabileceğin bir alan.", "Find someone by username, send a friend request, then start a private conversation. Your account does not need an email or phone number.": "Etiketiyle kişi bul, arkadaşlık isteği gönder ve özel sohbete başla. Hesap için e-posta veya telefon gerekmez.", "View friends": "Arkadaşları gör", "Search": "Ara", "Search by username or user ID. GhostChat does not publish a public directory.": "Kullanıcı etiketiyle veya kullanıcı kimliğiyle ara. GhostChat herkese açık bir rehber yayınlamaz.", "No conversations yet. Find a friend to start a chat.": "Henüz sohbet yok. Sohbet başlatmak için arkadaş ekle.", "No pending requests.": "Bekleyen istek yok.", "Your friends": "Arkadaşların", "Requests": "İstekler", "DIRECT MESSAGES": "ÖZEL MESAJLAR", "No friends yet. Use Find people to add someone.": "Henüz arkadaşın yok. Kişi bul bölümünden arkadaş ekleyebilirsin.", "Manage requests and start a private conversation.": "İstekleri yönet ve özel sohbet başlat.", "All friends": "Tüm arkadaşlar", "Accept": "Kabul et", "Ignore": "Yoksay", "Message": "Mesaj", "Add friend": "Arkadaş ekle", "Request sent": "İstek gönderildi", "No friend requests right now.": "Şu anda arkadaşlık isteği yok.", "No matching messages.": "Eşleşen mesaj yok.", "Edited": "Düzenlendi", "Edit": "Düzenle", "Delete": "Sil", "Write a message…": "Mesaj yaz…", "Load earlier messages": "Önceki mesajları yükle", "Call": "Ara", "End call": "Aramayı bitir", "Settings saved.": "Ayarlar kaydedildi.", "Profile saved.": "Profil kaydedildi.", "Friend request accepted.": "Arkadaşlık isteği kabul edildi.", "Request removed.": "İstek kaldırıldı.", "Choose an image file.": "Bir resim dosyası seç.", "That photo is too detailed. Choose a smaller image.": "Fotoğraf çok detaylı. Daha küçük bir görsel seç.", "Could not use that photo.": "Fotoğraf kullanılamadı.", "Checking for updates": "Güncellemeler kontrol ediliyor", "Update required": "Güncelleme gerekli", "Downloading update": "Güncelleme indiriliyor", "Update failed": "Güncelleme başarısız", "Try again": "Yeniden dene", "Getting the latest version ready…": "En yeni sürüm hazırlanıyor…", "This app version is out of date.": "Bu uygulama sürümü güncel değil.", "Preparing the update…": "Güncelleme hazırlanıyor…"
+    "Create account": "Hesap oluştur", "Recover": "Kurtar", "Name": "Ad", "Display name": "Görünen ad", "Profile picture": "Profil fotoğrafı", "Choose": "Seç", "Create anonymous account": "Anonim hesap oluştur", "Recover account": "Hesabı kurtar", "Recovery key": "Kurtarma anahtarı", "Your recovery key": "Kurtarma anahtarın", "Copy key": "Anahtarı kopyala", "Save backup": "Yedek kaydet", "Continue to GhostChat": "GhostChat'e devam et", "Messages": "Mesajlar", "Friends": "Arkadaşlar", "Find people": "Kişi bul", "Search messages": "Mesajlarda ara", "Settings": "Ayarlar", "Profile": "Profil", "Connection": "Bağlantı", "Appearance": "Görünüm", "Notifications": "Bildirimler", "Voice and screen sharing": "Sesli sohbet ve ekran paylaşımı", "Updates": "Güncellemeler", "Privacy and data": "Gizlilik ve veriler", "Theme": "Tema", "Text size": "Yazı boyutu", "Dark": "Koyu", "Light": "Açık", "Compact": "Küçük", "Default": "Varsayılan", "Large": "Büyük", "Windows notifications": "Windows bildirimleri", "Send test notification": "Test bildirimi gönder", "Microphone": "Mikrofon", "Speaker": "Hoparlör", "System default": "Sistem varsayılanı", "Refresh audio devices": "Ses aygıtlarını yenile", "Echo cancellation": "Yankı engelleme", "Noise suppression": "Gürültü azaltma", "Automatic microphone gain": "Otomatik mikrofon seviyesi", "Push to talk": "Bas-konuş", "Push-to-talk key": "Bas-konuş tuşu", "Hold {key} to speak.": "Konuşmak için {key} tuşunu basılı tut.", "Press a key…": "Bir tuşa bas…", "Share system audio with screen": "Ekranla sistem sesini paylaş", "Save settings": "Ayarları kaydet", "Check now": "Şimdi kontrol et", "Install and restart": "Yükle ve yeniden başlat", "Save profile": "Profili kaydet", "Remove photo": "Fotoğrafı kaldır", "Your quiet corner": "Sana özel alan", "A little more room to talk.": "Rahatça konuşabileceğin bir alan.", "Find someone by username, send a friend request, then start a private conversation. Your account does not need an email or phone number.": "Etiketiyle kişi bul, arkadaşlık isteği gönder ve özel sohbete başla. Hesap için e-posta veya telefon gerekmez.", "View friends": "Arkadaşları gör", "Search": "Ara", "Search by username or user ID. GhostChat does not publish a public directory.": "Kullanıcı etiketiyle veya kullanıcı kimliğiyle ara. GhostChat herkese açık bir rehber yayınlamaz.", "No conversations yet. Find a friend to start a chat.": "Henüz sohbet yok. Sohbet başlatmak için arkadaş ekle.", "No pending requests.": "Bekleyen istek yok.", "Your friends": "Arkadaşların", "Requests": "İstekler", "DIRECT MESSAGES": "ÖZEL MESAJLAR", "No friends yet. Use Find people to add someone.": "Henüz arkadaşın yok. Kişi bul bölümünden arkadaş ekleyebilirsin.", "Manage requests and start a private conversation.": "İstekleri yönet ve özel sohbet başlat.", "All friends": "Tüm arkadaşlar", "Accept": "Kabul et", "Ignore": "Yoksay", "Message": "Mesaj", "Add friend": "Arkadaş ekle", "Request sent": "İstek gönderildi", "No friend requests right now.": "Şu anda arkadaşlık isteği yok.", "No matching messages.": "Eşleşen mesaj yok.", "Edited": "Düzenlendi", "Edit": "Düzenle", "Delete": "Sil", "Write a message…": "Mesaj yaz…", "Load earlier messages": "Önceki mesajları yükle", "Call": "Ara", "End call": "Aramayı bitir", "Settings saved.": "Ayarlar kaydedildi.", "Profile saved.": "Profil kaydedildi.", "Friend request accepted.": "Arkadaşlık isteği kabul edildi.", "Request removed.": "İstek kaldırıldı.", "Choose an image file.": "Bir resim dosyası seç.", "That photo is too detailed. Choose a smaller image.": "Fotoğraf çok detaylı. Daha küçük bir görsel seç.", "Could not use that photo.": "Fotoğraf kullanılamadı.", "Checking for updates": "Güncellemeler kontrol ediliyor", "Update required": "Güncelleme gerekli", "Downloading update": "Güncelleme indiriliyor", "Update failed": "Güncelleme başarısız", "Try again": "Yeniden dene", "Getting the latest version ready…": "En yeni sürüm hazırlanıyor…", "This app version is out of date.": "Bu uygulama sürümü güncel değil.", "Preparing the update…": "Güncelleme hazırlanıyor…"
   };
   Object.assign(trText, {
     "is downloading": "indiriliyor",
-    "Choose a friend or find someone new.": "Bir arkadaş seç ya da yeni birini bul.", "Connected": "Bağlandı", "Reconnecting": "Yeniden bağlanıyor", "Voice ready": "Ses hazır", "Incoming call": "Gelen arama", "Calling…": "Aranıyor…", "Connecting…": "Bağlanıyor…", "In voice": "Sesli görüşmede", "Reconnecting…": "Yeniden bağlanıyor…", "Voice": "Ses", "Voice call": "Sesli arama", "Try microphone": "Mikrofonu dene", "Mic off": "Mikrofon kapalı", "Speaking": "Konuşuyor", "Hold Space": "Boşluk tuşunu basılı tut", "Turn mic on": "Mikrofonu aç", "Mute mic": "Mikrofonu kapat", "Sound off": "Ses kapalı", "Sound on": "Ses açık", "Starting…": "Başlatılıyor…", "Stop sharing": "Paylaşımı durdur", "Share screen": "Ekranı paylaş", "No microphone detected. Calls can still be joined muted so you can listen.": "Mikrofon bulunamadı. Yine de sessiz katılıp dinleyebilirsin.", "Microphone access is unavailable. You can stay muted or allow access and try again.": "Mikrofon erişimi yok. Sessiz kalabilir veya izin verip tekrar deneyebilirsin.", "No microphone found. You can still join calls muted.": "Mikrofon bulunamadı. Aramalara sessiz katılabilirsin.", "Audio devices refreshed.": "Ses aygıtları yenilendi.", "Checking voice relay support…": "Ses aktarım desteği kontrol ediliyor…", "Server address": "Sunucu adresi", "Selected server": "Seçili sunucu", "Local server": "Yerel sunucu", "Search @username or user ID": "@etiket veya kullanıcı kimliği ara", "Search people": "Kişi ara", "Search in your messages": "Mesajlarında ara", "Search for a username or user ID. Users are not listed publicly.": "Kullanıcı etiketiyle veya kimliğiyle ara. Kullanıcılar herkese açık listelenmez.", "Searches the 50 latest messages in each conversation on this device; your search phrase stays local.": "Bu cihazda her sohbetin son 50 mesajını arar; arama ifaden cihazında kalır.", "Searching locally…": "Yerel olarak aranıyor…", "Search could not load your messages.": "Mesajların yüklenemedi.", "No users found. Check the spelling and try again.": "Kullanıcı bulunamadı. Yazımı kontrol edip tekrar dene.", "Searching…": "Aranıyor…", "You are logged out.": "Oturum kapatıldı.", "Preferences exported.": "Tercihler dışa aktarıldı.", "Account data exported.": "Hesap verileri indirildi.", "Call audio is still blocked by Windows or the audio device.": "Arama sesi Windows veya ses aygıtı tarafından engelleniyor."
+    "Choose a friend or find someone new.": "Bir arkadaş seç ya da yeni birini bul.", "Connected": "Bağlandı", "Reconnecting": "Yeniden bağlanıyor", "Voice ready": "Ses hazır", "Incoming call": "Gelen arama", "Calling…": "Aranıyor…", "Connecting…": "Bağlanıyor…", "In voice": "Sesli görüşmede", "Reconnecting…": "Yeniden bağlanıyor…", "Voice": "Ses", "Voice call": "Sesli arama", "Try microphone": "Mikrofonu dene", "Mic off": "Mikrofon kapalı", "Speaking": "Konuşuyor", "Hold {key}": "{key} tuşunu basılı tut", "Turn mic on": "Mikrofonu aç", "Mute mic": "Mikrofonu kapat", "Sound off": "Ses kapalı", "Sound on": "Ses açık", "Starting…": "Başlatılıyor…", "Stop sharing": "Paylaşımı durdur", "Share screen": "Ekranı paylaş", "No microphone detected. Calls can still be joined muted so you can listen.": "Mikrofon bulunamadı. Yine de sessiz katılıp dinleyebilirsin.", "Microphone access is unavailable. You can stay muted or allow access and try again.": "Mikrofon erişimi yok. Sessiz kalabilir veya izin verip tekrar deneyebilirsin.", "No microphone found. You can still join calls muted.": "Mikrofon bulunamadı. Aramalara sessiz katılabilirsin.", "Audio devices refreshed.": "Ses aygıtları yenilendi.", "Checking voice relay support…": "Ses aktarım desteği kontrol ediliyor…", "Server address": "Sunucu adresi", "Selected server": "Seçili sunucu", "Local server": "Yerel sunucu", "Search @username or user ID": "@etiket veya kullanıcı kimliği ara", "Search people": "Kişi ara", "Search in your messages": "Mesajlarında ara", "Search for a username or user ID. Users are not listed publicly.": "Kullanıcı etiketiyle veya kimliğiyle ara. Kullanıcılar herkese açık listelenmez.", "Searches the 50 latest messages in each conversation on this device; your search phrase stays local.": "Bu cihazda her sohbetin son 50 mesajını arar; arama ifaden cihazında kalır.", "Searching locally…": "Yerel olarak aranıyor…", "Search could not load your messages.": "Mesajların yüklenemedi.", "No users found. Check the spelling and try again.": "Kullanıcı bulunamadı. Yazımı kontrol edip tekrar dene.", "Searching…": "Aranıyor…", "You are logged out.": "Oturum kapatıldı.", "Preferences exported.": "Tercihler dışa aktarıldı.", "Account data exported.": "Hesap verileri indirildi.", "Call audio is still blocked by Windows or the audio device.": "Arama sesi Windows veya ses aygıtı tarafından engelleniyor."
   });
   Object.assign(trText, {
     "Username": "Kullanıcı adı", "3–24 letters, numbers, or underscores. Your tag changes when you save.": "3–24 harf, rakam veya alt çizgi. Kaydedince etiketin değişir.", "That username is already in use.": "Bu kullanıcı adı zaten kullanılıyor.", "Username must be 3 to 24 letters, numbers, or underscores.": "Kullanıcı adı 3–24 harf, rakam veya alt çizgi içermeli.", "Display name must be 2 to 32 characters.": "Görünen ad 2–32 karakter olmalı.", "Recovery key": "Kurtarma anahtarı", "Show recovery key": "Kurtarma anahtarını göster", "Hide recovery key": "Kurtarma anahtarını gizle", "Copy key": "Anahtarı kopyala", "Save backup": "Yedek kaydet", "Generate replacement key": "Yeni kurtarma anahtarı oluştur", "Creating a replacement immediately invalidates your previous recovery key. Keep the new key somewhere safe; anyone who has it can recover your account.": "Yeni anahtar oluşturmak eski kurtarma anahtarını hemen geçersiz kılar. Yeni anahtarı güvenli yerde sakla; anahtara sahip olan herkes hesabını kurtarabilir.", "Recovery key saved securely on this device.": "Kurtarma anahtarı bu cihazda güvenli biçimde saklanıyor.", "This device has no saved key. Creating a replacement will disable your old key.": "Bu cihazda kayıtlı anahtar yok. Yeni anahtar oluşturmak eski anahtarını devre dışı bırakır.", "Recovery key copied.": "Kurtarma anahtarı kopyalandı.", "Create a replacement recovery key? Your old key will stop working immediately.": "Yeni kurtarma anahtarı oluşturulsun mu? Eski anahtarın hemen geçersiz olacak.", "A new recovery key is ready. Save a backup somewhere safe.": "Yeni kurtarma anahtarın hazır. Güvenli bir yere yedekle.", "Windows could not save this key. Save the displayed backup before closing Settings.": "Windows bu anahtarı kaydedemedi. Ayarları kapatmadan önce görünen anahtarı yedekle.", "Windows could not store a secure copy. Copy or save the key before continuing.": "Windows anahtarın güvenli bir kopyasını saklayamadı. Devam etmeden önce anahtarı kopyala veya kaydet.", "Recovery key changes are temporarily limited. Please try again later.": "Kurtarma anahtarı değişiklikleri geçici olarak sınırlandı. Daha sonra tekrar dene."
@@ -254,7 +254,7 @@
     "Turn microphone on": "Mikrofonu aç", "Mute microphone": "Mikrofonu kapat",
     "Join the call when you are ready. If no microphone is available, you can still listen muted.": "Hazır olduğunda aramaya katıl. Mikrofonun yoksa sessiz katılıp dinleyebilirsin.",
     "No microphone found. You joined muted and can still listen.": "Mikrofon bulunamadı. Sessiz katıldın; görüşmeyi dinleyebilirsin.",
-    "Push to talk is on. Hold Space to speak; your microphone stays muted otherwise.": "Bas-konuş açık. Konuşmak için Boşluk tuşunu basılı tut; diğer zamanlarda mikrofonun kapalı kalır.",
+    "Push to talk is on. Hold {key} to speak; your microphone stays muted otherwise.": "Bas-konuş açık. Konuşmak için {key} tuşunu basılı tut; diğer zamanlarda mikrofonun kapalı kalır.",
     "Your microphone is off. You can still hear the call.": "Mikrofonun kapalı. Görüşmeyi dinlemeye devam edebilirsin.",
     "Your microphone is on. Use the controls above to switch devices or mute.": "Mikrofonun açık. Yukarıdan aygıtları değiştirebilir veya mikrofonunu kapatabilirsin.",
     "Choose your microphone and speaker, or join muted and listen.": "Mikrofonunu ve hoparlörünü seç veya sessiz katılıp dinle.",
@@ -322,12 +322,15 @@
     const recoveryToggle = $("#showSettingsRecoveryKey");
     if (recoveryToggle) recoveryToggle.textContent = translate(recoveryValue?.classList.contains("hidden") ? "Show recovery key" : "Hide recovery key");
     renderUpdateStatus();
+    renderPushToTalkKey();
   }
   let voiceClient = null;
   let groupVoiceClient = null;
   // The push-to-talk key the user is holding, so keyup releases it even if
-  // focus moved.
+  // focus moved; and whether the settings key button waits for a key.
   let pushToTalkHeldCode = null;
+  let pushToTalkKeyCapture = false;
+  let pushToTalkSwallowKeyUp = null;
   let voiceUiState = { status: "idle" };
   let groupVoiceUiState = { status: "idle", participants: [] };
   let microphoneTestStream = null;
@@ -604,7 +607,7 @@
         const remoteSpeaking = now - lastRemoteVoice < 260;
         $("#voiceLocalCard").classList.toggle("is-speaking", localSpeaking);
         $("#voicePeerCard").classList.toggle("is-speaking", remoteSpeaking);
-        $("#voiceLocalSpeaking").textContent = translate(localSpeaking ? "Speaking" : !voiceUiState.micAvailable ? "No microphone" : voiceUiState.micMuted ? (voiceUiState.pushToTalk && !voiceUiState.micManuallyMuted ? "Hold Space" : "Mic off") : "Microphone on");
+        $("#voiceLocalSpeaking").textContent = localSpeaking ? translate("Speaking") : !voiceUiState.micAvailable ? translate("No microphone") : voiceUiState.micMuted ? (voiceUiState.pushToTalk && !voiceUiState.micManuallyMuted ? holdPushToTalkKeyText() : translate("Mic off")) : translate("Microphone on");
         $("#voicePeerSpeaking").textContent = translate(isPeerAudioMuted() ? "Muted for you" : remoteSpeaking ? "Speaking" : "Listening");
       }
       voiceSpeakingFrame = requestAnimationFrame(tick);
@@ -746,6 +749,45 @@
     };
   }
 
+  const PUSH_TO_TALK_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9]{0,31}$/;
+  function validPushToTalkKey(code) { return PUSH_TO_TALK_KEY_PATTERN.test(String(code || "")) && code !== "Escape"; }
+  function pushToTalkKey() {
+    const code = localStorage.getItem("ghostchat.voice.pttKey");
+    return validPushToTalkKey(code) ? code : "Space";
+  }
+  const PUSH_TO_TALK_KEY_NAMES = {
+    Space: ["Space", "Boşluk"], Enter: ["Enter", "Enter"], Tab: ["Tab", "Tab"], Backspace: ["Backspace", "Geri"], CapsLock: ["Caps Lock", "Caps Lock"],
+    ShiftLeft: ["Left Shift", "Sol Shift"], ShiftRight: ["Right Shift", "Sağ Shift"], ControlLeft: ["Left Ctrl", "Sol Ctrl"], ControlRight: ["Right Ctrl", "Sağ Ctrl"],
+    AltLeft: ["Left Alt", "Sol Alt"], AltRight: ["Right Alt", "Sağ Alt"], MetaLeft: ["Left Windows", "Sol Windows"], MetaRight: ["Right Windows", "Sağ Windows"], ContextMenu: ["Menu", "Menü"],
+    ArrowUp: ["Up arrow", "Yukarı ok"], ArrowDown: ["Down arrow", "Aşağı ok"], ArrowLeft: ["Left arrow", "Sol ok"], ArrowRight: ["Right arrow", "Sağ ok"],
+    Insert: ["Insert", "Insert"], Delete: ["Delete", "Delete"], Home: ["Home", "Home"], End: ["End", "End"], PageUp: ["Page Up", "Page Up"], PageDown: ["Page Down", "Page Down"],
+    Pause: ["Pause", "Pause"], ScrollLock: ["Scroll Lock", "Scroll Lock"], PrintScreen: ["Print Screen", "Print Screen"], NumLock: ["Num Lock", "Num Lock"],
+    Backquote: ["`", "`"], Minus: ["-", "-"], Equal: ["=", "="], BracketLeft: ["[", "["], BracketRight: ["]", "]"], Backslash: ["\\", "\\"], IntlBackslash: ["<", "<"],
+    Semicolon: [";", ";"], Quote: ["'", "'"], Comma: [",", ","], Period: [".", "."], Slash: ["/", "/"],
+  };
+  function pushToTalkKeyLabel(code = pushToTalkKey()) {
+    if (Object.hasOwn(PUSH_TO_TALK_KEY_NAMES, code)) return PUSH_TO_TALK_KEY_NAMES[code][tr() ? 1 : 0];
+    const letter = /^(?:Key|Digit)([A-Z0-9])$/.exec(code);
+    if (letter) return letter[1];
+    const numpad = /^Numpad(.+)$/.exec(code);
+    return numpad ? `Num ${numpad[1]}` : code;
+  }
+  function holdPushToTalkKeyText() { return translate("Hold {key}").replace("{key}", pushToTalkKeyLabel()); }
+  function renderPushToTalkKey() {
+    const button = $("#voicePushToTalkKey");
+    if (button) {
+      button.textContent = pushToTalkKeyCapture ? translate("Press a key…") : pushToTalkKeyLabel();
+      button.setAttribute("aria-pressed", String(pushToTalkKeyCapture));
+    }
+    const hint = $("#voicePushToTalkHint");
+    if (hint) hint.textContent = translate("Hold {key} to speak.").replace("{key}", pushToTalkKeyLabel());
+  }
+  function finishPushToTalkKeyCapture(code) {
+    pushToTalkKeyCapture = false;
+    if (code) localStorage.setItem("ghostchat.voice.pttKey", code);
+    renderPushToTalkKey();
+    renderVoiceControls();
+  }
   // Text fields keep every key; buttons, checkboxes and other controls do not
   // get the push-to-talk key, so holding it never presses them.
   const NON_TEXT_INPUT_TYPES = new Set(["button", "checkbox", "color", "file", "image", "radio", "range", "reset", "submit"]);
@@ -783,6 +825,7 @@
     $("#voiceAutoGain").checked = settings.autoGainControl;
     $("#voiceNvidiaBroadcast").checked = settings.nvidiaBroadcast;
     $("#voicePushToTalk").checked = settings.pushToTalk;
+    renderPushToTalkKey();
     $("#voiceShareAudio").checked = settings.shareSystemAudio;
     $("#voiceShareQuality").value = ["balanced", "detail", "motion", "saver"].includes(settings.shareQuality) ? settings.shareQuality : "balanced";
     $("#voiceRelayOnly").checked = true;
@@ -3712,8 +3755,8 @@
     const pushToTalk = groupMode ? voiceSettings().pushToTalk : voice.pushToTalk;
     const localMuted = !voice.micAvailable || (voice.micMuted && (!pushToTalk || voice.micManuallyMuted || !voice.pushToTalkPressed));
     $("#voiceLocalMutedBadge").classList.toggle("hidden", !localMuted);
-    $("#voiceLocalMutedBadge").textContent = translate(!voice.micAvailable ? "No microphone" : voice.pushToTalk && !voice.micManuallyMuted ? "Hold Space" : "Mic off");
-    $("#voiceLocalSpeaking").textContent = translate(!voice.micAvailable ? "No microphone" : localMuted ? (voice.pushToTalk && !voice.micManuallyMuted ? "Hold Space" : "Mic off") : "Microphone on");
+    $("#voiceLocalMutedBadge").textContent = !voice.micAvailable ? translate("No microphone") : voice.pushToTalk && !voice.micManuallyMuted ? holdPushToTalkKeyText() : translate("Mic off");
+    $("#voiceLocalSpeaking").textContent = !voice.micAvailable ? translate("No microphone") : localMuted ? (voice.pushToTalk && !voice.micManuallyMuted ? holdPushToTalkKeyText() : translate("Mic off")) : translate("Microphone on");
     $("#voicePeerSpeaking").textContent = translate(isPeerAudioMuted() ? "Muted for you" : "Listening");
     if (!groupMode) renderPeerMuteState();
     $("#voiceStageStatus").textContent = translate(voice.status === "incoming" ? "Incoming call" : (labels[voice.status] || "Voice call"));
@@ -3744,7 +3787,7 @@
     $("#voiceStageMicButton").classList.toggle("is-muted", voice.micMuted && (!pushToTalk || voice.micManuallyMuted || !voice.micAvailable));
     $("#voiceStageMicButton").setAttribute("aria-pressed", String(voice.micMuted));
     setVoiceRoomIcon("#voiceStageMicIcon", voice.micMuted ? "micOff" : "mic");
-    $("#voiceStageMicLabel").textContent = translate(!voice.micAvailable ? "Try microphone" : pushToTalk ? (voice.micManuallyMuted ? "Mic off" : (voice.pushToTalkPressed ? "Speaking" : "Hold Space")) : (voice.micMuted ? "Turn mic on" : "Mute mic"));
+    $("#voiceStageMicLabel").textContent = !voice.micAvailable ? translate("Try microphone") : pushToTalk ? (voice.micManuallyMuted ? translate("Mic off") : (voice.pushToTalkPressed ? translate("Speaking") : holdPushToTalkKeyText())) : translate(voice.micMuted ? "Turn mic on" : "Mute mic");
     $("#voiceStageMicButton").title = translate(!voice.micAvailable ? "Try to connect a microphone; if none is available you can keep listening muted" : (voice.micMuted ? "Turn microphone on" : "Mute microphone"));
     $("#voiceOutputButton").classList.toggle("hidden", !activeCall);
     $("#voiceOutputButton").classList.toggle("is-muted", voice.speakerMuted);
@@ -3794,7 +3837,7 @@
       : !voice.micAvailable && activeCall
         ? (voice.micUnavailableReason || "No microphone found. You joined muted and can still listen.")
         : voice.pushToTalk
-          ? "Push to talk is on. Hold Space to speak; your microphone stays muted otherwise."
+          ? translate("Push to talk is on. Hold {key} to speak; your microphone stays muted otherwise.").replace("{key}", pushToTalkKeyLabel())
           : voice.micMuted && activeCall
             ? "Your microphone is off. You can still hear the call."
             : activeCall
@@ -4581,6 +4624,7 @@
   });
   setInterval(updateVoiceCallDuration, 1000);
   $("#settingsDialog").addEventListener("close", () => {
+    if (pushToTalkKeyCapture) finishPushToTalkKeyCapture(null);
     void stopMicrophoneTest();
     $("#settingsRecoveryValue").value = "";
     $("#settingsRecoveryValue").classList.add("hidden");
@@ -4902,14 +4946,25 @@
     if (!button.disabled) return;
     button.title = translate("Encrypting and uploading securely…") + " " + percent + "%";
   });
+  $("#voicePushToTalkKey").onclick = () => { pushToTalkKeyCapture = true; renderPushToTalkKey(); };
   document.addEventListener("keydown", event => {
+    if (pushToTalkKeyCapture) {
+      // The settings key button is waiting: this key is the new binding, or
+      // Escape cancels. Nothing else (shortcuts, dialogs, buttons) sees it.
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.code !== "Escape" && !validPushToTalkKey(event.code)) return;
+      pushToTalkSwallowKeyUp = event.code;
+      finishPushToTalkKeyCapture(event.code === "Escape" ? null : event.code);
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setPage("search"); }
     if (event.key === "?" && !event.ctrlKey && !event.metaKey && !event.altKey && !event.target.closest("input, textarea, select, [contenteditable=true]")) {
       event.preventDefault();
       if (!$("#shortcutsDialog").open) $("#shortcutsDialog").showModal();
     }
     if (event.key === "Escape" && !$("#settingsDialog").open) document.activeElement?.blur();
-    if (event.code === "Space" && voiceSettings().pushToTalk && !isTextEntryTarget(event.target)) {
+    if (event.code === pushToTalkKey() && voiceSettings().pushToTalk && !isTextEntryTarget(event.target)) {
       // preventDefault keeps a focused button or checkbox from firing and
       // the page from scrolling; auto-repeat is swallowed the same way.
       event.preventDefault();
@@ -4919,6 +4974,11 @@
     }
   });
   document.addEventListener("keyup", event => {
+    if (pushToTalkSwallowKeyUp && event.code === pushToTalkSwallowKeyUp) {
+      pushToTalkSwallowKeyUp = null;
+      event.preventDefault();
+      return;
+    }
     if (!pushToTalkHeldCode || event.code !== pushToTalkHeldCode) return;
     pushToTalkHeldCode = null;
     if (!isTextEntryTarget(event.target)) event.preventDefault();
