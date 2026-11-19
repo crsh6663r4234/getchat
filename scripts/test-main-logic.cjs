@@ -1878,6 +1878,42 @@ test('the key button shows English names in the English UI', async () => {
   assert.equal(button.textContent, 'B');
 });
 
+test('the key button names the character a Turkish Q keyboard produces', async () => {
+  const app = await pttApp({ 'ghostchat.language': 'tr' });
+  const button = app.$('#voicePushToTalkKey');
+  // Turkish Q layout: the physical key codes are US positions, event.key is
+  // the Turkish character printed on the keycap.
+  const turkishQ = [
+    ['Semicolon', 'ş', 'Ş'], ['KeyI', 'ı', 'I'], ['Quote', 'i', 'İ'], ['BracketLeft', 'ğ', 'Ğ'],
+    ['BracketRight', 'ü', 'Ü'], ['Comma', 'ö', 'Ö'], ['Period', 'ç', 'Ç'], ['Slash', '.', '.'], ['KeyQ', 'q', 'Q'],
+  ];
+  for (const [code, key, label] of turkishQ) {
+    button.onclick();
+    app.key('keydown', { code, key, target: button });
+    assert.equal(app.store.get('ghostchat.voice.pttKey'), code, `${code} stays the stored binding`);
+    assert.equal(button.textContent, label, `${code} producing ${key} is shown as ${label}`);
+  }
+  assert.equal(app.$('#voicePushToTalkHint').textContent, 'Konuşmak için Q tuşunu basılı tut.');
+  // Non-printable keys keep their code-based names.
+  for (const [code, key, label] of [['F13', 'F13', 'F13'], ['ShiftLeft', 'Shift', 'Sol Shift'], ['AltRight', 'AltGraph', 'Sağ Alt'], ['Space', ' ', 'Boşluk'], ['BracketRight', 'Dead', ']']]) {
+    button.onclick();
+    app.key('keydown', { code, key, target: button });
+    assert.equal(button.textContent, label, `${code} (${key}) is shown as ${label}`);
+  }
+  // The produced character survives a restart, and the binding still matches the physical key.
+  const again = await pttApp({ 'ghostchat.language': 'tr' });
+  const restartButton = again.$('#voicePushToTalkKey');
+  restartButton.onclick();
+  again.key('keydown', { code: 'Semicolon', key: 'ş', target: restartButton });
+  const restarted = await pttApp({ 'ghostchat.language': 'tr', 'ghostchat.voice.pttKey': again.store.get('ghostchat.voice.pttKey'), 'ghostchat.voice.pttKeyLabel': again.store.get('ghostchat.voice.pttKeyLabel') });
+  assert.equal(restarted.$('#voicePushToTalkKey').textContent, 'Ş');
+  restarted.key('keydown', { code: 'Semicolon', key: 'ş' });
+  assert.deepEqual(pttCalls(restarted), [true], 'the physical key still talks');
+  // A label stored for another key is ignored.
+  const stale = await pttApp({ 'ghostchat.voice.pttKey': 'KeyV', 'ghostchat.voice.pttKeyLabel': JSON.stringify({ code: 'Semicolon', label: 'Ş' }) });
+  assert.equal(stale.$('#voicePushToTalkKey').textContent, 'V');
+});
+
 test('push-to-talk hints name the configured key', async () => {
   const app = await pttApp({ 'ghostchat.language': 'tr', 'ghostchat.voice.pttKey': 'KeyV' });
   assert.equal(app.$('#voicePushToTalkHint').textContent, 'Konuşmak için V tuşunu basılı tut.');

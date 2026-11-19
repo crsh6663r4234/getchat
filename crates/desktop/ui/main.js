@@ -767,7 +767,25 @@
     Backquote: ["`", "`"], Minus: ["-", "-"], Equal: ["=", "="], BracketLeft: ["[", "["], BracketRight: ["]", "]"], Backslash: ["\\", "\\"], IntlBackslash: ["<", "<"],
     Semicolon: [";", ";"], Quote: ["'", "'"], Comma: [",", ","], Period: [".", "."], Slash: ["/", "/"],
   };
+  // The character a printable key produces on the user's layout (event.key),
+  // e.g. "Ş" for the Semicolon key on a Turkish Q keyboard. Non-printable
+  // keys (F13, Shift, AltGr, dead keys, Space) return null and keep the
+  // code-based name. The binding itself always stays event.code.
+  function producedKeyLabel(code, key) {
+    const text = String(key || "");
+    if ([...text].length !== 1 || /\s|\p{Cc}/u.test(text) || /^Numpad/.test(code)) return null;
+    if (text === "i") return code === "KeyI" ? "I" : "İ";
+    return text.toUpperCase();
+  }
+  function storedPushToTalkKeyLabel(code) {
+    try {
+      const stored = JSON.parse(localStorage.getItem("ghostchat.voice.pttKeyLabel") || "null");
+      return stored?.code === code && typeof stored.label === "string" && [...stored.label].length === 1 ? stored.label : null;
+    } catch { return null; }
+  }
   function pushToTalkKeyLabel(code = pushToTalkKey()) {
+    const produced = storedPushToTalkKeyLabel(code);
+    if (produced) return produced;
     if (Object.hasOwn(PUSH_TO_TALK_KEY_NAMES, code)) return PUSH_TO_TALK_KEY_NAMES[code][tr() ? 1 : 0];
     const letter = /^(?:Key|Digit)([A-Z0-9])$/.exec(code);
     if (letter) return letter[1];
@@ -784,9 +802,14 @@
     const hint = $("#voicePushToTalkHint");
     if (hint) hint.textContent = translate("Hold {key} to speak.").replace("{key}", pushToTalkKeyLabel());
   }
-  function finishPushToTalkKeyCapture(code) {
+  function finishPushToTalkKeyCapture(code, key = null) {
     pushToTalkKeyCapture = false;
-    if (code) localStorage.setItem("ghostchat.voice.pttKey", code);
+    if (code) {
+      localStorage.setItem("ghostchat.voice.pttKey", code);
+      const label = producedKeyLabel(code, key);
+      if (label) localStorage.setItem("ghostchat.voice.pttKeyLabel", JSON.stringify({ code, label }));
+      else localStorage.removeItem("ghostchat.voice.pttKeyLabel");
+    }
     renderPushToTalkKey();
     renderVoiceControls();
   }
@@ -5000,7 +5023,7 @@
       event.stopPropagation();
       if (event.code !== "Escape" && !validPushToTalkKey(event.code)) return;
       pushToTalkSwallowKeyUp = event.code;
-      finishPushToTalkKeyCapture(event.code === "Escape" ? null : event.code);
+      finishPushToTalkKeyCapture(event.code === "Escape" ? null : event.code, event.key);
       return;
     }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setPage("search"); }
