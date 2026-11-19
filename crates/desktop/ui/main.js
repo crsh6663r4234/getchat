@@ -410,7 +410,9 @@
       const speaking = create("span"); speaking.className = "voice-participant-speaking";
       const dot = create("i"); dot.className = "voice-speaking-dot";
       const label = create("span");
-      label.textContent = participant.mutedForYou ? translate("Muted for you") : participant.micMuted ? translate("Mic off") : participant.speaking ? translate("Speaking") : translate("Listening");
+      // Your own row reports your microphone; "Listening" only describes others.
+      const quiet = participant.local ? "Microphone on" : "Listening";
+      label.textContent = participant.mutedForYou ? translate("Muted for you") : participant.micMuted ? translate("Mic off") : participant.speaking ? translate("Speaking") : translate(quiet);
       speaking.append(dot, label); copy.append(name, speaking); card.append(avatar, copy);
       if (participant.mutedForYou || (participant.local && participant.micMuted)) {
         const badge = create("span"); badge.className = "voice-participant-muted";

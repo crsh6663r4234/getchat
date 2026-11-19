@@ -1929,6 +1929,24 @@ test('push-to-talk hints name the configured key', async () => {
   assert.equal(english.$('#voiceDeviceNotice').textContent, 'Push to talk is on. Hold F13 to speak; your microphone stays muted otherwise.');
 });
 
+test('the local row in group voice shows the microphone state, not "Listening"', async () => {
+  const rowLabels = (app, participants) => {
+    const before = app.created.length;
+    app.voiceStates.group = { status: 'connected', conversationId: 'g1', participants, micAvailable: true, micMuted: participants[0].micMuted, micManuallyMuted: false, pushToTalkPressed: false };
+    app.voiceOptions.group.onChange(app.voiceStates.group);
+    return app.created.slice(before).map(node => node.textContent)
+      .filter(text => ['Dinliyor', 'Listening', 'Mikrofon açık', 'Microphone on', 'Mikrofon kapalı', 'Mic off', 'Konuşuyor', 'Speaking'].includes(text));
+  };
+  const peer = { id: 'bob', name: 'Bob', local: false, speaking: false, micMuted: false };
+  const app = await pttApp({ 'ghostchat.language': 'tr', 'ghostchat.voice.ptt': 'false' });
+  assert.ok(app.voiceOptions.group, 'the group voice client is created');
+  assert.deepEqual(rowLabels(app, [{ id: 'me', name: 'Me', local: true, speaking: false, micMuted: false }, peer]), ['Mikrofon açık', 'Dinliyor'], 'mic on and quiet: the local row says the mic is on; peers still listen');
+  assert.deepEqual(rowLabels(app, [{ id: 'me', name: 'Me', local: true, speaking: false, micMuted: true }, peer]).slice(0, 2), ['Mikrofon kapalı', 'Mikrofon kapalı'], 'mic off: the row and its badge say so');
+  assert.deepEqual(rowLabels(app, [{ id: 'me', name: 'Me', local: true, speaking: true, micMuted: false }, peer]), ['Konuşuyor', 'Dinliyor']);
+  const english = await pttApp({ 'ghostchat.voice.ptt': 'false' });
+  assert.deepEqual(rowLabels(english, [{ id: 'me', name: 'Me', local: true, speaking: false, micMuted: false }, peer]), ['Microphone on', 'Listening']);
+});
+
 test('the push-to-talk key setting has Turkish and English labels', () => {
   const html = fs.readFileSync(path.join(__dirname, '../crates/desktop/ui/index.html'), 'utf8');
   assert.ok(/data-en="Push-to-talk key" data-tr="Bas-konuş tuşu"/.test(html), 'the key setting has both labels');
