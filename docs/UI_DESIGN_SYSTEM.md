@@ -10,6 +10,7 @@ GhostChat's desktop UI loads two stylesheets: `crates/desktop/ui/tokens.css` (ev
 | `--ui-text`, `--ui-muted` | Readable primary and supporting copy |
 | `--ui-accent`, `--ui-accent-soft` | A restrained user/theme accent, never a full-screen pattern |
 | `--ui-line` | Low-contrast structural edges |
+| `--text-2xs` … `--text-2xl` | Type scale (10 / 11 / 12 / 13 / 14 / 15 / 20 / 26px); 10px is the floor for visible text |
 | `--ui-radius-*` | 10 / 16 / 22px control, panel, and modal radii |
 | `--ui-ease`, `--ui-spring` | Fast interaction and entrance curves |
 
@@ -36,3 +37,7 @@ The app shell, header, rail, sidebar and dialogs are glass layers with `blur(24p
 - Inputs use the same compact 38px minimum height and a clear focus halo.
 - Direct and group voice use the same cards, device row and control treatment.
 - Buttons have a consistent primary gradient, secondary glass surface, subtle hover lift, and press scale.
+
+## 5.0 experience layer
+
+The last section of `app.css` ("GhostChat 5.0 experience layer") holds the 5.0 overrides: the overlay sidebar and its toggle share the 760px breakpoint; message actions float over the message row and appear on hover or keyboard focus; consecutive messages from one sender within five minutes drop the repeated avatar and name (`is-continuation`, set by `regroupMessages()` in `main.js`); voice cards use `is-speaking` (green), `is-mic-off` (red mic-off mark on the avatar) and `is-muted-for-you` (dimmed); toasts appear bottom-right above the composer.
