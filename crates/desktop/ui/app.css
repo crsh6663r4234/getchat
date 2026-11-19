@@ -7206,3 +7206,49 @@ label:has(> input.visually-hidden:focus-visible) {
     max-width: 100%;
   }
 }
+
+/* GhostChat 5.0 experience layer. Final overrides for navigation, messages,
+   calls and feedback; kept last so it wins over the legacy sections above. */
+
+/* Narrow windows: the conversation list becomes an overlay with a toggle at
+   the same width where it stops fitting beside the chat (760px), so it is
+   always reachable. */
+@media (max-width: 760px) {
+  .app-shell {
+    position: relative;
+  }
+
+  .rail {
+    z-index: 3;
+  }
+
+  .sidebar {
+    position: absolute;
+    z-index: 5;
+    top: 0;
+    bottom: 0;
+    left: 58px;
+    display: none;
+    width: min(320px, calc(100% - 58px));
+    box-shadow: 18px 0 44px var(--sidebar-shadow-2);
+  }
+
+  .app-shell.sidebar-open .sidebar {
+    display: flex;
+  }
+
+  .sidebar-toggle {
+    display: grid;
+    place-items: center;
+  }
+
+  .chat-tools > .connection-state {
+    width: 28px;
+    min-width: 28px;
+    height: 28px;
+    padding: 0;
+    justify-content: center;
+    border-color: transparent;
+    font-size: 0;
+  }
+}
