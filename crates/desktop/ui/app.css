@@ -7252,3 +7252,100 @@ label:has(> input.visually-hidden:focus-visible) {
     font-size: 0;
   }
 }
+
+/* Home: an existing user gets their recent conversations, unread first. */
+.welcome-card.has-recent,
+.welcome-card.is-loading {
+  width: min(100%, 560px);
+  text-align: left;
+}
+
+.welcome-card.has-recent .welcome-profile,
+.welcome-card.is-loading .welcome-profile {
+  width: 100%;
+  margin: 0 0 var(--space-5);
+}
+
+.welcome-card.has-recent h2 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-xl);
+  text-align: left;
+}
+
+.welcome-card.has-recent > p {
+  margin: 0 0 var(--space-4);
+  max-width: none;
+  text-align: left;
+}
+
+.welcome-loading {
+  margin: 0;
+  color: var(--muted);
+  text-align: center;
+}
+
+.welcome-recent {
+  display: grid;
+  gap: var(--space-1);
+  margin-bottom: var(--space-5);
+}
+
+.welcome-recent-row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 60px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line-subtle);
+  border-radius: var(--radius-panel);
+  background: var(--ink-input);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--motion-fast) var(--ease-out), border-color var(--motion-fast) var(--ease-out);
+}
+
+.welcome-recent-row:hover {
+  border-color: var(--line);
+  background: var(--ink-hover);
+}
+
+.welcome-recent-row.has-unread {
+  border-color: var(--accent-soft);
+}
+
+.welcome-recent-row .mini-avatar {
+  width: 40px;
+  height: 40px;
+}
+
+.welcome-recent-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.welcome-recent-name {
+  overflow: hidden;
+  font-size: var(--text-md);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.welcome-recent-preview {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: var(--text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.welcome-recent-row.has-unread .welcome-recent-preview {
+  color: var(--muted-strong);
+}
+
+.welcome-card.has-recent .welcome-actions {
+  justify-content: flex-start;
+}

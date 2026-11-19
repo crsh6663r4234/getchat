@@ -1954,6 +1954,47 @@ test('the push-to-talk key setting has Turkish and English labels', () => {
   assert.ok(!/hold Space/.test(html), 'the label no longer hard-codes Space');
 });
 
+async function homeScreen({ language = 'en', conversations = [] } = {}) {
+  const base = 'https://a.example';
+  const app = harness({
+    storage: { 'ghostchat.language': language, 'ghostchat.server': base },
+    credentials: { [await serverKey(base)]: 'token-A' },
+    fetchHandler: url => {
+      if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
+      if (url.endsWith('/v1/conversations')) return { body: conversations };
+      return { body: [] };
+    },
+  });
+  await app.flush(() => app.created.some(node => node.className === 'welcome-card'));
+  return app;
+}
+
+test('the home screen offers recent conversations, unread first, once you have some', async () => {
+  const conversations = [
+    { id: 'c-read', kind: 'direct', peer_id: 'p1', display_name: 'Newer read', username: 'a', last_message: 'hi', last_at: '2026-11-19T10:00:00Z', unread_count: 0 },
+    { id: 'c-unread', kind: 'direct', peer_id: 'p2', display_name: 'Older unread', username: 'b', last_message: 'hey', last_at: '2026-11-18T10:00:00Z', unread_count: 3 },
+    { id: 'g', kind: 'group', display_name: 'Group', last_at: '2026-11-19T09:00:00Z', unread_count: 0 },
+  ];
+  const app = await homeScreen({ conversations });
+  const texts = app.created.map(node => node.textContent);
+  assert.ok(texts.includes('Pick up where you left off'), 'the heading speaks to someone with chats');
+  assert.ok(!texts.includes('Start your first conversation'), 'no first-run copy for an existing user');
+  const names = app.created.filter(node => node.className === 'welcome-recent-name').map(node => node.textContent);
+  assert.deepEqual(names.slice(-3), ['Older unread', 'Newer read', 'Group'], 'unread first, then newest');
+  const rows = app.created.filter(node => String(node.className).startsWith('welcome-recent-row'));
+  assert.equal(rows.length % 3, 0, 'one row per conversation in each render');
+  assert.ok(rows.at(-3).className.includes('has-unread') && !rows.at(-2).className.includes('has-unread'), 'only the unread row is marked');
+  const turkish = await homeScreen({ language: 'tr', conversations });
+  assert.ok(turkish.created.some(node => node.textContent === 'Kaldığın yerden devam et'), 'the heading is translated');
+});
+
+test('the home screen keeps the first-run invitation when there are no conversations', async () => {
+  const app = await homeScreen();
+  const texts = app.created.map(node => node.textContent);
+  assert.ok(texts.includes('Start your first conversation'));
+  assert.ok(!app.created.some(node => node.className === 'welcome-recent-name'));
+});
+
 // Every English UI string the app passes to translate(), toast() or create()
 // as a literal needs a Turkish entry in trText; every data-en label in the
 // page needs its data-tr twin. A new visible string without Turkish fails here.

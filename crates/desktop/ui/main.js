@@ -312,6 +312,9 @@
     "Test notification sent. If it is hidden, check Windows notification settings.": "Test bildirimi gönderildi. Görünmüyorsa Windows bildirim ayarlarını kontrol et.",
     "Account and data deleted.": "Hesap ve veriler silindi."
   });
+  Object.assign(trText, {
+    "Pick up where you left off": "Kaldığın yerden devam et", "Loading your conversations…": "Sohbetlerin yükleniyor…", "Unread conversations come first. Open one, or find someone new.": "Okunmamış sohbetler en üstte. Birini aç ya da yeni biriyle tanış."
+  });
   let updateStatusKey = "Updates are checked automatically.";
   let updateStatusValues = {};
   const tr = () => (localStorage.getItem("ghostchat.language") || "en") === "tr";
@@ -1471,7 +1474,7 @@
     // Another account's saved mode says nothing about this one.
     try { state.presenceLoaded = false; state.user = await request("/v1/me"); }
     catch { await clearToken(); state.user = null; show("authView"); return; }
-    resetCryptoViewState();
+    resetCryptoViewState(); state.conversationsLoaded = false;
     state.serverVersion = null; void readServerVersion();
     show("appView"); updateIdentity(); setTheme(); seasonalIdentity(); setPage("messages");
     await refreshPresence(); await refreshBlockedUsers(); await refreshFriends(); await refreshConversations(); connectSocket(); void checkVoiceRelaySupport();
@@ -1509,12 +1512,49 @@
     profileCopy.append(createText("strong", "", state.user?.display_name || "Ghost"), createText("span", "", `@${state.user?.username || "ghost"}`), create("small", "", "Online on this device"));
     const edit = create("span", "welcome-profile-edit", "Edit profile");
     profile.append(avatar, profileCopy, edit); profile.onclick = openSettings;
-    const orb = create("div", "welcome-orb"); orb.setAttribute("aria-hidden", "true"); orb.append(uiIcon("messages"));
-    card.append(profile, orb, create("h2", "", "Start your first conversation"), create("p", "", "Your profile is ready. Add a photo, refine your name, or find someone you trust to start a conversation."));
+    if (!state.conversationsLoaded) {
+      // Until the list arrives, say so instead of flashing first-run copy.
+      const loading = create("p", "welcome-loading", "Loading your conversations…"); loading.setAttribute("role", "status");
+      card.classList.add("is-loading"); card.append(profile, loading); $("#pageContent").append(card); renderVoiceControls(); return;
+    }
+    const recent = recentConversations(state.conversations);
     const actions = create("div", "welcome-actions");
-    const find = create("button", "button primary", "Find people"); find.onclick = () => setPage("search");
+    // With chats to return to, the next step is one of them; the search for
+    // new people becomes the secondary action.
+    const find = create("button", recent.length ? "button secondary" : "button primary", "Find people"); find.onclick = () => setPage("search");
     const friends = create("button", "button secondary", "View friends"); friends.onclick = () => setPage("friends");
-    actions.append(find, friends); card.append(actions); $("#pageContent").append(card); animateContent($("#pageContent")); renderVoiceControls();
+    actions.append(find, friends);
+    if (recent.length) {
+      card.classList.add("has-recent");
+      const list = create("div", "welcome-recent"); list.setAttribute("role", "list");
+      for (const convo of recent) {
+        const unread = Number(convo.unread_count) || 0;
+        const row = create("button", `welcome-recent-row${unread ? " has-unread" : ""}`); row.type = "button"; row.setAttribute("role", "listitem");
+        row.onclick = () => openConversation(convo.id);
+        const avatar = create("span", "mini-avatar"); setAvatar(avatar, convo.display_name, convo.avatar_data); if (convo.kind === "direct") addPresenceDot(avatar, convo.peer_id);
+        const copy = create("span", "welcome-recent-copy"); copy.append(createText("strong", "welcome-recent-name", convo.display_name), createText("span", "welcome-recent-preview", conversationPreview(convo)));
+        row.append(avatar, copy);
+        if (unread) { const badge = create("span", "unread-badge", unread > 99 ? "99+" : String(unread)); badge.title = `${unread} ${translate("Unread messages")}`; badge.setAttribute("aria-label", badge.title); row.append(badge); }
+        list.append(row);
+      }
+      card.append(profile, create("h2", "", "Pick up where you left off"), create("p", "", "Unread conversations come first. Open one, or find someone new."), list, actions);
+    } else {
+      const orb = create("div", "welcome-orb"); orb.setAttribute("aria-hidden", "true"); orb.append(uiIcon("messages"));
+      card.append(profile, orb, create("h2", "", "Start your first conversation"), create("p", "", "Your profile is ready. Add a photo, refine your name, or find someone you trust to start a conversation."), actions);
+    }
+    $("#pageContent").append(card); animateContent($("#pageContent")); renderVoiceControls();
+  }
+  // The home screen's shortlist: unread conversations first, then the newest.
+  function recentConversations(conversations, limit = 4) {
+    const time = convo => Date.parse(convo.last_at || "") || 0;
+    return [...(conversations || [])]
+      .sort((a, b) => (Number(b.unread_count) > 0) - (Number(a.unread_count) > 0) || time(b) - time(a))
+      .slice(0, limit);
+  }
+  function conversationPreview(convo) {
+    if (convo.last_message?.startsWith("e2e1:")) return translate("Encrypted conversation");
+    if (convo.last_message?.startsWith("file:")) return translate("File shared");
+    return convo.last_message || (convo.kind === "group" ? `${convo.member_count} ${translate("members")}` : `@${convo.username}`);
   }
   function closeMobileSidebar() {
     $("#appView").classList.remove("sidebar-open");
@@ -1587,11 +1627,7 @@
       for (const convo of state.conversations) {
         const row = create("button", `list-row${state.active?.id === convo.id ? " active" : ""}`); row.onclick = () => openConversation(convo.id);
         const avatar = create("div", "mini-avatar"); setAvatar(avatar, convo.display_name, convo.avatar_data); if (convo.kind === "direct") addPresenceDot(avatar, convo.peer_id); row.append(avatar);
-        const preview = convo.last_message?.startsWith("e2e1:")
-          ? translate("Encrypted conversation")
-          : convo.last_message?.startsWith("file:")
-          ? translate("File shared")
-          : convo.last_message || (convo.kind === "group" ? `${convo.member_count} ${translate("members")}` : `@${convo.username}`);
+        const preview = conversationPreview(convo);
         const copy = create("div", "list-copy"); copy.append(createText("strong", "", convo.display_name), createText("span", "", preview)); row.append(copy);
         if (convo.unread_count > 0) { const unread = create("span", "unread-badge", convo.unread_count > 99 ? "99+" : String(convo.unread_count)); unread.title = `${convo.unread_count} ${translate("Unread messages")}`; unread.setAttribute("aria-label", unread.title); row.append(unread); }
         root.append(row);
@@ -1744,7 +1780,11 @@
   }
   async function refreshConversations() {
     try { state.conversations = await request("/v1/conversations"); state.cryptoMemberIds.clear(); state.cryptoDeletedMemberIds.clear(); } catch (error) { console.warn(error); }
+    state.conversationsLoaded = true;
     renderSidebar();
+    // Keep the home screen's recent list current, unless someone is using it.
+    const home = $("#pageContent");
+    if (state.page === "messages" && !state.active && document.querySelector("#pageContent > .welcome-card") && !home.contains(document.activeElement)) showWelcome();
   }
   async function refreshBlockedUsers() {
     try {
