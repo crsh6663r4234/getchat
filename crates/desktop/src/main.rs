@@ -496,6 +496,7 @@ async fn crypto_get_cached_text_state(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn crypto_process_event(
     state: State<'_, DesktopState>,
     user_id: String,
@@ -540,6 +541,7 @@ async fn crypto_discard_group_membership_update(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn crypto_inspect_event(
     state: State<'_, DesktopState>,
     user_id: String,

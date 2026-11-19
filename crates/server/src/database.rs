@@ -184,7 +184,7 @@ pub(crate) fn rotate_upgrade_backups(written: &std::path::Path) {
             Some((version.parse().ok()?, entry.path()))
         })
         .collect();
-    others.sort_by(|a, b| b.0.cmp(&a.0));
+    others.sort_by_key(|entry| std::cmp::Reverse(entry.0));
     for (_, path) in others.into_iter().skip(KEPT_UPGRADE_BACKUPS - 1) {
         match std::fs::remove_file(&path) {
             Ok(()) => {

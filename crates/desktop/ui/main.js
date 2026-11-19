@@ -734,16 +734,18 @@
     return {
       microphoneId: localStorage.getItem("ghostchat.voice.microphone") || "",
       speakerId: localStorage.getItem("ghostchat.voice.speaker") || "",
-      echoCancellation: localStorage.getItem("ghostchat.voice.echo") !== "false",
-      noiseSuppression: localStorage.getItem("ghostchat.voice.noise") !== "false",
-      noiseEngine: localStorage.getItem("ghostchat.voice.noiseEngine") === "deepfilter" ? "deepfilter" : "rnnoise",
-      autoGainControl: localStorage.getItem("ghostchat.voice.gain") !== "false",
-      nvidiaBroadcast: localStorage.getItem("ghostchat.voice.nvidiaBroadcast") === "true",
+      // Direct-call mode is intentionally raw: no local denoiser, echo
+      // canceller, auto gain or external virtual microphone is inserted.
+      p2pOnly: localStorage.getItem("ghostchat.voice.p2p") === "true",
+      echoCancellation: false,
+      noiseSuppression: false,
+      noiseEngine: "off",
+      autoGainControl: false,
+      nvidiaBroadcast: false,
       pushToTalk: localStorage.getItem("ghostchat.voice.ptt") === "true",
       shareSystemAudio: localStorage.getItem("ghostchat.voice.systemAudio") === "true",
       shareQuality: localStorage.getItem("ghostchat.share.quality") || "balanced",
-      // Calls never fall back to peer-to-peer. This preserves caller IP privacy.
-      relayOnly: true,
+      relayOnly: false,
       volume: Number(localStorage.getItem("ghostchat.voice.volume") || "100"),
       speakerMuted: localStorage.getItem("ghostchat.voice.speakerMuted") === "true",
     };
@@ -805,12 +807,13 @@
   function persistVoiceSettings() {
     localStorage.setItem("ghostchat.voice.microphone", $("#voiceMicSelect").value);
     localStorage.setItem("ghostchat.voice.speaker", $("#voiceSpeakerSelect").value);
-    localStorage.setItem("ghostchat.voice.echo", String($("#voiceEchoCancellation").checked));
-    localStorage.setItem("ghostchat.voice.noise", String($("#voiceNoiseSuppression").checked));
-    localStorage.setItem("ghostchat.voice.noiseEngine", $("#voiceNoiseEngine").value === "deepfilter" ? "deepfilter" : "rnnoise");
-    localStorage.setItem("ghostchat.voice.gain", String($("#voiceAutoGain").checked));
-    localStorage.setItem("ghostchat.voice.nvidiaBroadcast", String($("#voiceNvidiaBroadcast").checked));
+    localStorage.setItem("ghostchat.voice.echo", "false");
+    localStorage.setItem("ghostchat.voice.noise", "false");
+    localStorage.setItem("ghostchat.voice.noiseEngine", "off");
+    localStorage.setItem("ghostchat.voice.gain", "false");
+    localStorage.setItem("ghostchat.voice.nvidiaBroadcast", "false");
     localStorage.setItem("ghostchat.voice.ptt", String($("#voicePushToTalk").checked));
+    localStorage.setItem("ghostchat.voice.p2p", String($("#voiceDirectP2P").checked));
     localStorage.setItem("ghostchat.voice.systemAudio", String($("#voiceShareAudio").checked));
     localStorage.setItem("ghostchat.share.quality", $("#voiceShareQuality").value);
     localStorage.setItem("ghostchat.voice.strictRelay", "true");
@@ -821,10 +824,11 @@
     const settings = voiceSettings();
     $("#voiceEchoCancellation").checked = settings.echoCancellation;
     $("#voiceNoiseSuppression").checked = settings.noiseSuppression;
-    $("#voiceNoiseEngine").value = settings.noiseEngine;
+    $("#voiceNoiseEngine").value = "rnnoise";
     $("#voiceAutoGain").checked = settings.autoGainControl;
     $("#voiceNvidiaBroadcast").checked = settings.nvidiaBroadcast;
     $("#voicePushToTalk").checked = settings.pushToTalk;
+    $("#voiceDirectP2P").checked = settings.p2pOnly;
     renderPushToTalkKey();
     $("#voiceShareAudio").checked = settings.shareSystemAudio;
     $("#voiceShareQuality").value = ["balanced", "detail", "motion", "saver"].includes(settings.shareQuality) ? settings.shareQuality : "balanced";
@@ -844,6 +848,7 @@
       select.value = settings.speakerId;
     }
     updateNvidiaBroadcastState();
+    [$("#voiceEchoCancellation"), $("#voiceNoiseSuppression"), $("#voiceNoiseEngine"), $("#voiceAutoGain"), $("#voiceNvidiaBroadcast")].forEach(control => { control.disabled = true; });
     void checkVoiceRelaySupport();
   }
 
@@ -871,12 +876,11 @@
         ? translate("Group voice SFU is configured. Group media is relayed and not end-to-end encrypted.")
         : translate("Group voice is not configured on this server. Configure LiveKit in the server environment.");
       renderVoiceControls();
-      const enabled = !!config.turn_available;
       relay.checked = true;
       relay.disabled = true;
-      status.textContent = translate(enabled
-        ? "TURN relay is configured. Calls always use it and never connect directly, so your network address stays private."
-        : "TURN relay is not configured. Calls are unavailable until the server owner configures TURN; your network address will never be exposed.");
+      status.textContent = tr()
+        ? "Doğrudan P2P ses açık. Medya GhostChat sunucusundan geçmez; aradığın kişi ağ adresini görebilir."
+        : "Direct P2P voice is on. Media does not pass through GhostChat; the person you call can see your network address.";
     } catch (error) {
       state.groupVoiceAvailable = false;
       const groupStatus = $("#groupVoiceNetworkStatus");
@@ -1289,6 +1293,40 @@
     finally { input.value = ""; }
   }
   function setSignupAvatar(value) { signupAvatarData = value; }
+  const THEME_MOTION_SOURCES = Object.freeze({
+    sakura: "assets/themes/sakura.mp4",
+    aurora: "assets/themes/aurora.mp4",
+    tide: "assets/themes/tide.mp4",
+    solstice: "assets/themes/solstice.mp4",
+    rain: "assets/themes/rain.mp4",
+  });
+  function applyThemeMotion(theme, motion) {
+    const video = $("#themeMotion");
+    if (!video) return;
+    const source = motion === "reduced" ? "" : THEME_MOTION_SOURCES[theme];
+    if (!source) {
+      video.pause();
+      video.removeAttribute("src");
+      video.dataset.theme = "";
+      video.classList.add("hidden");
+      video.load();
+      return;
+    }
+    if (video.dataset.theme !== theme) {
+      video.dataset.theme = theme;
+      video.src = source;
+      video.load();
+    }
+    video.classList.remove("hidden");
+    void video.play().catch(() => {});
+  }
+  function syncThemeChoices(theme) {
+    $$("[data-theme-choice]").forEach(button => {
+      const active = button.dataset.themeChoice === theme;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+  }
   function applyAppearance({ persist = false } = {}) {
     const theme = $("#themeSelect").value || localStorage.getItem("ghostchat.theme") || "dark";
     const size = $("#textSize").value || localStorage.getItem("ghostchat.textSize") || "15";
@@ -1296,6 +1334,8 @@
     document.body.dataset.theme = theme;
     document.body.classList.toggle("light", theme === "light");
     document.body.classList.toggle("reduced-motion", motion === "reduced");
+    applyThemeMotion(theme, motion);
+    syncThemeChoices(theme);
     document.documentElement.style.fontSize = `${size}px`;
     const wallpaper = localStorage.getItem("ghostchat.wallpaper") || "";
     const shade = Number(localStorage.getItem("ghostchat.wallpaperShade") || "58");
@@ -4376,6 +4416,11 @@
   };
   for (const selector of ["#languageSelect", "#authLanguageSelect"]) $(selector).onchange = event => { localStorage.setItem("ghostchat.language", event.target.value); applyLanguage(); renderSidebar(); if (["friends", "search", "searchMessages"].includes(state.page)) renderPage(); else if (!state.active) showWelcome(); renderVoiceControls(); };
   for (const selector of ["#themeSelect", "#textSize", "#motionSelect"]) $(selector).onchange = () => applyAppearance({ persist: true });
+  $$('[data-theme-choice]').forEach(button => button.onclick = () => {
+    const select = $("#themeSelect");
+    select.value = button.dataset.themeChoice;
+    applyAppearance({ persist: true });
+  });
   $("#presenceMode").onchange = event => { void setPresence(event.target.value); };
   $("#themeWallpaperInput").onchange = async event => {
     const file = event.target.files?.[0]; if (!file) return;

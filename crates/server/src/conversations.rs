@@ -150,7 +150,7 @@ pub(crate) async fn create_group_conversation(
     tx.commit().await.map_err(|_| ApiError::internal())?;
 
     let recipients = std::iter::once(user.id.clone())
-        .chain(member_ids.into_iter())
+        .chain(member_ids)
         .collect::<Vec<_>>();
     let _ = state.events.send(ServerEvent {
         recipients,

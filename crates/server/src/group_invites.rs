@@ -169,7 +169,7 @@ pub(crate) async fn join_group_invite(
             "SELECT gi.conversation_id FROM group_invites gi JOIN conversations c ON c.id=gi.conversation_id JOIN conversation_members cm ON cm.conversation_id=gi.conversation_id AND cm.user_id=? WHERE gi.token_hash=? AND c.kind='group'",
         )
         .bind(&user.id)
-        .bind(&session_hash(&body.code))
+        .bind(session_hash(&body.code))
         .fetch_optional(&mut *tx)
         .await
         .map_err(|_| ApiError::internal())?;

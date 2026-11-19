@@ -105,7 +105,7 @@ fn canonical_target(target: &str) -> bool {
                 return false;
             }
             let decoded = u8::from_str_radix(&target[index + 1..index + 3], 16).unwrap_or(0);
-            if decoded <= 0x20 && decoded != b' '
+            if decoded < 0x20
                 || decoded == 0x7f
                 || decoded.is_ascii_alphanumeric()
                 || b"-_.~".contains(&decoded)

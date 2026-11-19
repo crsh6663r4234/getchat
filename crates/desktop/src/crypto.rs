@@ -121,7 +121,7 @@ fn migration_marker(db: &SqlitePool) -> Option<std::path::PathBuf> {
 fn install_storage_key(key: Zeroizing<[u8; 32]>) -> Result<(), String> {
     match STORAGE_KEY.set(key) {
         Ok(()) => Ok(()),
-        Err(key) if STORAGE_KEY.get().is_some_and(|stored| &**stored == &*key) => Ok(()),
+        Err(key) if STORAGE_KEY.get().is_some_and(|stored| **stored == *key) => Ok(()),
         Err(_) => Err("The local encryption key changed while GhostChat was running.".into()),
     }
 }
@@ -299,7 +299,7 @@ async fn prepare_crypto_storage(db: &SqlitePool) -> Result<(), String> {
         .acquire()
         .await
         .map_err(|_| "GhostChat could not open its local encryption database.".to_string())?;
-    SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *connection)
+    SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut connection)
         .run_migrations()
         .map_err(|_| "GhostChat could not initialize its encrypted MLS storage.".to_string())?;
     drop(connection);
@@ -785,9 +785,9 @@ fn account_id_from_credential(content: &[u8]) -> Option<String> {
     Some(user_id)
 }
 
-fn group_account_identities(
-    group: &MlsGroup,
-) -> Option<std::collections::HashMap<String, (Vec<u8>, Vec<u8>)>> {
+type AccountIdentities = std::collections::HashMap<String, (Vec<u8>, Vec<u8>)>;
+
+fn group_account_identities(group: &MlsGroup) -> Option<AccountIdentities> {
     let mut identities = std::collections::HashMap::new();
     for member in group.members() {
         if member.credential.credential_type() != CredentialType::Basic {
@@ -975,7 +975,7 @@ async fn adopt_legacy_group(
     let own_identity = format!("ghostchat:v1:{user_id}:{device_id}");
     let owned = {
         let _legacy = StorageAccountScope::legacy();
-        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut transaction);
         MlsGroup::load(&storage, &group_id)
             .ok()
             .flatten()
@@ -1303,7 +1303,7 @@ pub async fn prepare_device(db: &SqlitePool, user_id: &str) -> Result<DevicePrep
             .acquire()
             .await
             .map_err(|_| "GhostChat could not open its local encryption database.".to_string())?;
-        let mut storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *connection);
+        let mut storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut connection);
         storage
             .run_migrations()
             .map_err(|_| "GhostChat could not initialize its encrypted MLS storage.".to_string())?;
@@ -1333,7 +1333,7 @@ pub async fn prepare_device(db: &SqlitePool, user_id: &str) -> Result<DevicePrep
 
     let mut public_key_to_save = None;
     let (package_ref, payload, identity_fingerprint) = {
-        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut transaction);
         let provider = DesktopMlsProvider {
             crypto: RustCrypto::default(),
             storage,
@@ -1431,7 +1431,7 @@ pub async fn inspect_key_package(
         .acquire()
         .await
         .map_err(|_| "GhostChat could not open its local encryption database.".to_string())?;
-    let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *connection);
+    let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut connection);
     let provider = DesktopMlsProvider {
         crypto: RustCrypto::default(),
         storage,
@@ -1478,7 +1478,7 @@ pub async fn create_direct_group(
     let group_id = group_id_for_conversation(&conversation_id);
 
     let (welcome_payload, peer_identity_fingerprint, planner_key) = {
-        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut transaction);
         let provider = DesktopMlsProvider {
             crypto: RustCrypto::default(),
             storage,
@@ -1610,7 +1610,7 @@ pub async fn create_group(
     let group_id = group_id_for_conversation(&conversation_id);
 
     let (welcome_payload, group_fingerprint, planner_key) = {
-        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut transaction);
         let provider = DesktopMlsProvider {
             crypto: RustCrypto::default(),
             storage,
@@ -1779,7 +1779,7 @@ pub async fn discard_group_membership_update(
         return Err("Only a staged membership commit can be dropped.".into());
     }
     {
-        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut transaction);
         if let Some(mut group) =
             MlsGroup::load(&storage, &group_id_for_conversation(&conversation_id))
                 .map_err(|_| error())?
@@ -2030,7 +2030,7 @@ async fn prepare_group_membership_change(
     let group_id = group_id_for_conversation(&conversation_id);
 
     let (commit_payload, welcome_payload) = {
-        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut transaction);
         let provider = DesktopMlsProvider {
             crypto: RustCrypto::default(),
             storage,
@@ -2248,7 +2248,7 @@ pub async fn prepare_group_leave_proposal(
     .ok_or_else(|| "Prepare this device for encryption in Settings first.".to_string())?;
     let group_id = group_id_for_conversation(&conversation_id);
     let proposal_payload = {
-        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut transaction);
         let provider = DesktopMlsProvider {
             crypto: RustCrypto::default(),
             storage,
@@ -2416,7 +2416,7 @@ pub async fn prepare_group_leave_commit(
     .ok_or_else(|| "Prepare this device for encryption in Settings first.".to_string())?;
     let group_id = group_id_for_conversation(&conversation_id);
     let commit_payload = {
-        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut transaction);
         let provider = DesktopMlsProvider {
             crypto: RustCrypto::default(),
             storage,
@@ -2527,7 +2527,7 @@ pub async fn forget_group_state(
         .map_err(|_| "GhostChat could not start local group cleanup.".to_string())?;
     let group_id = group_id_for_conversation(&conversation_id);
     {
-        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut transaction);
         let provider = DesktopMlsProvider {
             crypto: RustCrypto::default(),
             storage,
@@ -2594,7 +2594,7 @@ pub async fn apply_setup_generation(
     }
     let group_id = group_id_for_conversation(&conversation_id);
     {
-        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut transaction);
         let provider = DesktopMlsProvider {
             crypto: RustCrypto::default(),
             storage,
@@ -2677,7 +2677,7 @@ pub async fn finalize_group_membership_update(
 
     let mut planner_keys = Vec::new();
     let fingerprint = {
-        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut transaction);
         let provider = DesktopMlsProvider {
             crypto: RustCrypto::default(),
             storage,
@@ -2919,7 +2919,7 @@ pub async fn encrypt_text(
     }
 
     let payload = {
-        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut transaction);
         let provider = DesktopMlsProvider {
             crypto: RustCrypto::default(),
             storage,
@@ -3017,7 +3017,7 @@ pub async fn reencrypt_text(
     let content: String = EncryptedJsonCodec::from_slice(&cached)
         .map_err(|_| "The local encrypted message cache could not be decrypted.".to_string())?;
     let payload = {
-        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut transaction);
         let provider = DesktopMlsProvider {
             crypto: RustCrypto::default(),
             storage,
@@ -3202,13 +3202,14 @@ async fn history_payload_is_past_epoch(
         .map_err(|_| "GhostChat could not load the local MLS group state.".to_string())?;
     let provider = DesktopMlsProvider {
         crypto: RustCrypto::default(),
-        storage: SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *connection),
+        storage: SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut connection),
     };
     let group = MlsGroup::load(provider.storage(), &group_id)
         .map_err(|_| "GhostChat could not load the local MLS group state.".to_string())?;
     Ok(group.is_some_and(|group| protocol_message.epoch() < group.epoch()))
 }
 
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub async fn process_crypto_event(
     db: &SqlitePool,
@@ -3438,7 +3439,7 @@ async fn process_crypto_event_core(
 
     if !is_welcome {
         let group_exists = {
-            let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+            let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut transaction);
             let provider = DesktopMlsProvider {
                 crypto: RustCrypto::default(),
                 storage,
@@ -3500,7 +3501,7 @@ async fn process_crypto_event_core(
     // Planner keys of the epochs this event leaves and enters.
     let mut planner_keys = Vec::new();
     let result = {
-        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *transaction);
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut transaction);
         let provider = DesktopMlsProvider {
             crypto: RustCrypto::default(),
             storage,
@@ -3954,7 +3955,7 @@ pub async fn has_direct_group(
         .acquire()
         .await
         .map_err(|_| "GhostChat could not open its local encryption database.".to_string())?;
-    let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *connection);
+    let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut connection);
     let provider = DesktopMlsProvider {
         crypto: RustCrypto::default(),
         storage,
@@ -3997,7 +3998,7 @@ pub async fn direct_peer_fingerprint(
         .acquire()
         .await
         .map_err(|_| "GhostChat could not open its local encryption database.".to_string())?;
-    let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *connection);
+    let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut connection);
     let provider = DesktopMlsProvider {
         crypto: RustCrypto::default(),
         storage,
@@ -4057,7 +4058,7 @@ pub async fn group_fingerprint(
         .acquire()
         .await
         .map_err(|_| "GhostChat could not open its local encryption database.".to_string())?;
-    let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *connection);
+    let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut connection);
     let provider = DesktopMlsProvider {
         crypto: RustCrypto::default(),
         storage,
@@ -4291,15 +4292,13 @@ mod tests {
             .acquire()
             .await
             .expect("Alice's MLS database should be available");
-        let alice_storage =
-            SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *alice_connection);
+        let alice_storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut alice_connection);
         assert!(SignatureKeyPair::read(
             &alice_storage,
             &alice_public_key,
             MLS_CIPHERSUITE.signature_algorithm(),
         )
         .is_some());
-        drop(alice_storage);
         drop(alice_connection);
 
         let welcome = create_direct_group(

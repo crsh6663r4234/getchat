@@ -20,12 +20,14 @@ fn pick_file() -> Option<PathBuf> {
 
     let filter = "All files\0*.*\0\0".encode_utf16().collect::<Vec<_>>();
     let mut file_path = vec![0u16; 32_768];
-    let mut dialog = OPENFILENAMEW::default();
-    dialog.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
-    dialog.lpstrFilter = filter.as_ptr();
-    dialog.lpstrFile = file_path.as_mut_ptr();
-    dialog.nMaxFile = file_path.len() as u32;
-    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    let mut dialog = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        lpstrFilter: filter.as_ptr(),
+        lpstrFile: file_path.as_mut_ptr(),
+        nMaxFile: file_path.len() as u32,
+        Flags: OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR,
+        ..Default::default()
+    };
     if unsafe { GetOpenFileNameW(&mut dialog) } == 0 {
         return None;
     }
@@ -47,12 +49,14 @@ fn save_file(suggested_name: &str) -> Option<PathBuf> {
     let suggested = suggested_name.encode_utf16().collect::<Vec<_>>();
     let copy_length = suggested.len().min(file_path.len() - 1);
     file_path[..copy_length].copy_from_slice(&suggested[..copy_length]);
-    let mut dialog = OPENFILENAMEW::default();
-    dialog.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
-    dialog.lpstrFilter = filter.as_ptr();
-    dialog.lpstrFile = file_path.as_mut_ptr();
-    dialog.nMaxFile = file_path.len() as u32;
-    dialog.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    let mut dialog = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        lpstrFilter: filter.as_ptr(),
+        lpstrFile: file_path.as_mut_ptr(),
+        nMaxFile: file_path.len() as u32,
+        Flags: OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR,
+        ..Default::default()
+    };
     if unsafe { GetSaveFileNameW(&mut dialog) } == 0 {
         return None;
     }
@@ -471,7 +475,7 @@ pub async fn upload(
         file_name: file_name.clone(),
         content_type: content_type_for_name(&file_name).into(),
         size_bytes,
-        key: URL_SAFE_NO_PAD.encode(&*key),
+        key: URL_SAFE_NO_PAD.encode(*key),
         nonce_prefix: URL_SAFE_NO_PAD.encode(nonce_prefix),
         chunk_size: CHUNK_SIZE,
         chunk_count,

@@ -222,7 +222,7 @@ async fn current_planner_key(
         .await
         .map_err(|_| "GhostChat could not open its local encryption database.".to_string())?;
     let key = {
-        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut *connection);
+        let storage = SqliteStorageProvider::<EncryptedJsonCodec>::new(&mut connection);
         let provider = DesktopMlsProvider {
             crypto: RustCrypto::default(),
             storage,

@@ -114,6 +114,18 @@ async function run() {
     assert.equal(fixture.pcs.length, 0, 'Missing authenticated TURN must fail before constructing any peer connection');
     assert.equal(fixture.counts().micRequests, 0, 'Missing TURN must fail before microphone capture');
   }
+  // Production direct-call mode uses only STUN candidates. It deliberately
+  // avoids both TURN and the server media relay, so peers connect P2P.
+  const p2p = directFixture({ turn_available: true, media_relay: true, ice_servers: [
+    { urls: 'stun:public.fixture:19302' },
+    { urls: 'turn:relay.fixture:3478?transport=udp', username: 'fixture', credential: 'fixture' },
+  ] }, { settings: { p2pOnly: true } });
+  await p2p.client.start({ id: 'conversation', peer_id: 'b' });
+  assert.equal(p2p.pcs[0].configuration.iceTransportPolicy, undefined, 'P2P calls allow direct ICE transport');
+  assert.deepEqual([...p2p.pcs[0].configuration.iceServers[0].urls], ['stun:public.fixture:19302'], 'P2P calls use STUN but not TURN');
+  p2p.pcs[0].onicecandidate({ candidate: { type: 'host', candidate: 'candidate:1 1 udp 1 192.0.2.1 5000 typ host', toJSON: () => ({ candidate: 'host' }) } });
+  assert.equal(p2p.signals.at(-1).kind, 'ice', 'P2P calls signal direct host candidates');
+  p2p.client.hangup();
   const direct = directFixture({ turn_available: true, group_voice_available: true, ice_servers: [
     { urls: 'stun:public.fixture:19302' },
     { urls: ['stun:public.fixture:19302', 'turns:relay.fixture:5349?transport=tcp'], username: 'fixture', credential: 'fixture' },
