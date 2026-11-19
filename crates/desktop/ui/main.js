@@ -3186,6 +3186,7 @@
     const container = $("#messages"); if ($(`[data-message-id="${CSS.escape(message.id)}"]`, container)) return;
     const ownMessage = message.sender_id === state.user.id;
     const row = create("article", `message ${ownMessage ? "own-message" : "peer-message"}`); row.dataset.messageId = message.id; row.dataset.sequence = String(message.sequence);
+    row.dataset.senderId = message.sender_id || ""; row.dataset.createdAt = message.created_at || ""; row.dataset.replyTo = message.reply_to_id || "";
     const avatar = create("div", "mini-avatar message-avatar"); setAvatar(avatar, message.sender_name, message.sender_avatar); avatar.title = message.sender_name; avatar.setAttribute("aria-label", message.sender_name); row.append(avatar);
     const main = create("div", "message-main"); const meta = create("div", "message-meta"); meta.append(createText("strong", "", message.sender_name)); if (ownMessage) meta.append(create("span", "message-owner-label", translate("You"))); if (message.encrypted) { const lock = create("span", "message-encrypted-badge"); lock.setAttribute("role", "img"); lock.setAttribute("aria-label", translate("Encrypted message")); lock.title = lock.getAttribute("aria-label"); lock.append(uiIcon("lock")); meta.append(lock); } if (message.pinned_at) { const pinned = create("span", "message-pinned-badge", "Pinned"); pinned.prepend(uiIcon("pin")); meta.append(pinned); } const time = create("time", "", timeLabel(message.created_at)); time.dateTime = message.created_at; meta.append(time); if (message.edited_at) meta.append(create("span", "optional", "edited"));
     main.append(meta);
@@ -3252,7 +3253,20 @@
       ownMessage ? { label: state.language === "tr" ? "Sil" : "Delete", danger: true, run: () => deleteMessage(message.id) } : null,
     ]));
     if (prepend) container.prepend(row); else container.append(row);
-    updateSeenBadge();
+    updateSeenBadge(); regroupMessages();
+  }
+  // A message from the same sender within five minutes of the previous one
+  // drops its avatar and name line, so a burst reads as one block. Replies
+  // keep their header so the quoted context stays attached to a name.
+  const MESSAGE_GROUP_WINDOW_MS = 5 * 60 * 1000;
+  function regroupMessages() {
+    let previous = null;
+    for (const row of $$("#messages > .message")) {
+      const gap = Date.parse(row.dataset.createdAt) - Date.parse(previous?.dataset.createdAt);
+      const continues = !!previous && !!row.dataset.senderId && previous.dataset.senderId === row.dataset.senderId && !row.dataset.replyTo && gap >= 0 && gap <= MESSAGE_GROUP_WINDOW_MS;
+      row.classList.toggle("is-continuation", continues);
+      previous = row;
+    }
   }
   function updateSeenBadge() {
     if (!state.active || state.active.kind !== "direct") return;
@@ -3474,7 +3488,7 @@
   }
   async function deleteMessage(id) {
     if (!await askConfirm({ title: translate("Delete message"), message: state.language === "tr" ? "Bu mesaj kalıcı olarak silinecek." : "This message will be permanently deleted.", confirmText: state.language === "tr" ? "Mesajı sil" : "Delete message", dangerous: true })) return;
-    try { await request(`/v1/messages/${encodeURIComponent(id)}`, { method: "DELETE" }); $(`[data-message-id="${CSS.escape(id)}"]`)?.remove(); await refreshConversations(); }
+    try { await request(`/v1/messages/${encodeURIComponent(id)}`, { method: "DELETE" }); $(`[data-message-id="${CSS.escape(id)}"]`)?.remove(); regroupMessages(); await refreshConversations(); }
     catch (error) { toast(error.message, true); }
   }
   function clearAttachmentUrls() {

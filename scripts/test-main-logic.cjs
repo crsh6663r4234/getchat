@@ -1988,6 +1988,43 @@ test('the home screen offers recent conversations, unread first, once you have s
   assert.ok(turkish.created.some(node => node.textContent === 'Kaldığın yerden devam et'), 'the heading is translated');
 });
 
+test('consecutive messages from one sender within five minutes are grouped', async () => {
+  const fakeRow = (senderId, createdAt, reply = '') => {
+    const classes = new Set();
+    return { dataset: { senderId, createdAt, replyTo: reply }, classes, classList: { toggle: (name, on) => { if (on) classes.add(name); else classes.delete(name); return on; }, contains: name => classes.has(name) } };
+  };
+  const rows = [
+    fakeRow('ayla', '2026-11-19T10:00:00Z'),
+    fakeRow('ayla', '2026-11-19T10:02:00Z'), // same sender, 2 min later: grouped
+    fakeRow('ayla', '2026-11-19T10:20:00Z'), // 18 min gap: new group
+    fakeRow('me', '2026-11-19T10:21:00Z'), // other sender: new group
+    fakeRow('me', '2026-11-19T10:22:00Z', 'm1'), // a reply always shows its header
+    fakeRow('me', '2026-11-19T10:23:00Z'),
+  ];
+  const conversation = { id: 'c1', kind: 'direct', peer_id: 'ayla', display_name: 'Ayla', username: 'ayla' };
+  const base = 'https://a.example';
+  const app = harness({
+    storage: { 'ghostchat.server': base },
+    credentials: { [await serverKey(base)]: 'token-A' },
+    selectAll: selector => (selector === '#messages > .message' ? rows : []),
+    fetchHandler: url => {
+      if (url.endsWith('/v1/me')) return { body: { id: 'me', username: 'me', display_name: 'Me' } };
+      if (url.endsWith('/v1/conversations')) return { body: [conversation] };
+      if (url.includes('/conversations/c1/messages?')) return { body: [{ sequence: 1, id: 'm1', conversation_id: 'c1', sender_id: 'ayla', sender_name: 'Ayla', content: 'hi', created_at: '2026-11-19T10:00:00Z' }] };
+      return { body: [] };
+    },
+  });
+  await app.flush(() => app.sockets.length > 0);
+  app.voiceOptions.voice.onIncoming({ conversationId: 'c1' });
+  await app.flush(() => app.fetches.some(item => item.url.includes('/conversations/c1/messages?')));
+  await app.flush();
+  assert.deepEqual(rows.map(row => row.classes.has('is-continuation')), [false, true, false, false, false, true]);
+  const rendered = app.created.find(node => node.dataset?.messageId === 'm1');
+  assert.ok(rendered, 'the message row was rendered');
+  assert.equal(rendered.dataset.senderId, 'ayla', 'rows carry their sender for grouping');
+  assert.equal(rendered.dataset.createdAt, '2026-11-19T10:00:00Z');
+});
+
 test('the home screen keeps the first-run invitation when there are no conversations', async () => {
   const app = await homeScreen();
   const texts = app.created.map(node => node.textContent);

@@ -7349,3 +7349,90 @@ label:has(> input.visually-hidden:focus-visible) {
 .welcome-card.has-recent .welcome-actions {
   justify-content: flex-start;
 }
+
+/* Messages: actions float over the message instead of reserving an empty
+   row under every bubble, and bursts from one sender read as one block. */
+.message {
+  position: relative;
+  width: 100%;
+  max-width: none;
+}
+
+.message-main {
+  min-width: 0;
+  max-width: min(78%, 760px);
+}
+
+.message-reactions {
+  min-height: 0;
+}
+
+.message-reactions:not(:has(.quick-reactions > *, .reaction-picker)) {
+  margin-top: 0;
+}
+
+.message-inline-actions {
+  position: absolute;
+  z-index: 3;
+  top: calc(var(--space-3) * -1);
+  right: var(--space-2);
+  gap: 2px;
+  padding: 3px;
+}
+
+.message.own-message .message-inline-actions {
+  right: auto;
+  left: var(--space-2);
+}
+
+.message-inline-action {
+  min-height: 24px;
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-strong);
+  font-size: var(--text-xs);
+}
+
+.message-inline-action:hover,
+.message-inline-action:focus-visible {
+  background: var(--ink-hover);
+  color: var(--text);
+}
+
+/* Edit and Delete were mouse-only (display:none until hover); keyboard
+   focus now reveals them too. */
+.message:focus-within .message-actions {
+  display: flex;
+}
+
+.message-actions button {
+  font-size: var(--text-xs);
+}
+
+.message.is-continuation {
+  margin-top: calc(var(--space-2) * -1);
+  padding-top: 2px;
+}
+
+.message.is-continuation .message-avatar {
+  visibility: hidden;
+  height: 0;
+}
+
+.message.is-continuation .message-meta > strong,
+.message.is-continuation .message-meta > .message-owner-label,
+.message.is-continuation .message-meta > time {
+  display: none;
+}
+
+.message.is-continuation .message-meta:not(:has(.message-seen-badge, .message-pinned-badge, .message-encrypted-badge, .optional)) {
+  display: none;
+}
+
+.message-meta time,
+.message-meta .optional,
+.message-seen-badge {
+  font-size: var(--text-xs);
+}
