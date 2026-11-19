@@ -745,7 +745,7 @@ async function run() {
 
   // Group calls through the server relay: LiveKit missing, LiveKit never
   // connecting, and LiveKit connecting (relay unused).
-  function relayGroupFixture({ livekit = 'configured', connect = null, watchServerMedia = null } = {}) {
+  function relayGroupFixture({ livekit = 'configured', connect = null, watchServerMedia = null, getMembers = null } = {}) {
     const fixture = livekitFixture();
     const timers = []; const elements = []; const captures = [];
     Object.assign(fixture.context, {
@@ -773,7 +773,7 @@ async function run() {
         if (livekit === 'missing') throw Object.assign(new Error('Group voice is not configured on this server.'), { status: 503 });
         return { url: 'wss://livekit.fixture', token: 'fixture' };
       },
-      getMembers: async () => [{ id: 'b', display_name: 'Bob' }, { id: 'c', display_name: 'Carol' }],
+      getMembers: getMembers || (async () => [{ id: 'b', display_name: 'Bob' }, { id: 'c', display_name: 'Carol' }]),
       getSettings: () => settings, getUserId: () => 'a', getDisplayName: () => 'Alice', getAvatar: () => null,
       isPeerMuted: id => muted.has(id), onChange() {}, onAudioBlocked() {}, translate: text => text,
       createServerMedia: relay.factory, ...(watchServerMedia ? { watchServerMedia } : {}),
@@ -873,6 +873,32 @@ async function run() {
     assert.equal(media.sending.at(-1), true);
     await fixture.group.setPushToTalk(false);
     assert.equal(media.sending.at(-1), false);
+    await fixture.group.leave();
+  }
+  {
+    // Losing window focus (main.js calls setPushToTalk(false) on blur) must
+    // not silence an open microphone when push-to-talk is off.
+    const fixture = relayGroupFixture({ livekit: 'missing' });
+    fixture.settings.pushToTalk = false;
+    await fixture.group.join({ id: 'group' });
+    const media = fixture.relay.instances[0];
+    await fixture.group.toggleMicrophone();
+    assert.equal(media.sending.at(-1), true, 'turning the mic on in relay mode without push-to-talk sends');
+    assert.equal(fixture.group.getState().micMuted, false);
+    await fixture.group.setPushToTalk(false);
+    assert.equal(media.sending.at(-1), true, 'a window blur keeps the relay microphone sending');
+    assert.equal(fixture.group.getState().micMuted, false, 'a window blur does not show the mic as off');
+    assert.equal(fixture.group.getState().micManuallyMuted, false, 'a window blur does not change the mute choice');
+    await fixture.group.toggleMicrophone();
+    assert.equal(media.sending.at(-1), false, 'the second toggle mutes');
+    assert.equal(fixture.group.getState().micMuted, true);
+    await fixture.group.setPushToTalk(false);
+    assert.equal(fixture.group.getState().micMuted, true, 'a blur keeps a muted mic muted');
+    await fixture.group.toggleMicrophone();
+    assert.equal(media.sending.at(-1), true, 'turning the mic on again sends');
+    await fixture.group.setPushToTalk(false);
+    assert.equal(media.sending.at(-1), true, 'the last explicit choice survives another blur');
+    assert.equal(fixture.group.getState().micMuted, false);
     await fixture.group.leave();
   }
   {

@@ -663,7 +663,10 @@
 
     async function setPushToTalk(pressed) {
       if (relay) {
-        pushToTalkPressed = pressed;
+        // Without push-to-talk the key (and main.js's blur release) must not
+        // touch the microphone: only toggleMicrophone decides.
+        if (!api.getSettings().pushToTalk) return;
+        pushToTalkPressed = !!pressed;
         try {
           await setRelaySending(pressed && !micManuallyMuted);
           publishState({ micMuted: !relaySending, pushToTalkPressed, micManuallyMuted, micAvailable: true });
