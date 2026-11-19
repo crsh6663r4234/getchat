@@ -1529,10 +1529,10 @@
     actions.append(find, friends);
     if (recent.length) {
       card.classList.add("has-recent");
-      const list = create("div", "welcome-recent"); list.setAttribute("role", "list");
+      const list = create("div", "welcome-recent");
       for (const convo of recent) {
         const unread = Number(convo.unread_count) || 0;
-        const row = create("button", `welcome-recent-row${unread ? " has-unread" : ""}`); row.type = "button"; row.setAttribute("role", "listitem");
+        const row = create("button", `welcome-recent-row${unread ? " has-unread" : ""}`); row.type = "button";
         row.onclick = () => openConversation(convo.id);
         const avatar = create("span", "mini-avatar"); setAvatar(avatar, convo.display_name, convo.avatar_data); if (convo.kind === "direct") addPresenceDot(avatar, convo.peer_id);
         const copy = create("span", "welcome-recent-copy"); copy.append(createText("strong", "welcome-recent-name", convo.display_name), createText("span", "welcome-recent-preview", conversationPreview(convo)));
