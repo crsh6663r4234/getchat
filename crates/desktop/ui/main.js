@@ -289,6 +289,29 @@
     "Encrypted item, cannot open on this device": "Şifreli öğe, bu cihazda açılamıyor", "Stored before encryption": "Şifrelemeden önce kaydedildi", "A poll needs a question and 2 to 8 short options.": "Ankette bir soru ve 2 ile 8 arası kısa seçenek olmalı.", "Add a short title and a valid time for this event.": "Bu etkinliğe kısa bir başlık ve geçerli bir zaman ekle.",
     "This group's planner is end-to-end encrypted. Update GhostChat to add or answer polls and events here.": "Bu grubun planlayıcısı uçtan uca şifreli. Burada anket ve etkinlik eklemek ya da yanıtlamak için GhostChat'i güncelle."
   });
+  Object.assign(trText, {
+    "Could not open preview.": "Önizleme açılamadı.", "Continue?": "Devam edilsin mi?", "Continue": "Devam et",
+    "That speaker is unavailable. The system default will be used.": "Bu hoparlör kullanılamıyor. Sistem varsayılanı kullanılacak.",
+    "Could not check or install the required update.": "Gerekli güncelleme denetlenemedi veya yüklenemedi.",
+    "Session active, but Windows could not save it. Keep your recovery key safe.": "Oturum açık ancak Windows onu kaydedemedi. Kurtarma anahtarını güvende tut.",
+    "Windows could not keep a temporary recovery backup. Save the key before closing this screen.": "Windows geçici kurtarma yedeğini saklayamadı. Bu ekranı kapatmadan önce anahtarı kaydet.",
+    "Could not read that image.": "Bu görsel okunamadı.", "Animated profile pictures must be 80 KB or smaller.": "Hareketli profil fotoğrafları en fazla 80 KB olabilir.",
+    "Custom wallpaper is active on this device.": "Bu cihazda özel duvar kâğıdı etkin.", "No custom wallpaper selected.": "Özel duvar kâğıdı seçilmedi.",
+    "That wallpaper is too detailed. Choose a smaller photo.": "Bu duvar kâğıdı çok detaylı. Daha küçük bir fotoğraf seç.",
+    "Custom wallpaper applied on this device.": "Özel duvar kâğıdı bu cihazda uygulandı.", "Could not use that wallpaper.": "Bu duvar kâğıdı kullanılamadı.", "Custom wallpaper removed.": "Özel duvar kâğıdı kaldırıldı.",
+    "Friend request sent.": "Arkadaşlık isteği gönderildi.", "Your friend request was accepted.": "Arkadaşlık isteğin kabul edildi.", "Remove friend": "Arkadaşlıktan çıkar", "Friends you add will show up here.": "Eklediğin arkadaşlar burada görünür.",
+    "Loading…": "Yükleniyor…", "Checking…": "Kontrol ediliyor…", "Loading image…": "Görsel yükleniyor…",
+    "Transfer group ownership": "Grup sahipliğini devret", "The encryption state of this group could not be checked. Nothing was sent.": "Bu grubun şifreleme durumu kontrol edilemedi. Hiçbir şey gönderilmedi.",
+    "The saved encrypted leave request is invalid.": "Kayıtlı şifreli ayrılma isteği geçersiz.", "The saved encrypted leave commit is invalid.": "Kayıtlı şifreli ayrılma onayı geçersiz.",
+    "Open link": "Bağlantıyı aç", "This link is invalid.": "Bu bağlantı geçersiz.", "Open external link?": "Dış bağlantı açılsın mı?",
+    "Edit message": "Mesajı düzenle", "Delete message": "Mesajı sil", "edited": "düzenlendi", "Verify identity": "Kimliği doğrula",
+    "This session was revoked. Recover your account to sign in again.": "Bu oturum kapatıldı. Yeniden giriş yapmak için hesabını kurtar.",
+    "Start voice call": "Sesli arama başlat", "Join call": "Aramaya katıl", "connection adjusted": "bağlantıya göre ayarlandı", "quality recovered": "kalite toparlandı",
+    "Copy was blocked. Select and copy the key manually.": "Kopyalama engellendi. Anahtarı seçip elle kopyala.",
+    "The device could not be prepared.": "Cihaz hazırlanamadı.",
+    "Test notification sent. If it is hidden, check Windows notification settings.": "Test bildirimi gönderildi. Görünmüyorsa Windows bildirim ayarlarını kontrol et.",
+    "Account and data deleted.": "Hesap ve veriler silindi."
+  });
   let updateStatusKey = "Updates are checked automatically.";
   let updateStatusValues = {};
   const tr = () => (localStorage.getItem("ghostchat.language") || "en") === "tr";

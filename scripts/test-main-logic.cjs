@@ -1954,6 +1954,55 @@ test('the push-to-talk key setting has Turkish and English labels', () => {
   assert.ok(!/hold Space/.test(html), 'the label no longer hard-codes Space');
 });
 
+// Every English UI string the app passes to translate(), toast() or create()
+// as a literal needs a Turkish entry in trText; every data-en label in the
+// page needs its data-tr twin. A new visible string without Turkish fails here.
+function trTextKeys() {
+  const block = source.slice(source.indexOf('const trText = {'), source.indexOf('function translate('));
+  const keys = new Set();
+  const entry = /"((?:[^"\\]|\\.)*)"\s*:/g;
+  let match;
+  while ((match = entry.exec(block))) keys.add(JSON.parse(`"${match[1]}"`));
+  return keys;
+}
+function uiStringLiterals() {
+  const S = '"((?:[^"\\\\]|\\\\.)*)"';
+  const used = new Set();
+  const direct = [
+    new RegExp(`\\b(?:translate|toast)\\(\\s*${S}\\s*(?:,\\s*true\\s*)?\\)`, 'g'),
+    new RegExp(`\\bcreate\\("[a-z0-9]+",\\s*(?:"[^"]*"|\`[^\`]*\`|[\\w.]+),\\s*${S}\\)`, 'g'),
+  ];
+  for (const pattern of direct) { let match; while ((match = pattern.exec(source))) used.add(JSON.parse(`"${match[1]}"`)); }
+  // translate(condition ? "A" : "B"), unless the condition picks the language itself.
+  const ternary = new RegExp(`\\btranslate\\(([^"\`;]*?)\\?\\s*${S}\\s*:\\s*${S}\\s*\\)`, 'g');
+  let match;
+  while ((match = ternary.exec(source))) {
+    if (/tr\(\)|language/.test(match[1])) continue;
+    used.add(JSON.parse(`"${match[2]}"`)); used.add(JSON.parse(`"${match[3]}"`));
+  }
+  return [...used].filter(text => /[a-z]{2}/i.test(text) && text !== 'GhostChat');
+}
+
+test('every UI string literal in main.js has a Turkish translation', () => {
+  const keys = trTextKeys();
+  const literals = uiStringLiterals();
+  assert.ok(literals.length > 250, `the scan finds the app's strings (found ${literals.length})`);
+  const missing = literals.filter(text => !keys.has(text));
+  assert.deepEqual(missing, [], `strings without a Turkish entry in trText:\n  ${missing.join('\n  ')}`);
+});
+
+test('every data-en label in index.html has a data-tr twin', () => {
+  const html = fs.readFileSync(path.join(__dirname, '../crates/desktop/ui/index.html'), 'utf8');
+  const tags = html.match(/<[^>]+>/g) || [];
+  const gaps = [];
+  for (const tag of tags) {
+    for (const suffix of ['', '-title', '-label', '-placeholder']) {
+      if (tag.includes(`data-en${suffix}="`) && !tag.includes(`data-tr${suffix}="`)) gaps.push(tag.slice(0, 120));
+    }
+  }
+  assert.deepEqual(gaps, []);
+});
+
 (async () => {
   let failed = 0;
   for (const { name, fn } of tests) {
