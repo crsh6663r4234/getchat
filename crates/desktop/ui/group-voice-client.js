@@ -51,6 +51,35 @@
     const RELAY_WATCH_RETRY_MS = 2_000;
     const RELAY_WATCH_MAX_RETRY_MS = 30_000;
 
+    // Members are loaded at join; someone who joins the call later (or was
+    // added to the group since) is fetched again so their row shows their
+    // own name and avatar. Refreshes coalesce: at most one runs at a time and
+    // one more follows it. A failed refresh keeps the current list.
+    let memberRefresh = null;
+    let memberRefreshFor = null;
+    let memberRefreshAgain = false;
+    function refreshMembers() {
+      const active = conversation;
+      if (!active) return Promise.resolve();
+      if (memberRefresh && memberRefreshFor === active) { memberRefreshAgain = true; return memberRefresh; }
+      memberRefreshFor = active;
+      const task = (async () => {
+        do {
+          memberRefreshAgain = false;
+          try {
+            const rows = await api.getMembers(active.id);
+            if (conversation !== active || !Array.isArray(rows)) return;
+            members = new Map(rows.map(member => [member.id, member]));
+            if (room || relay) publishState();
+          } catch (error) {
+            console.debug("Could not refresh the group members.", error);
+          }
+        } while (memberRefreshAgain && conversation === active);
+      })().finally(() => { if (memberRefresh === task) memberRefresh = null; });
+      memberRefresh = task;
+      return task;
+    }
+
     function relayAvailable() {
       return typeof api.createServerMedia === "function";
     }
@@ -327,6 +356,7 @@
           relayPeers.add(accountId);
           addRelayAudio(accountId, stream);
           publishState();
+          if (!members.has(accountId)) void refreshMembers();
         },
         onPeerScreen: (accountId, stream) => {
           if (relay !== media) return;
@@ -502,7 +532,10 @@
         .on(E.TrackUnsubscribed, track => { removeTrack(track); publishState(); })
         .on(E.TrackPublished, () => publishState())
         .on(E.TrackUnpublished, publication => { if (publication.track) removeTrack(publication.track); publishState(); })
-        .on(E.ParticipantConnected, () => publishState())
+        .on(E.ParticipantConnected, participant => {
+          publishState();
+          if (!members.has(identityAccountId(participant || {}))) void refreshMembers();
+        })
         .on(E.ParticipantDisconnected, () => publishState())
         .on(E.ActiveSpeakersChanged, speakers => {
           activeSpeakers = new Set(speakers.map(speaker => speaker.identity));

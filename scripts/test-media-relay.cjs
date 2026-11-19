@@ -902,6 +902,58 @@ async function run() {
     await fixture.group.leave();
   }
   {
+    // A member who joins after the call started is shown with the profile
+    // from a refreshed member list, not as an anonymous "GhostChat member".
+    let rows = [{ id: 'b', display_name: 'Bob' }];
+    let calls = 0;
+    const fixture = relayGroupFixture({ livekit: 'missing', getMembers: async () => { calls++; return rows; } });
+    await fixture.group.join({ id: 'group' });
+    const media = fixture.relay.instances[0];
+    media.options.onPeerStream('b', { id: 'stream-b' });
+    rows = [...rows, { id: 'd', display_name: 'Dave', avatar_data: 'data:image/png;base64,AAAA' }];
+    media.options.onPeerStream('d', { id: 'stream-d' });
+    for (let index = 0; index < 5; index++) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 2, 'an unknown peer refreshes the member list once');
+    const dave = fixture.group.getState().participants.find(row => row.id === 'd');
+    assert.equal(dave.name, 'Dave', 'a late member shows its own name');
+    assert.equal(dave.avatar, 'data:image/png;base64,AAAA', 'a late member shows its own avatar');
+    assert.equal(fixture.group.getState().participants.find(row => row.id === 'b').name, 'Bob');
+    await fixture.group.leave();
+  }
+  {
+    // A failed refresh keeps the rows the call already had.
+    let fail = false;
+    const fixture = relayGroupFixture({ livekit: 'missing', getMembers: async () => { if (fail) throw new Error('offline'); return [{ id: 'b', display_name: 'Bob' }]; } });
+    await fixture.group.join({ id: 'group' });
+    const media = fixture.relay.instances[0];
+    media.options.onPeerStream('b', { id: 'stream-b' });
+    fail = true;
+    media.options.onPeerStream('e', { id: 'stream-e' });
+    for (let index = 0; index < 5; index++) await new Promise(resolve => setImmediate(resolve));
+    const state = fixture.group.getState();
+    assert.equal(state.status, 'connected', 'a failed member refresh does not end the call');
+    assert.equal(state.participants.find(row => row.id === 'b').name, 'Bob', 'a failed refresh keeps the existing profiles');
+    assert.equal(state.participants.find(row => row.id === 'e').name, 'GhostChat member');
+    await fixture.group.leave();
+  }
+  {
+    // LiveKit: a participant that connects later is mapped via a refreshed list.
+    let rows = [{ id: 'b', display_name: 'Bob' }];
+    const fixture = relayGroupFixture({ getMembers: async () => rows });
+    await fixture.group.join({ id: 'group' });
+    const activeRoom = fixture.rooms[0];
+    const late = { identity: 'd-device1', name: 'd-device1', metadata: '', isSpeaking: false, isMicrophoneEnabled: false, isScreenShareEnabled: false };
+    activeRoom.remoteParticipants.set(late.identity, late);
+    rows = [...rows, { id: 'd', display_name: 'Dave', avatar_data: 'avatar-d' }];
+    activeRoom.events.get('ParticipantConnected')(late);
+    for (let index = 0; index < 5; index++) await new Promise(resolve => setImmediate(resolve));
+    const row = fixture.group.getState().participants.find(item => item.identity === 'd-device1');
+    assert.equal(row.id, 'd', 'a late LiveKit identity maps to its account');
+    assert.equal(row.name, 'Dave');
+    assert.equal(row.avatar, 'avatar-d');
+    await fixture.group.leave();
+  }
+  {
     let rejectConnect;
     const fixture = relayGroupFixture({ connect: async function () { await new Promise((_, reject) => { rejectConnect = reject; }); } });
     const joining = fixture.group.join({ id: 'group' });
