@@ -1385,8 +1385,10 @@
       button.setAttribute("aria-pressed", String(active));
     });
   }
+  const THEMES = ["signage", "plain"];
+  function normalizeTheme(value) { return THEMES.includes(value) ? value : "signage"; }
   function applyAppearance({ persist = false } = {}) {
-    const theme = $("#themeSelect").value || localStorage.getItem("ghostchat.theme") || "dark";
+    const theme = normalizeTheme($("#themeSelect").value || localStorage.getItem("ghostchat.theme"));
     const size = $("#textSize").value || localStorage.getItem("ghostchat.textSize") || "15";
     const motion = $("#motionSelect").value || localStorage.getItem("ghostchat.motion") || "full";
     document.body.dataset.theme = theme;
@@ -1408,7 +1410,7 @@
   }
   function setTheme() {
     applyLanguage();
-    $("#themeSelect").value = localStorage.getItem("ghostchat.theme") || "dark";
+    $("#themeSelect").value = normalizeTheme(localStorage.getItem("ghostchat.theme"));
     $("#textSize").value = localStorage.getItem("ghostchat.textSize") || "15";
     $("#motionSelect").value = localStorage.getItem("ghostchat.motion") || "full";
     $("#themeWallpaperShade").value = localStorage.getItem("ghostchat.wallpaperShade") || "58";

@@ -1,0 +1,45 @@
+/* Plain theme: calm, neutral, no route lines and no motion. Selected with
+ * Settings → Theme → Plain (body[data-theme="plain"]). Future themes follow the
+ * same pattern: one file, tokens first, then only what the theme must change. */
+
+body[data-theme="plain"] {
+  --bg: #121417;
+  --surface: #1a1d21;
+  --line-subtle: #2a2f36;
+  --text: #e4e7eb;
+  --muted: #8b939c;
+  --here: #9fb3c8;
+  --accent: var(--here);
+  --accent-ink: #101214;
+  --accent-soft: #232a33;
+  --focus: #9fb3c8;
+  --font-ui: "Segoe UI", system-ui, sans-serif;
+  --radius-control: 6px;
+  --radius-panel: 8px;
+}
+
+body[data-theme="plain"] html,
+body[data-theme="plain"],
+body[data-theme="plain"] .app-shell,
+body[data-theme="plain"] .chat-area,
+body[data-theme="plain"] .messages { background: var(--bg) !important; }
+
+/* No route lines, stops or markers: the list is a plain list. */
+body[data-theme="plain"] .list-row::before,
+body[data-theme="plain"] .list-row::after { display: none !important; }
+body[data-theme="plain"] .list-row { padding-left: 12px; }
+body[data-theme="plain"] .list-row.active { box-shadow: none; background: var(--surface); }
+body[data-theme="plain"] .rail-button.active,
+body[data-theme="plain"] .rail-button[aria-current="page"] { color: var(--text); background: var(--surface); }
+body[data-theme="plain"] .rail-active-indicator { display: none !important; }
+body[data-theme="plain"] .composer button,
+body[data-theme="plain"] .button.primary,
+body[data-theme="plain"] .primary-button { background: var(--text); color: var(--bg); }
+
+/* No motion of any kind. */
+body[data-theme="plain"] *,
+body[data-theme="plain"] *::before,
+body[data-theme="plain"] *::after {
+  animation: none !important;
+  transition: none !important;
+}
