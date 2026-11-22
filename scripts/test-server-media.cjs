@@ -504,10 +504,10 @@ async function run() {
     feed(p4, 3);
     for (let i = 0; i < 50; i++) p4.port.onmessage({ data: new Float32Array(960).fill(i / 100) });
     assert(p4.buffered - p4.offset <= (3 + 10) * 960, 'a burst is capped at target + 10 frames');
-    assert(stats(p4).queueMs <= 260, 'queueMs reports the capped depth');
+    assert.equal(stats(p4).queueMs, 260, 'queueMs reports the capped depth (13 frames)');
     assert(Math.abs(outOf(p4)[0] - 0.37) < 1e-6, 'the oldest frames were dropped, the newest kept');
 
-    // 5. The stats message replies with underruns, targetMs and queueMs, and is not played as audio.
+    // 5. The stats message replies with underruns, targetMs and queueMs.
     const s5 = stats(p1);
     assert.equal(typeof s5.underruns, 'number');
     assert.equal(typeof s5.targetMs, 'number');
