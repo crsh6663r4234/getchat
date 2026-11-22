@@ -452,7 +452,66 @@ async function run() {
     playback.port.onmessage({ data: new Float32Array(960).fill(0.25) });
     assert.equal(out()[0], 0.25, 'playback starts after 60 ms are buffered');
     for (let index = 0; index < 30; index++) playback.port.onmessage({ data: new Float32Array(960).fill(0.75) });
-    assert(playback.buffered - playback.offset <= 960 * 10, 'the jitter buffer never holds more than 200 ms');
+    assert(playback.buffered - playback.offset <= 960 * (3 + 10), 'the jitter buffer never holds more than target + 200 ms');
+
+    // Adaptive target: 3 frames minimum, 30 maximum, +2 per underrun, -1 per 250 calm frames.
+    const frame = () => new Float32Array(960).fill(0.25);
+    const pull = (node, quanta) => { for (let i = 0; i < quanta; i++) node.process([], [[new Float32Array(128)]]); };
+    const outOf = node => { const output = [new Float32Array(128)]; node.process([], [output]); return output[0]; };
+    const stats = node => {
+      node.port.onmessage({ data: { type: 'stats' } });
+      return node.port.posted.filter(item => item && item.type === 'stats').pop();
+    };
+    const feed = (node, count) => { for (let i = 0; i < count; i++) node.port.onmessage({ data: frame() }); };
+
+    // 1. An underrun raises the target and playback resumes only after the new target is buffered.
+    const p1 = new processors['ghostchat-relay-playback']();
+    assert.equal(stats(p1).targetMs, 60, 'a fresh stream starts at a 60 ms target');
+    feed(p1, 3);
+    pull(p1, 60); // 3 frames = 22.5 quanta, then underrun
+    assert.equal(stats(p1).targetMs, 100, 'underrun raises the target from 60 ms to 100 ms');
+    assert.equal(stats(p1).underruns, 1, 'underrun is counted');
+    feed(p1, 2); // 40 ms < 100 ms
+    assert.equal(outOf(p1)[0], 0, 'playback waits until the new target is buffered');
+    feed(p1, 3); // 5 frames >= 5 frames
+    assert.equal(outOf(p1)[0], 0.25, 'playback resumes once the raised target is buffered');
+
+    // 2. The target is bounded: 60 ms minimum, 600 ms maximum.
+    const p2 = new processors['ghostchat-relay-playback']();
+    for (let cycle = 0; cycle < 40; cycle++) {
+      feed(p2, stats(p2).targetMs / 20);
+      pull(p2, 400);
+      const target = stats(p2).targetMs;
+      assert(target >= 60 && target <= 600, `target stays within 60..600 ms (got ${target})`);
+    }
+    assert.equal(stats(p2).targetMs, 600, 'repeated underruns stop at the 600 ms cap');
+
+    // 3. A calm stream lowers the target by 20 ms after 250 underrun-free frames.
+    const p3 = new processors['ghostchat-relay-playback']();
+    feed(p3, 3); pull(p3, 60); // underrun: target 100 ms
+    feed(p3, 5);
+    for (let i = 0; i < 300; i++) { feed(p3, 1); pull(p3, 7); } // 300 frames in, ~280 frames played
+    const calm = stats(p3);
+    assert.equal(calm.underruns, 1, 'the calm phase had no underrun');
+    assert.equal(calm.targetMs, 80, 'a calm stream lowers the target by one frame');
+    const p3min = new processors['ghostchat-relay-playback']();
+    feed(p3min, 3);
+    for (let i = 0; i < 600; i++) { feed(p3min, 1); pull(p3min, 7); }
+    assert.equal(stats(p3min).targetMs, 60, 'the target never drops below 60 ms');
+
+    // 4. A burst keeps at most target + 10 frames queued; the oldest audio is dropped.
+    const p4 = new processors['ghostchat-relay-playback']();
+    feed(p4, 3);
+    for (let i = 0; i < 50; i++) p4.port.onmessage({ data: new Float32Array(960).fill(i / 100) });
+    assert(p4.buffered - p4.offset <= (3 + 10) * 960, 'a burst is capped at target + 10 frames');
+    assert(stats(p4).queueMs <= 260, 'queueMs reports the capped depth');
+    assert(Math.abs(outOf(p4)[0] - 0.37) < 1e-6, 'the oldest frames were dropped, the newest kept');
+
+    // 5. The stats message replies with underruns, targetMs and queueMs, and is not played as audio.
+    const s5 = stats(p1);
+    assert.equal(typeof s5.underruns, 'number');
+    assert.equal(typeof s5.targetMs, 'number');
+    assert.equal(typeof s5.queueMs, 'number');
   }
   console.log('server media relay transport tests passed');
 }

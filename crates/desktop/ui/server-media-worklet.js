@@ -8,10 +8,16 @@
 // jitter buffer, so network bursts do not cause clicks or growing delay.
 (() => {
   const FRAME = 960;
-  // Start after 60 ms are buffered; keep at most 200 ms (older audio is
-  // dropped, which keeps a relayed call close to real time).
-  const START_SAMPLES = FRAME * 3;
-  const MAX_SAMPLES = FRAME * 10;
+  // Adaptive jitter buffer, counted in 20 ms frames. Playback starts once the
+  // target is buffered (60 ms at first). Each underrun raises the target by
+  // 40 ms (up to 600 ms); every 250 calm frames (5 s) lower it by 20 ms. The
+  // queue may hold the target plus 200 ms of slack; older audio is dropped,
+  // which keeps a relayed call close to real time.
+  const MIN_TARGET_FRAMES = 3;
+  const MAX_TARGET_FRAMES = 30;
+  const TARGET_STEP_FRAMES = 2;
+  const CALM_FRAMES = 250;
+  const SLACK_FRAMES = 10;
 
   class RelayCapture extends AudioWorkletProcessor {
     constructor() {
@@ -47,12 +53,25 @@
       this.offset = 0;
       this.buffered = 0;
       this.playing = false;
+      this.targetFrames = MIN_TARGET_FRAMES;
+      this.calmFrames = 0;
+      this.underruns = 0;
       this.port.onmessage = event => {
+        if (event.data?.type === "stats") {
+          this.port.postMessage({
+            type: "stats",
+            underruns: this.underruns,
+            targetMs: this.targetFrames * 20,
+            queueMs: (this.buffered - this.offset) / 48,
+          });
+          return;
+        }
         const samples = event.data;
         if (!(samples instanceof Float32Array) || !samples.length) return;
         this.queue.push(samples);
         this.buffered += samples.length;
-        while (this.buffered - this.offset > MAX_SAMPLES && this.queue.length > 1) {
+        const maxSamples = (this.targetFrames + SLACK_FRAMES) * FRAME;
+        while (this.buffered - this.offset > maxSamples && this.queue.length > 1) {
           this.buffered -= this.queue.shift().length;
           this.offset = 0;
         }
@@ -64,7 +83,7 @@
       if (!output) return true;
       output.fill(0);
       const available = this.buffered - this.offset;
-      if (!this.playing && available < START_SAMPLES) return true;
+      if (!this.playing && available < this.targetFrames * FRAME) return true;
       this.playing = true;
       let written = 0;
       while (written < output.length && this.queue.length) {
@@ -79,8 +98,19 @@
           this.offset = 0;
         }
       }
-      // An underrun waits for a fresh cushion instead of stuttering.
-      if (written < output.length) this.playing = false;
+      // An underrun grows the cushion and waits for it instead of stuttering.
+      if (written < output.length) {
+        this.underruns++;
+        this.targetFrames = Math.min(MAX_TARGET_FRAMES, this.targetFrames + TARGET_STEP_FRAMES);
+        this.calmFrames = 0;
+        this.playing = false;
+      } else {
+        this.calmFrames += output.length / FRAME;
+        if (this.calmFrames >= CALM_FRAMES) {
+          this.targetFrames = Math.max(MIN_TARGET_FRAMES, this.targetFrames - 1);
+          this.calmFrames = 0;
+        }
+      }
       for (let index = 1; index < outputs[0].length; index++) outputs[0][index].set(output);
       return true;
     }
