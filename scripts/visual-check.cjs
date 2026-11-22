@@ -1,6 +1,7 @@
 // Visual check for the UI in both themes. Not part of the test suite: it needs
 // Playwright and a browser (see the environment notes), so it is run by hand:
 //   OUT=/some/dir/prefix node scripts/visual-check.cjs
+// Without OUT the screenshots go to the system temp folder, never the repository.
 // It loads crates/desktop/ui/index.html with a stubbed backend (mock API and a
 // test double of the group call client) and writes one screenshot per theme.
 const { chromium } = require('playwright');
@@ -45,7 +46,7 @@ const convo = { id: 'c1', kind: 'group', display_name: 'Ev grubu', name: 'Ev gru
       window.__gv?.onChange({ status: 'connected', conversationId: 'c1', participants: p, micMuted: false, micManuallyMuted: false, pushToTalkPressed: false, micAvailable: true, screenSharing: false, screenStarting: false, error: '', mediaPath: 'server', audioProcessing: null, localAudioStream: null });
     });
     await page.waitForTimeout(700);
-    await page.screenshot({ path: `${process.env.OUT}-${theme}.png` });
+    await page.screenshot({ path: `${process.env.OUT || require('os').tmpdir() + '/ghostchat-visual'}-${theme}.png` });
     const info = await page.evaluate(() => ({ rows: document.querySelectorAll('#sidebarContent .list-row').length, title: document.querySelector('#chatTitle')?.textContent, participants: document.querySelectorAll('#groupVoiceParticipants .voice-participant-card').length, gvHidden: document.querySelector('#groupVoiceParticipants')?.className }));
     console.log(theme, JSON.stringify(info));
     await page.close();
