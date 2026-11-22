@@ -1,130 +1,211 @@
-/* Wayfinding: the final cascade layer. Signage logic: a dark ground, one
- * yellow marker for "you are here", conversations read like lines and rows
- * like stations. Loaded after senate.css; it only changes look, never
- * behaviour or the hooks main.js reads. */
+/* Ledger: the final cascade layer. A printed index, not a app skin: square
+ * corners, 1px ink rules, no shadows, messages as ruled entries instead of
+ * bubbles, numbers in a monospaced face. One signal colour marks the one thing
+ * that needs attention. Loaded after senate.css; changes look only. */
 
 :root {
-  --bg: #0e1116;
-  --surface: #151a21;
-  --surface-2: #1b212a;
-  --surface-3: #242b36;
-  --text: #e6edf3;
-  --muted: #8b96a3;
-  --muted-strong: #b4bdc7;
-  --line: #29313c;
-  --line-subtle: #1f2630;
-  --accent: #ffc83d;
-  --accent-ink: #1a1400;
-  --accent-soft: #33290b;
-  --focus: rgba(255, 200, 61, .5);
-  --font-ui: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-  --radius-control: 6px;
-  --radius-panel: 10px;
-  --gc-ink-950: #0a0d11;
-  --gc-ink-900: #0e1116;
-  --gc-ink-850: #151a21;
-  --gc-ink-800: #1b212a;
-  --gc-ink-700: #29313c;
-  --gc-paper-50: #f3f6f9;
-  --gc-paper-200: #c9d1da;
-  --gc-paper-400: #8b96a3;
-  --gc-amber-300: #ffd35c;
-  --gc-amber-400: #ffc83d;
-  --gc-radius-sm: 6px;
-  --gc-radius-md: 10px;
-  --gc-radius-lg: 14px;
+  --bg: #0d0d0c;
+  --surface: #0d0d0c;
+  --surface-2: #181816;
+  --surface-3: #242421;
+  --text: #f2f1ec;
+  --muted: #8a867b;
+  --muted-strong: #c9c6bb;
+  --line: #f2f1ec;
+  --line-subtle: #2a2a27;
+  --accent: #ff4a1c;
+  --accent-ink: #0d0d0c;
+  --accent-soft: #2a140d;
+  --focus: #ff4a1c;
+  --font-ui: "Segoe UI", system-ui, sans-serif;
+  --font-mono: Consolas, "Cascadia Mono", monospace;
+  --radius-control: 0;
+  --radius-panel: 0;
+  --gc-ink-950: #0d0d0c;
+  --gc-ink-900: #0d0d0c;
+  --gc-ink-850: #0d0d0c;
+  --gc-ink-800: #181816;
+  --gc-ink-700: #2a2a27;
+  --gc-paper-50: #f2f1ec;
+  --gc-paper-200: #c9c6bb;
+  --gc-paper-400: #8a867b;
+  --gc-amber-300: #ff4a1c;
+  --gc-amber-400: #ff4a1c;
+  --gc-radius-sm: 0;
+  --gc-radius-md: 0;
+  --gc-radius-lg: 0;
+  --gc-shadow-float: none;
 }
 
-html, body {
-  background: var(--bg);
+html, body, .app-shell, .chat-area, .main-column, .messages, .thread-column {
+  background: var(--bg) !important;
   color: var(--text);
   font-family: var(--font-ui);
 }
 
-/* Left rail: icons only, a thin spine. The active destination gets the marker. */
+*, *::before, *::after { border-radius: 0 !important; box-shadow: none !important; }
+
+/* Rail: a thin column of glyphs. The active destination gets a black rule. */
 .rail {
   background: var(--bg);
   border-right: 1px solid var(--line);
 }
 .rail-button {
-  border-radius: var(--radius-control);
-  color: var(--muted);
-}
-.rail-button:hover { color: var(--text); background: var(--surface-2); }
-.rail-button.active,
-.rail-button[aria-current="page"] {
-  color: var(--accent);
-  background: var(--surface-2);
-  box-shadow: inset 2px 0 0 var(--accent);
-}
-
-/* Conversation list: rows are stations on a line. The active row carries the marker. */
-.sidebar {
-  background: var(--bg);
-  border-right: 1px solid var(--line);
-}
-.list-row {
-  border-radius: var(--radius-control);
+  color: var(--muted-strong);
+  background: transparent;
   border: 0;
 }
-.list-row:hover { background: var(--surface-2); }
-.list-row.active {
-  background: var(--surface);
-  box-shadow: inset 3px 0 0 var(--accent);
-  color: var(--text);
+.rail-button:hover { background: var(--surface-2); color: var(--text); }
+.rail-button.active,
+.rail-button[aria-current="page"] {
+  background: var(--text);
+  color: var(--bg);
 }
-.list-row.active .list-title,
-.list-row.active strong { color: var(--text); }
+.rail-active-indicator { background: var(--accent) !important; }
 
-/* Chat: a quiet header, a plain thread, a composer that reads as a field. */
-.chat-header {
-  background: var(--bg);
-  border-bottom: 1px solid var(--line);
+/* Index: each conversation is a numbered, ruled row. Active inverts. */
+.sidebar, .sidebar *:not(.mini-avatar):not(.presence-dot) {
+  color: inherit;
 }
+.sidebar {
+  background: var(--bg) !important;
+  border-right: 1px solid var(--line);
+}
+.sidebar-header, .sidebar-title, .sidebar h2 { font-family: var(--font-ui); letter-spacing: -0.01em; }
+#sidebarContent { counter-reset: row; }
+.list-row {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line-subtle);
+  counter-increment: row;
+  padding: 12px 14px;
+}
+.list-row::before {
+  content: counter(row, decimal-leading-zero);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  align-self: center;
+  margin-right: 10px;
+}
+.list-row:hover { background: var(--surface-2); }
+.list-row strong, .list-row .list-copy strong { color: var(--text); }
+.list-row .list-copy span { color: var(--muted); }
+.list-row.active {
+  background: var(--text) !important;
+  color: var(--bg);
+}
+.list-row.active strong, .list-row.active .list-copy strong { color: var(--bg); }
+.list-row.active::before,
+.list-row.active .list-copy span,
+.list-row.active span { color: var(--bg); }
+.list-row .mini-avatar { border-radius: 0; }
+
+/* Head: big plain name, mono subtitle, a hard rule under it. */
+.chat-header {
+  background: var(--bg) !important;
+  color: var(--text);
+  border-bottom: 2px solid var(--line);
+}
+.chat-heading h2 { font-size: 26px; letter-spacing: -0.02em; }
+.chat-subtitle, #chatSubtitle { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
 .chat-area { background: var(--bg); }
+
+/* Thread: messages are entries in a ledger, not bubbles. */
+.messages { background: var(--bg); }
+.message {
+  display: block;
+  margin: 0;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--line-subtle);
+  max-width: 820px;
+}
+.message-body {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  color: var(--text);
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 16px;
+}
+.message-body p { margin: 0; line-height: 1.55; }
+.message-owner-label {
+  border: 0 !important;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-strong);
+  background: transparent;
+  padding: 0;
+}
+.message.own-message .message-body { background: transparent; }
+.message.own-message .message-owner-label { color: var(--accent); }
+
+/* Composer: a ruled strip, a plain field, a black square send. */
 .composer {
-  background: var(--bg);
-  border-top: 1px solid var(--line);
+  background: var(--bg) !important;
+  border-top: 2px solid var(--line);
+  padding: 12px 16px;
 }
 .composer textarea,
 .composer input[type="text"] {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-control);
+  background: transparent !important;
+  padding-bottom: 6px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
   color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 15px;
 }
 .composer textarea:focus,
 .composer input[type="text"]:focus {
-  outline: 2px solid var(--focus);
+  outline: 2px solid var(--accent);
   outline-offset: 0;
-  border-color: var(--accent);
 }
-
-/* Messages: no decorative bubbles; the author and time carry the structure. */
-.message-body {
-  border-radius: var(--radius-panel);
-  background: var(--surface);
-  border: 1px solid var(--line-subtle);
-  color: var(--text);
-}
-.message.own-message .message-body {
-  background: var(--accent-soft);
-  border-color: transparent;
-}
-
-/* One primary action per screen: the marker colour. */
+.composer button,
 .button.primary,
 .primary-button {
-  background: var(--accent);
-  color: var(--accent-ink);
-  border-color: transparent;
+  background: var(--text);
+  color: var(--bg);
+  border: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.composer button:hover,
+.button.primary:hover,
+.primary-button:hover { background: var(--accent); color: var(--accent-ink); }
+
+/* Buttons elsewhere: outlined, no fill, no motion. */
+.button.secondary, .text-button {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
 
-:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+@media (max-width: 760px) {
+  .message-body { grid-template-columns: 1fr; gap: 4px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
+}
+
+/* The composer hint sits under the field, never on its rule. */
+.composer { flex-wrap: wrap; }
+.composer-hint {
+  position: static !important;
+  flex-basis: 100%;
+  margin: 6px 0 0 !important;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  pointer-events: none;
 }
