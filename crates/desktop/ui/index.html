@@ -43,7 +43,7 @@
         <button id="recoverSubmit" class="button primary wide" type="submit" disabled data-en="Recover account" data-tr="Hesabı kurtar">Recover account</button>
         <p class="fine-print" data-en="Your recovery key is the only way to regain access if you lose this device." data-tr="Bu cihazı kaybedersen hesabına erişmenin tek yolu kurtarma anahtarındır.">Your recovery key is the only way to regain access if you lose this device.</p>
       </form>
-      <div class="server-note"><span id="serverModeLabel">Server</span> <span id="serverLabel">starting…</span><button id="serverSettings" class="text-button" type="button" data-en="Change server" data-tr="Sunucuyu değiştir">Change server</button></div>
+      <div class="server-note"><span id="serverModeLabel">Server</span> <span id="serverLabel" data-en="starting…" data-tr="başlatılıyor…">starting…</span><button id="serverSettings" class="text-button" type="button" data-en="Change server" data-tr="Sunucuyu değiştir">Change server</button></div>
     </section>
     <p class="privacy-note" data-en="GhostChat servers can access message content. Messages are not end-to-end encrypted." data-tr="GhostChat sunucuları mesaj içeriğine erişebilir. Mesajlar uçtan uca şifrelenmez.">GhostChat servers can access message content. Messages are not end-to-end encrypted.</p>
   </main>
@@ -100,7 +100,7 @@
         <section id="voiceStage" class="voice-stage hidden" aria-labelledby="voiceStageTitle">
           <div class="voice-stage-scroll">
           <div class="voice-stage-head">
-            <div class="voice-peer-details"><h3 id="voiceStageTitle" data-en="Voice call" data-tr="Sesli arama">Voice call</h3><p class="voice-status-line"><i id="voiceStageDot" class="status-dot connecting"></i><span id="voiceStageStatus" aria-live="polite">Waiting to connect…</span><span id="voiceCallDuration" class="voice-call-duration hidden">00:00</span></p></div>
+            <div class="voice-peer-details"><h3 id="voiceStageTitle" data-en="Voice call" data-tr="Sesli arama">Voice call</h3><p class="voice-status-line"><i id="voiceStageDot" class="status-dot connecting"></i><span id="voiceStageStatus" aria-live="polite" data-en="Waiting to connect…" data-tr="Bağlanması bekleniyor…">Waiting to connect…</span><span id="voiceCallDuration" class="voice-call-duration hidden">00:00</span></p></div>
             <div class="voice-stage-meta"><span id="voiceConnectionQuality" class="voice-connection-quality" data-en="Connection checking" data-tr="Bağlantı kontrol ediliyor">Connection checking</span><span class="voice-encryption-note" data-en="Live call" data-tr="Canlı arama">Live call</span><button id="voiceStageCompactButton" class="icon-button hidden" type="button" aria-expanded="true" title="Compact call view" data-en-title="Compact call view" data-tr-title="Kompakt arama görünümü">⌃</button></div>
           </div>
           <div class="voice-participants" role="group" aria-label="Call participants" data-en-label="Call participants" data-tr-label="Arama katılımcıları">
@@ -171,7 +171,7 @@
               <div class="watch-party-tools"><button id="watchPartyPlay" class="button secondary" type="button" data-en="Play / pause" data-tr="Oynat / duraklat">Play / pause</button><input id="watchPartySeek" type="range" min="0" max="100" value="0" step="0.1" aria-label="Video position"><span id="watchPartyTime">0:00</span><button id="watchPartyStop" class="button secondary" type="button" data-en="End session" data-tr="Oturumu bitir">End session</button></div>
             </section>
           </div>
-          <audio id="remoteAudio" autoplay playsinline></audio><button id="enableCallAudio" class="button secondary hidden" type="button">Enable call audio</button>
+          <audio id="remoteAudio" autoplay playsinline></audio><button id="enableCallAudio" class="button secondary hidden" type="button" data-en="Enable call audio" data-tr="Çağrı sesini aç">Enable call audio</button>
         </section>
         <div id="loadOlderRow" class="load-older-row"><button id="loadOlder" class="text-button">Load earlier messages</button></div>
         <div id="messages" class="messages" role="log" aria-live="polite"></div>
