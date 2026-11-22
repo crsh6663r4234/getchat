@@ -1,4 +1,0 @@
-# Caddy terminates HTTPS/WSS for the signalling port and gets a certificate automatically.
-REPLACE_VOICE_DOMAIN {
-    reverse_proxy 127.0.0.1:7880
-}
