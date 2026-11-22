@@ -70,28 +70,32 @@ html, body, .app-shell, .chat-area, .messages {
   padding: 10px 12px 10px 24px;
   color: var(--text);
 }
+/* Metro: each conversation is a line (--route) with stations (white, ringed in
+ * the line colour) and an avatar ringed in the same colour. */
+.list-row { --route: var(--route-1); }
+.list-row:nth-child(5n+2) { --route: var(--route-2); }
+.list-row:nth-child(5n+3) { --route: var(--route-3); }
+.list-row:nth-child(5n+4) { --route: var(--route-4); }
+.list-row:nth-child(5n+5) { --route: var(--route-5); }
 .list-row::before {
   content: "";
   position: absolute;
-  left: 9px; top: 0; bottom: 0;
-  width: 4px;
-  background: var(--route-1);
+  left: 8px; top: 0; bottom: 0;
+  width: 6px;
+  background: var(--route);
 }
 .list-row::after {
   content: "";
   position: absolute;
-  left: 5px; top: 50%;
-  width: 12px; height: 12px;
-  margin-top: -6px;
+  left: 4px; top: 50%;
+  width: 14px; height: 14px;
+  margin-top: -7px;
   border-radius: 50%;
-  background: var(--bg);
-  border: 3px solid var(--route-1);
+  background: var(--text);
+  border: 3px solid var(--route);
   box-sizing: border-box;
 }
-.list-row:nth-child(5n+2)::before, .list-row:nth-child(5n+2)::after { background: var(--route-2); border-color: var(--route-2); }
-.list-row:nth-child(5n+3)::before, .list-row:nth-child(5n+3)::after { background: var(--route-3); border-color: var(--route-3); }
-.list-row:nth-child(5n+4)::before, .list-row:nth-child(5n+4)::after { background: var(--route-4); border-color: var(--route-4); }
-.list-row:nth-child(5n+5)::before, .list-row:nth-child(5n+5)::after { background: var(--route-5); border-color: var(--route-5); }
+.list-row .mini-avatar { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--route) !important; }
 .list-row:hover { background: var(--surface); }
 .list-row.active { background: var(--surface); box-shadow: inset 0 0 0 1px var(--here); }
 .list-row.active::after { background: var(--here); border-color: var(--here); }

@@ -70,3 +70,6 @@ body[data-theme="plain"] .setting-row input[type="checkbox"]:checked {
 body[data-theme="plain"] .profile-preview-avatar,
 body[data-theme="plain"] .mini-avatar,
 body[data-theme="plain"] .voice-participant-avatar { background: var(--surface-2) !important; }
+
+/* Plain: no line ring around avatars either. */
+body[data-theme="plain"] .list-row .mini-avatar { box-shadow: none !important; }
