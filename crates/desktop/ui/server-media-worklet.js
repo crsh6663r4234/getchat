@@ -18,6 +18,8 @@
   const TARGET_STEP_FRAMES = 2;
   const CALM_FRAMES = 250;
   const SLACK_FRAMES = 10;
+  // Silence this long (50 frames = 1 s) ends a talk spurt: the target resets.
+  const PAUSE_FRAMES = 50;
 
   class RelayCapture extends AudioWorkletProcessor {
     constructor() {
@@ -55,6 +57,7 @@
       this.playing = false;
       this.targetFrames = MIN_TARGET_FRAMES;
       this.calmFrames = 0;
+      this.silentFrames = 0;
       this.underruns = 0;
       this.port.onmessage = event => {
         if (event.data?.type === "stats") {
@@ -68,6 +71,10 @@
         }
         const samples = event.data;
         if (!(samples instanceof Float32Array) || !samples.length) return;
+        // A long silence is a pause (mute, push-to-talk, the other side
+        // stopped), not a stall: the next talk spurt starts at the minimum.
+        if (this.silentFrames >= PAUSE_FRAMES) this.targetFrames = MIN_TARGET_FRAMES;
+        this.silentFrames = 0;
         this.queue.push(samples);
         this.buffered += samples.length;
         const maxSamples = (this.targetFrames + SLACK_FRAMES) * FRAME;
@@ -83,8 +90,18 @@
       if (!output) return true;
       output.fill(0);
       const available = this.buffered - this.offset;
-      if (!this.playing && available < this.targetFrames * FRAME) return true;
+      if (!this.playing && available < this.targetFrames * FRAME) {
+        if (available === 0) this.silentFrames += output.length / FRAME;
+        return true;
+      }
       this.playing = true;
+      // Latency must come back down: audio queued beyond the target plus one
+      // frame is dropped from the oldest end, a 20 ms skip instead of a
+      // permanent delay after a stall.
+      while (this.buffered - this.offset > (this.targetFrames + 1) * FRAME && this.queue.length > 1) {
+        this.buffered -= this.queue.shift().length;
+        this.offset = 0;
+      }
       let written = 0;
       while (written < output.length && this.queue.length) {
         const head = this.queue[0];

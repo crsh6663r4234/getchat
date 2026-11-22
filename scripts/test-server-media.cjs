@@ -505,13 +505,29 @@ async function run() {
     for (let i = 0; i < 50; i++) p4.port.onmessage({ data: new Float32Array(960).fill(i / 100) });
     assert(p4.buffered - p4.offset <= (3 + 10) * 960, 'a burst is capped at target + 10 frames');
     assert.equal(stats(p4).queueMs, 260, 'queueMs reports the capped depth (13 frames)');
-    assert(Math.abs(outOf(p4)[0] - 0.37) < 1e-6, 'the oldest frames were dropped, the newest kept');
+    // The 13-frame backlog drains to target + 1 frame (4 frames) before playing: the newest four remain (0.46..0.49).
+    assert(Math.abs(outOf(p4)[0] - 0.46) < 1e-6, 'the oldest frames were dropped, the newest kept');
 
     // 5. The stats message replies with underruns, targetMs and queueMs.
     const s5 = stats(p1);
     assert.equal(typeof s5.underruns, 'number');
     assert.equal(typeof s5.targetMs, 'number');
     assert.equal(typeof s5.queueMs, 'number');
+
+    // 6. Latency returns to the target while playing: a backlog after a stall drains to target + 1 frame.
+    const p6 = new processors['ghostchat-relay-playback']();
+    feed(p6, 3); pull(p6, 60); // underrun: target 100 ms (5 frames)
+    feed(p6, 5); pull(p6, 1); // starts playing
+    feed(p6, 15); // a backlog that arrived in a burst
+    pull(p6, 1);
+    assert(p6.buffered - p6.offset <= (5 + 1) * 960, 'a backlog drains to target + 1 frame while playing');
+
+    // 7. A silence of one second or more (mute, push-to-talk) is a pause: the next talk spurt starts at the minimum.
+    const p7 = new processors['ghostchat-relay-playback']();
+    feed(p7, 3); pull(p7, 60); // underrun: target 100 ms
+    pull(p7, 400); // about 1.1 s of silence
+    feed(p7, 1);
+    assert.equal(stats(p7).targetMs, 60, 'a pause resets the target to the minimum');
   }
   console.log('server media relay transport tests passed');
 }

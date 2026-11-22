@@ -18,8 +18,9 @@ So the fix is an **adaptive** buffer: it grows when stalls happen, so the stall 
 
 ## Goals
 
-- A stall of up to about 1 s on the relay path produces no audible gap. The cost is extra latency during and shortly after the stall.
-- Latency returns to the normal target (about 60 ms) within about 10 s of a quiet connection.
+- Fewer audible gaps on the relay path. The first stall of a call still gaps (the target starts at 60 ms); each later stall of up to about 600 ms should not gap, and a longer one gaps and then grows the cushion. Expect fewer gaps, not none.
+- Latency returns to the target while audio plays: queued audio beyond the target plus one frame is dropped, 20 ms at a time.
+- A pause of one second or more (mute, push-to-talk, the other side stopped) resets the target to 60 ms at the next talk spurt.
 - Nothing audible changes on a clean connection: same start delay and same frames.
 - The behaviour is covered by Node tests with the existing `vm` fixtures (`scripts/test-server-media.cjs`).
 
@@ -52,7 +53,9 @@ Playback worklet, per peer:
 2. **Underrun.** When the queue is empty while playing, the worklet plays silence (as now) and raises the target by 2 frames (40 ms). It then waits until the target is buffered before resuming. This replaces the fixed 60 ms restart.
 3. **Recovery.** After 250 consecutive frames (5 s) without an underrun, the target drops by 1 frame, down to the 3-frame minimum.
 4. **Cap.** The queue may hold up to the current target plus 10 frames of slack (about 200 ms beyond target). Only audio beyond that cap is dropped, oldest first. This keeps latency bounded even if the sender bursts.
-5. **Stats.** The worklet posts a small stats object on request (underruns, current target in ms, queue depth in ms), so the UI or a test can read it. Not shown in UI in stage 1.
+5. **Drain.** While playing, any queued audio beyond target + 1 frame is dropped from the oldest end, one frame at a time. Added after review: without it, a raised target never lowered the delay that was already queued.
+6. **Pause.** Silence of 50 frames (1 s) or more, counted while the queue is empty, resets the target to 3 frames at the next arrival. Added after review: mute and push-to-talk pauses otherwise ratchet the target up on a clean connection. Known cost: a TCP stall of 1 s or more also resets the target.
+7. **Stats.** The worklet posts a small stats object on request (underruns, current target in ms, queue depth in ms), so the UI or a test can read it. Not shown in UI in stage 1.
 
 Frames are not renumbered. The worklet does not look at sequence numbers; ordering is guaranteed by TCP.
 
