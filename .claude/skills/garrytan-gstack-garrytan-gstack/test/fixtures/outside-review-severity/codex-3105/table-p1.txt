@@ -1,4 +1,0 @@
-| Severity | Finding | Where |
-|---|---|---|
-| P1 | The lock is released before the write lands | bin/gstack-brain-sync:763 |
-| P3 | A stale comment | bin/gstack-brain-sync:12 |
