@@ -52,3 +52,7 @@ body[data-theme="plain"] .group-voice-participant .voice-participant-avatar {
   color: var(--text) !important;
   box-shadow: none !important;
 }
+
+/* Plain: planner poll rows carry no route colour, only a neutral edge. */
+body[data-theme="plain"] #groupPollList .group-member-row .list-copy > button.button { border-left-color: var(--line-subtle); }
+body[data-theme="plain"] #groupPollList .group-member-row .list-copy > button.button:not(:disabled):hover { background: var(--surface); }
