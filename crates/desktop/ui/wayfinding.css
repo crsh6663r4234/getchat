@@ -278,3 +278,23 @@ body:not(.reduced-motion) .list-row { transition: transform 160ms cubic-bezier(0
 }
 #groupPollList .group-member-row .list-copy > button.button:disabled { opacity: 1; color: var(--muted); border-left-color: var(--line-subtle); }
 #groupPollList .group-member-row .list-copy > button.button:not(:disabled):hover { background: var(--surface); }
+
+/* Settings switches: the on state is the sign yellow, not the old purple. */
+.setting-row input[type="checkbox"] {
+  accent-color: var(--here) !important;
+  background-color: var(--surface-3) !important;
+  border-color: var(--line) !important;
+}
+.setting-row input[type="checkbox"]:checked {
+  background-color: var(--here) !important;
+  border-color: var(--here) !important;
+}
+
+/* The checked switch paints from its own gradient rule; replace it outright. */
+#settingsDialog .settings-section-content > .setting-row input[type=checkbox]:checked,
+.check-row input[type=checkbox]:checked,
+.setting-row input[type="checkbox"]:checked {
+  background: var(--here) !important;
+  background-image: none !important;
+  border-color: var(--here) !important;
+}

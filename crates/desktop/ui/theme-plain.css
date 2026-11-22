@@ -56,3 +56,13 @@ body[data-theme="plain"] .group-voice-participant .voice-participant-avatar {
 /* Plain: planner poll rows carry no route colour, only a neutral edge. */
 body[data-theme="plain"] #groupPollList .group-member-row .list-copy > button.button { border-left-color: var(--line-subtle); }
 body[data-theme="plain"] #groupPollList .group-member-row .list-copy > button.button:not(:disabled):hover { background: var(--surface); }
+
+/* Plain: switches are neutral when on. */
+body[data-theme="plain"] .setting-row input[type="checkbox"]:checked { background-color: var(--text) !important; border-color: var(--text) !important; }
+
+body[data-theme="plain"] #settingsDialog .settings-section-content > .setting-row input[type=checkbox]:checked,
+body[data-theme="plain"] .setting-row input[type="checkbox"]:checked {
+  background: var(--text) !important;
+  background-image: none !important;
+  border-color: var(--text) !important;
+}
