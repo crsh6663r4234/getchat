@@ -298,3 +298,17 @@ body:not(.reduced-motion) .list-row { transition: transform 160ms cubic-bezier(0
   background-image: none !important;
   border-color: var(--here) !important;
 }
+
+/* Avatars without a photo are neutral. The generated gradients from the older
+ * layers (purple) are replaced everywhere an avatar is drawn. */
+.profile-preview-avatar,
+.mini-avatar,
+.voice-participant-avatar,
+.avatar {
+  background: var(--surface-3) !important;
+  background-image: none !important;
+  color: var(--text) !important;
+  box-shadow: none !important;
+}
+.profile-preview-avatar { font-size: 42px; font-weight: 600; }
+.profile-preview-avatar img, .mini-avatar img, .voice-participant-avatar img { background: none !important; }

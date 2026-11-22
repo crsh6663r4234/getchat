@@ -66,3 +66,7 @@ body[data-theme="plain"] .setting-row input[type="checkbox"]:checked {
   background-image: none !important;
   border-color: var(--text) !important;
 }
+
+body[data-theme="plain"] .profile-preview-avatar,
+body[data-theme="plain"] .mini-avatar,
+body[data-theme="plain"] .voice-participant-avatar { background: var(--surface-2) !important; }
