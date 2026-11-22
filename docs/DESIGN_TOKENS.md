@@ -23,13 +23,15 @@ without motion. Both are chosen in Settings → Theme and stored as `ghostchat.t
 | `--line-subtle` | Dividers and quiet borders |
 | `--text` | Body text and headings |
 | `--muted` | Timestamps, secondary lines, hints |
-| `--here` | "You are here" marker and the primary action (Signage) |
-| `--accent`, `--accent-ink` | Accent and its text colour (aliases of `--here` in Signage) |
+| `--here` | "You are here" marker and the primary action |
+| `--accent` | Accent colour (an alias of `--here`) |
+| `--accent-ink` | Text colour on the accent |
 | `--font-ui` | The interface face (Segoe UI) |
 | `--radius-control`, `--radius-panel` | Corner radii |
 
-Signage only: `--route-1` … `--route-5` (one line colour per conversation, assigned
-by position), `--font-mono` (Consolas, for counts and labels).
+Defined on `:root`, so both themes can read them: `--route-1` … `--route-5` (one
+line colour per conversation, assigned by position) and `--font-mono` (Consolas, for
+counts and labels). Plain does not show route colours; its rules hide them.
 
 ## Rules
 
