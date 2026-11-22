@@ -257,3 +257,24 @@ body:not(.reduced-motion) .list-row { transition: transform 160ms cubic-bezier(0
   color: var(--text) !important;
   box-shadow: none !important;
 }
+
+/* Planner poll options (artifact-design: structure is information). A vote is
+ * a row on the route: label left, count in mono on the right, a stop in the
+ * route colour. Not a centred button. */
+#groupPollList .group-member-row .list-copy > button.button {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+  background: var(--bg);
+  border: 0;
+  border-left: 3px solid var(--route-3);
+  border-radius: 0 var(--radius-control) var(--radius-control) 0;
+  padding: 10px 12px;
+  margin-top: 6px;
+  color: var(--text);
+  font-weight: 500;
+}
+#groupPollList .group-member-row .list-copy > button.button:disabled { opacity: 1; color: var(--muted); border-left-color: var(--line-subtle); }
+#groupPollList .group-member-row .list-copy > button.button:not(:disabled):hover { background: var(--surface); }
