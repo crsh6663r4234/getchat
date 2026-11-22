@@ -43,3 +43,12 @@ body[data-theme="plain"] *::after {
   animation: none !important;
   transition: none !important;
 }
+
+/* Plain: participant avatars are neutral too. */
+body[data-theme="plain"] .voice-participant-avatar,
+body[data-theme="plain"] .group-voice-participant .voice-participant-avatar {
+  background: var(--surface-2) !important;
+  background-image: none !important;
+  color: var(--text) !important;
+  box-shadow: none !important;
+}

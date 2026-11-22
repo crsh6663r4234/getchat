@@ -249,3 +249,11 @@ body:not(.reduced-motion) .list-row { transition: transform 160ms cubic-bezier(0
   border: 0 !important;
   font-weight: 600;
 }
+
+/* Participant avatars are neutral: the palette, not a per-person gradient, carries colour. */
+.voice-participant-avatar, .group-voice-participant .voice-participant-avatar {
+  background: var(--surface-3) !important;
+  background-image: none !important;
+  color: var(--text) !important;
+  box-shadow: none !important;
+}
