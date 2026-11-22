@@ -72,11 +72,11 @@ A server backup is as sensitive as the server database. The desktop copy keeps t
 The source and release workflow are published at [crsh6663r4234/getchat](https://github.com/crsh6663r4234/getchat).
 
 1. In the repository's **Settings → Secrets and variables → Actions**, add a repository secret named `TAURI_SIGNING_PRIVATE_KEY`. Its value is the full contents of the local `crates/desktop/secrets/ghostchat-updater.key` file. Do not commit or share that file. The matching public key is already embedded in `crates/desktop/tauri.conf.json`.
-2. Increase the version in the workspace `Cargo.toml`, `Cargo.lock`, and `crates/desktop/tauri.conf.json`, then push the change to `main`. A matching `vX.Y.Z` release is created automatically.
+2. Run `node scripts/bump-version.cjs X.Y.Z` (it writes `Cargo.toml`, `crates/desktop/tauri.conf.json` and `Cargo.lock` together), then `node scripts/test-version-sync.cjs`, then push the change to `main`. A matching `vX.Y.Z` release is created automatically.
 3. The release workflow ("Release GhostChat") builds and signs the Windows MSI, creates and publishes a GitHub Release marked as latest, uploads Tauri's `latest.json` updater feed, and attaches a standalone Windows x64 server with its SHA-256 checksum and its updater signature (`ghostchat-server-windows-x64.exe.sig`, made with the same key as the MSI's), which the server's self-updater requires.
 
 Beta builds come from a second workflow, "Release GhostChat beta" (`.github/workflows/release-beta.yml`), which runs for pushes to the `beta` branch that change the same version files. It builds and signs the same MSI and server exe, publishes them as the prerelease `v<version>-beta.<run number>` (never marked latest) at the built commit, and replaces `latest.json` on the fixed `beta` prerelease. It never creates or uploads to a `vX.Y.Z` release. Note that the `beta` tag of the feed release and the `beta` branch share a name; in git commands name them in full (`refs/heads/beta`, `refs/tags/beta`).
 
-For later releases, increment the version in the root `Cargo.toml`, `Cargo.lock`, and `crates/desktop/tauri.conf.json` before pushing to `main`. Keep the same signing key.
+For later releases, run `node scripts/bump-version.cjs X.Y.Z` before pushing to `main` (it updates `Cargo.toml`, `crates/desktop/tauri.conf.json` and `Cargo.lock` at once). Keep the same signing key.
 
 Automatic in-app updates apply to the installed MSI, the only desktop download the release publishes.
