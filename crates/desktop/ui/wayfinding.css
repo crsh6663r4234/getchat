@@ -156,3 +156,32 @@ html, body, .app-shell, .chat-area, .messages {
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* Sign-in and recovery: the same sign language on the first screen. */
+.auth-view, .recovery-view { background: var(--bg) !important; }
+.auth-card {
+  background: var(--surface) !important;
+  border: 1px solid var(--line-subtle) !important;
+  border-radius: var(--radius-panel) !important;
+  box-shadow: none !important;
+}
+.auth-card h1, .auth-card h2 { font-weight: 600; letter-spacing: -0.01em; }
+.auth-card .button.primary, .auth-card button[type="submit"] {
+  background: var(--here) !important;
+  color: var(--accent-ink) !important;
+  border-radius: var(--radius-control) !important;
+  font-weight: 600;
+}
+.auth-card input, .auth-card select {
+  background: var(--bg) !important;
+  border: 1px solid var(--line) !important;
+  border-radius: var(--radius-control) !important;
+  color: var(--text) !important;
+}
+.auth-card input:focus, .auth-card select:focus { outline: 2px solid var(--here); outline-offset: 0; }
+.auth-card .segmented, .auth-card [role="tablist"] {
+  background: var(--bg) !important;
+  border: 1px solid var(--line-subtle) !important;
+  border-radius: var(--radius-control) !important;
+}
+.auth-card [role="tab"][aria-selected="true"] { background: var(--here) !important; color: var(--accent-ink) !important; }
