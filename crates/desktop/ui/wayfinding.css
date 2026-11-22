@@ -1,0 +1,130 @@
+/* Wayfinding: the final cascade layer. Signage logic: a dark ground, one
+ * yellow marker for "you are here", conversations read like lines and rows
+ * like stations. Loaded after senate.css; it only changes look, never
+ * behaviour or the hooks main.js reads. */
+
+:root {
+  --bg: #0e1116;
+  --surface: #151a21;
+  --surface-2: #1b212a;
+  --surface-3: #242b36;
+  --text: #e6edf3;
+  --muted: #8b96a3;
+  --muted-strong: #b4bdc7;
+  --line: #29313c;
+  --line-subtle: #1f2630;
+  --accent: #ffc83d;
+  --accent-ink: #1a1400;
+  --accent-soft: #33290b;
+  --focus: rgba(255, 200, 61, .5);
+  --font-ui: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --radius-control: 6px;
+  --radius-panel: 10px;
+  --gc-ink-950: #0a0d11;
+  --gc-ink-900: #0e1116;
+  --gc-ink-850: #151a21;
+  --gc-ink-800: #1b212a;
+  --gc-ink-700: #29313c;
+  --gc-paper-50: #f3f6f9;
+  --gc-paper-200: #c9d1da;
+  --gc-paper-400: #8b96a3;
+  --gc-amber-300: #ffd35c;
+  --gc-amber-400: #ffc83d;
+  --gc-radius-sm: 6px;
+  --gc-radius-md: 10px;
+  --gc-radius-lg: 14px;
+}
+
+html, body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+}
+
+/* Left rail: icons only, a thin spine. The active destination gets the marker. */
+.rail {
+  background: var(--bg);
+  border-right: 1px solid var(--line);
+}
+.rail-button {
+  border-radius: var(--radius-control);
+  color: var(--muted);
+}
+.rail-button:hover { color: var(--text); background: var(--surface-2); }
+.rail-button.active,
+.rail-button[aria-current="page"] {
+  color: var(--accent);
+  background: var(--surface-2);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* Conversation list: rows are stations on a line. The active row carries the marker. */
+.sidebar {
+  background: var(--bg);
+  border-right: 1px solid var(--line);
+}
+.list-row {
+  border-radius: var(--radius-control);
+  border: 0;
+}
+.list-row:hover { background: var(--surface-2); }
+.list-row.active {
+  background: var(--surface);
+  box-shadow: inset 3px 0 0 var(--accent);
+  color: var(--text);
+}
+.list-row.active .list-title,
+.list-row.active strong { color: var(--text); }
+
+/* Chat: a quiet header, a plain thread, a composer that reads as a field. */
+.chat-header {
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+.chat-area { background: var(--bg); }
+.composer {
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+}
+.composer textarea,
+.composer input[type="text"] {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  color: var(--text);
+}
+.composer textarea:focus,
+.composer input[type="text"]:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 0;
+  border-color: var(--accent);
+}
+
+/* Messages: no decorative bubbles; the author and time carry the structure. */
+.message-body {
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  border: 1px solid var(--line-subtle);
+  color: var(--text);
+}
+.message.own-message .message-body {
+  background: var(--accent-soft);
+  border-color: transparent;
+}
+
+/* One primary action per screen: the marker colour. */
+.button.primary,
+.primary-button {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
