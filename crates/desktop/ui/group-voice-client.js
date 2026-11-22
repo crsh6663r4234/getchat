@@ -84,17 +84,37 @@
       return typeof api.createServerMedia === "function";
     }
 
+    // A member counts as speaking for this long after their last loud audio
+    // frame, so the card does not flicker between syllables.
+    const SPEAKING_HOLD_MS = 400;
+    const speakingUntil = new Map();
+    function speakingNow(id) {
+      return (speakingUntil.get(id) || 0) > Date.now();
+    }
+    function markSpeaking(id) {
+      const wasSpeaking = speakingNow(id);
+      speakingUntil.set(id, Date.now() + SPEAKING_HOLD_MS);
+      if (!wasSpeaking) { publishState(); scheduleSpeakingCheck(id); }
+    }
+    function scheduleSpeakingCheck(id) {
+      setTimeout(() => {
+        if (speakingNow(id)) return scheduleSpeakingCheck(id);
+        speakingUntil.delete(id);
+        if (relay) publishState();
+      }, SPEAKING_HOLD_MS);
+    }
+
     function relayParticipants() {
       const local = {
         id: api.getUserId(), identity: api.getUserId(), name: api.getDisplayName(), avatar: api.getAvatar(),
-        local: true, speaking: false, micMuted: !relaySending, micManuallyMuted, pushToTalkPressed,
+        local: true, speaking: relaySending && speakingNow(api.getUserId()), micMuted: !relaySending, micManuallyMuted, pushToTalkPressed,
         screenSharing: !!relayScreenStream, mutedForYou: false,
       };
       return [local, ...[...relayPeers].map(id => {
         const profile = members.get(id);
         return {
           id, identity: id, name: profile?.display_name || "GhostChat member", avatar: profile?.avatar_data || null,
-          local: false, speaking: false, micMuted: false, micManuallyMuted: false, pushToTalkPressed: false,
+          local: false, speaking: speakingNow(id), micMuted: false, micManuallyMuted: false, pushToTalkPressed: false,
           screenSharing: screenElements.has(`relay:${id}`), mutedForYou: mutedAccounts.has(id) || api.isPeerMuted(id),
         };
       })];
@@ -310,6 +330,7 @@
       try { active?.close(); } catch {}
       for (const id of [...relayPeers]) removeRelayAudio(id);
       relayPeers.clear();
+      speakingUntil.clear();
     }
 
     // The relay sends the audio engine's processed microphone, like LiveKit.
@@ -351,6 +372,8 @@
     async function joinRelay(ticket, nextConversation) {
       const media = api.createServerMedia({
         conversationId: nextConversation.id,
+        onPeerSpeaking: accountId => { if (relay === media) markSpeaking(accountId); },
+        onLocalSpeaking: () => { if (relay === media) markSpeaking(api.getUserId()); },
         onPeerStream: (accountId, stream) => {
           if (relay !== media) return;
           relayPeers.add(accountId);

@@ -18,6 +18,8 @@ function relayed(peerId, kind, seq, data) {
 }
 
 function fixture({ webCodecs = true } = {}) {
+  // Level of the PCM the fake decoder outputs (0.5 is loud speech).
+  const level = { decoded: 0.5 };
   const sockets = []; const encoders = []; const decoders = []; const nodes = []; const contexts = []; const timers = [];
   class FakeSocket {
     static OPEN = 1;
@@ -55,7 +57,7 @@ function fixture({ webCodecs = true } = {}) {
     configure(config) { this.config = config; this.state = 'configured'; }
     decode(chunk) {
       this.chunks.push(chunk);
-      this.init.output({ numberOfFrames: 960, format: 'f32', copyTo(target) { target.fill(0.5); }, close() { this.closed = true; } });
+      this.init.output({ numberOfFrames: 960, format: 'f32', copyTo(target) { target.fill(level.decoded); }, close() { this.closed = true; } });
     }
     close() { this.state = 'closed'; }
   }
@@ -70,7 +72,7 @@ function fixture({ webCodecs = true } = {}) {
   };
   if (webCodecs) { context.AudioEncoder = Encoder; context.AudioDecoder = Decoder; }
   vm.runInNewContext(fs.readFileSync(path.join(ui, 'server-media-client.js'), 'utf8'), context);
-  return { window, context, sockets, encoders, decoders, nodes, contexts, timers };
+  return { window, context, sockets, encoders, decoders, nodes, contexts, timers, level };
 }
 
 function track(id = 'mic') { return { kind: 'audio', id }; }
@@ -528,6 +530,32 @@ async function run() {
     pull(p7, 400); // about 1.1 s of silence
     feed(p7, 1);
     assert.equal(stats(p7).targetMs, 60, 'a pause resets the target to the minimum');
+  }
+  // Speaking: loud decoded audio marks its sender; quiet audio does not. Loud local capture marks the caller.
+  {
+    const env = fixture();
+    const spoke = []; let localSpoke = 0;
+    const { media, connecting, socket } = await join(env, {
+      onPeerSpeaking: id => spoke.push(id), onLocalSpeaking: () => { localSpoke++; },
+    });
+    socket.open();
+    socket.text({ type: 'ready', user_id: 'me', peers: ['peer-b'] });
+    await connecting;
+    env.level.decoded = 0.001;
+    socket.binary(relayed('peer-b', 1, 1, new Uint8Array([1])));
+    assert.deepEqual(spoke, [], 'quiet audio does not mark a speaker');
+    env.level.decoded = 0.5;
+    socket.binary(relayed('peer-b', 1, 2, new Uint8Array([1])));
+    assert.deepEqual(spoke, ['peer-b'], 'loud audio marks the sender as speaking');
+
+    media.setInputStream(stream('mic-speak'));
+    await new Promise(resolve => setImmediate(resolve));
+    const capture = env.nodes.find(node => node.name === 'ghostchat-relay-capture');
+    media.setSending(true);
+    capture.port.onmessage({ data: new Float32Array(960) });
+    assert.equal(localSpoke, 0, 'silent microphone input is not speech');
+    capture.port.onmessage({ data: new Float32Array(960).fill(0.5) });
+    assert.equal(localSpoke, 1, 'loud microphone input marks the caller as speaking');
   }
   console.log('server media relay transport tests passed');
 }

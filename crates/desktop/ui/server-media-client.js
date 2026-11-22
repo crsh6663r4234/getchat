@@ -68,6 +68,14 @@
     return window.AudioContext || (typeof AudioContext === "function" ? AudioContext : undefined);
   }
 
+  // Root mean square of a PCM block at or above about -34 dBFS counts as speech.
+  const SPEAKING_RMS = 0.02;
+  function loudEnough(samples) {
+    let sum = 0;
+    for (let index = 0; index < samples.length; index++) sum += samples[index] * samples[index];
+    return samples.length > 0 && Math.sqrt(sum / samples.length) >= SPEAKING_RMS;
+  }
+
   function readPeerId(bytes, length) {
     if (typeof TextDecoder === "function") return new TextDecoder().decode(bytes.subarray(1, 1 + length));
     return String.fromCharCode(...bytes.subarray(1, 1 + length));
@@ -100,6 +108,10 @@
     // sends nothing after its hello.
     const standby = !!options.standby;
     const onPeerActive = options.onPeerActive || (() => {});
+    // Who is talking: called with a member id while its audio is above the
+    // speaking level (the local microphone reports the caller's own id).
+    const onPeerSpeaking = options.onPeerSpeaking || (() => {});
+    const onLocalSpeaking = options.onLocalSpeaking || (() => {});
     let socket = null;
     let context = null;
     let ready = false;
@@ -179,6 +191,7 @@
 
     function encodePcm(pcm) {
       if (!sending || closed || !socketOpen() || socket.bufferedAmount > audioBufferLimit()) return;
+      if (loudEnough(pcm)) onLocalSpeaking();
       if (!encoder || encoder.state === "closed") encoder = makeEncoder();
       const audio = new AudioData({
         format: "f32-planar",
@@ -199,6 +212,7 @@
             const pcm = new Float32Array(data.numberOfFrames);
             try { data.copyTo(pcm, { planeIndex: 0, format: "f32-planar" }); }
             catch { data.copyTo(pcm, { planeIndex: 0 }); }
+            if (loudEnough(pcm)) onPeerSpeaking(peer.id);
             peer.node.port.postMessage(pcm, [pcm.buffer]);
           } finally { data.close?.(); }
         },
@@ -380,7 +394,7 @@
       });
       const destination = context.createMediaStreamDestination();
       node.connect(destination);
-      const peer = { node, destination, decoder: null, stream: destination.stream };
+      const peer = { id: peerId, node, destination, decoder: null, stream: destination.stream };
       peer.decoder = makeDecoder(peer);
       peers.set(peerId, peer);
       onPeerStream(peerId, peer.stream);
